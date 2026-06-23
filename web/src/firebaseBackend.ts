@@ -69,6 +69,7 @@ export function createFirebaseBackend(uid: string): any {
   const kvDocRef = () => doc(db(), 'users', uid, 'state', 'kv');
   const logHtmlPath = (id: string) => `users/${uid}/logs/${enc(id)}.html`;
   const logOrigPath = (id: string) => `users/${uid}/logs/${enc(id)}.orig.json`;   // 번역 원문 스냅샷(r.orig) 분리본
+  const logAssetsPath = (id: string) => `users/${uid}/logs/${enc(id)}.assets.json`;   // 가져온 에셋 맵(r.assets) 분리본
   const metaCoverPath = (char: string) => `users/${uid}/meta/${enc(char)}.cover`;
 
   let kv: Record<string, any> = {};   // 로그인 시 hydrate로 채우는 메모리 캐시(동기 kvLoad용)
@@ -105,6 +106,15 @@ export function createFirebaseBackend(uid: string): any {
     } else if (r.origRef) {
       delete r.origRef;
       try { await deleteObject(sref(storage(), logOrigPath(r.id))); } catch (_) {}
+    }
+    // ★r.assets(가져온 에셋 맵)도 커서 문서가 임계를 넘으면 Storage로 분리(html·orig와 대칭) — 에셋 많은 화에서 doc 1MB 초과로 누락 방지.
+    if (r.assets && byteLen(JSON.stringify(r)) > THRESHOLD) {
+      await uploadString(sref(storage(), logAssetsPath(r.id)), JSON.stringify(r.assets), 'raw', { contentType: 'application/json' });
+      r.assetsRef = logAssetsPath(r.id);
+      delete r.assets;
+    } else if (r.assetsRef) {
+      delete r.assetsRef;
+      try { await deleteObject(sref(storage(), logAssetsPath(r.id))); } catch (_) {}
     }
     await setDoc(docRef('logs', r.id), r);
   }
@@ -145,6 +155,10 @@ export function createFirebaseBackend(uid: string): any {
           try { r.orig = JSON.parse(new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.origRef))))); } catch (_) {}
           delete r.origRef;
         }
+        if (r.assetsRef && !r.assets) {   // 분리 저장된 에셋 맵 복원(재렌더 에셋 보존)
+          try { r.assets = JSON.parse(new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.assetsRef))))); } catch (_) {}
+          delete r.assetsRef;
+        }
         out.push(r);
       }
       return out;
@@ -166,6 +180,10 @@ export function createFirebaseBackend(uid: string): any {
           try { r.orig = JSON.parse(new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.origRef))))); } catch (_) {}
           delete r.origRef;
         }
+        if (r.assetsRef && !r.assets) {   // 분리 저장된 에셋 맵 복원(재렌더 에셋 보존)
+          try { r.assets = JSON.parse(new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.assetsRef))))); } catch (_) {}
+          delete r.assetsRef;
+        }
         out.push(r);
       }
       return out;
@@ -186,6 +204,7 @@ export function createFirebaseBackend(uid: string): any {
       try { await deleteDoc(docRef('logs', id)); } catch (_) {}
       try { await deleteObject(sref(storage(), logHtmlPath(id))); } catch (_) {}
       try { await deleteObject(sref(storage(), logOrigPath(id))); } catch (_) {}
+      try { await deleteObject(sref(storage(), logAssetsPath(id))); } catch (_) {}
     },
     // 실시간: 로그 컬렉션이 바뀌면(다른 기기 포함) cb 호출. unsubscribe 함수 반환.
     watchLogs(cb: () => void): () => void {

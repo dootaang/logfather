@@ -1105,7 +1105,16 @@ async function buildAndSaveChat(parsed: any, opts: any) {
       if (opts.design === 'custom-css') rec.userCardCss = '';
     }
     // ★에셋(감정 스프라이트) 박제: assets 맵이 있으면 마커({{img::이름}}·CBS 등)를 카드 드롭과 동일 크기·스타일로 렌더(블록 임베드 X).
-    if (assetMap) { let h = String(rec.html || ''); h = resolveAssetCBS(h, assetMap); h = processImageTags(h, assetMap, ASSET_IMG_STYLE); h = resolveAssetMarkers(h, assetMap, ASSET_IMG_STYLE); rec.html = h; }
+    //   ★이 화가 실제 쓴 에셋만 rec.assets에 동반 저장 → 재렌더(정리·번역·토글·편집)에서 rerenderLog가 재적용(증발 방지). 용량은 화별로 바운드.
+    if (assetMap) {
+      const refs = new Set<string>(); for (const mm of chunk) collectAssetRefs(String((mm as any).text || ''), refs);
+      const sub: any = {};
+      for (const k of Object.keys(assetMap)) { const kl = k.toLowerCase(), ks = kl.replace(/\.[a-z0-9]+$/i, ''); for (const ref of refs) { const rl = String(ref).toLowerCase(); if (rl === kl || rl === ks || rl.replace(/\.[a-z0-9]+$/i, '') === ks) { sub[k] = assetMap[k]; break; } } }
+      if (Object.keys(sub).length) {
+        let h = String(rec.html || ''); h = resolveAssetCBS(h, sub); h = processImageTags(h, sub, ASSET_IMG_STYLE); h = resolveAssetMarkers(h, sub, ASSET_IMG_STYLE); rec.html = h;
+        rec.assets = sub;
+      }
+    }
     await logsAdd(rec); created.push(rec);
   }
   // fp 기록 갱신 — 다음 재유입 때 이 시점까지를 "이미 보관한 앞부분"으로 보고 델타만 잇는다.

@@ -16,6 +16,9 @@ import { cleanUnits } from './cleanup.js';
 import { defaultSettings } from '../../core/preset/bundle.js';
 import { convertText } from '../../core/convert/convertText.js';
 import { expandCardRegex } from '../../core/convert/cardRegex.js';   // 관리실 정리 규칙(표시 정규식) 적용
+import { processImageTags } from '../../core/convert/processImageTags.js';   // 가져온 에셋 맵 재적용(재렌더 시 증발 방지)
+import { resolveAssetCBS } from '../../core/convert/prepareBody.js';
+import { resolveAssetMarkers } from '../../core/convert/risuMarkers.js';
 
 const loadShare = () => import('./share.js');
 const epOrder = (x: any) => (x && x.order != null ? x.order : 1e9);
@@ -23,7 +26,15 @@ function sortEps(eps: any[]): any[] { return eps.slice().sort((a, b) => (epOrder
 const clonej = (x: any) => (x == null ? x : JSON.parse(JSON.stringify(x)));
 // 비파괴 번역: 원문 스냅샷(r.orig, 구조화 텍스트) ↔ 표시 레코드 사이 헬퍼.
 const ORIG_FIELDS = ['input', 'chat', 'diary', 'webnovel', 'cardCfg', 'userCardCss'];
-const origRecord = (r: any) => Object.assign({ template: r.template, char: r.char }, r.orig || {});   // 원문 → rerenderLog용 임시 레코드(즉석 원문 html)
+const origRecord = (r: any) => Object.assign({ template: r.template, char: r.char, assets: r.assets }, r.orig || {});   // 원문 → rerenderLog용 임시 레코드(에셋 맵도 동반 → 원문/번역 토글에서도 에셋 보존)
+// ★가져온 에셋(마커 방식)을 모든 재렌더(정리·번역·토글·편집) 끝에 rec.assets로 되살림 — 마커 {{img::이름}}·CBS를 카드 스타일 <img>로(증발 방지).
+const ASSET_IMG_STYLE = { size: 100, margin: 10, useBorder: false, borderColor: '#000000', useShadow: true };
+function applyAssetMap(html: string, assets: any): string {
+  if (!assets || typeof assets !== 'object' || !Object.keys(assets).length) return html;
+  let h = String(html || '');
+  try { h = resolveAssetCBS(h, assets); h = processImageTags(h, assets, ASSET_IMG_STYLE); h = resolveAssetMarkers(h, assets, ASSET_IMG_STYLE); } catch (_) {}
+  return h;
+}
 function applyOrig(r: any) { if (!r.orig) return; for (const k of ORIG_FIELDS) { if (k in r.orig) r[k] = clonej(r.orig[k]); else delete r[k]; } }   // 표시 본문을 원문으로 되돌림(번역 지우기/다시 번역)
 // ── 관리실 정리 규칙(표시 정규식) — 리더 전역 비파괴 적용(원본 로그 불변·토글) ──
 const CLEANUP_KEY = 'pro2-cleanup-rules';
@@ -72,7 +83,7 @@ export function rerenderLog(rec: any): string {
   else if (t === 'card' && rec.cardCfg && Array.isArray(rec.cardCfg.blocks) && rec.cardCfg.blocks.length) s.templateSettings.card = rec.cardCfg;
   else if (t === 'custom-css') { s.userCardCss = String(rec.userCardCss || ''); input = String(rec.input || ''); }
   else input = String(rec.input || '');
-  return convertText(input, s);
+  return applyAssetMap(convertText(input, s), rec.assets);   // ★재렌더 끝에 에셋 맵 재적용 → 정리·번역·토글·편집 어디서도 에셋 이미지 보존
 }
 
 // 팩토리 — ctx: { setStatus, reloadLogs, getAllLogs, route, getUser, nameOf }.
