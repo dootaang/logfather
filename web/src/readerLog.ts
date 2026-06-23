@@ -248,7 +248,17 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
         app.innerHTML = '';
         const reader = document.createElement('div'); reader.className = 'reader'; reader.dataset.theme = rdCfg().theme;
         const scroll = mk('div', 'reader-scroll'); const col = mk('div', 'reader-col');
-        col.appendChild(mk('div', 'reader-card', '불러오는 중…')); scroll.appendChild(col); reader.appendChild(scroll); app.appendChild(reader);
+        // 로딩이 (클라우드·로컬 모두) 실패했으면 무한 "불러오는 중" 대신 명확한 안내+새로고침 — 갇히지 않게.
+        if (ctx.isLoadFailed && ctx.isLoadFailed()) {
+          const card = mk('div', 'reader-card');
+          card.appendChild(mk('div', '', '서재를 불러오지 못했어요. 다른 탭·창을 모두 닫고 새로고침해 주세요.'));
+          const rb = document.createElement('button'); rb.className = 'reader-iconbtn'; rb.textContent = '새로고침'; rb.style.marginTop = '10px';
+          rb.onclick = () => location.reload();
+          card.appendChild(rb); col.appendChild(card);
+        } else {
+          col.appendChild(mk('div', 'reader-card', '불러오는 중…'));
+        }
+        scroll.appendChild(col); reader.appendChild(scroll); app.appendChild(reader);
         return;
       }
       location.hash = '#/series/' + encodeURIComponent(char); return;   // 로드됐는데 없음 = 진짜 없는 화 → 작품 페이지

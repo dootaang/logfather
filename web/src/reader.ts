@@ -8,7 +8,7 @@
 // @ts-nocheck
 import { renderShare, renderSharedSeriesEp } from './readerView.js';
 import { createReaderLog } from './readerLog.js';
-import { logsAll, metaAll, loadRead, dedupeLogList } from './store.js';
+import { logsAll, metaAll, loadRead, dedupeLogList, LocalBackend } from './store.js';
 import { fontsSupported, refreshFonts } from './fonts.js';
 
 const epOrder = (x: any) => (x && x.order != null ? x.order : 1e9);
@@ -28,14 +28,29 @@ let allLogs: any[] = [];
 let metaByChar: Record<string, any> = {};
 let readerUser: any = null;
 let curView = '';   // 현재 그린 화 id — 백엔드 교체(로그인) 재렌더 시 이 화가 살아있으면 다시 안 그림(스크롤 보존)
+let loadFailed = false;   // 로그 로딩이 (클라우드·로컬 모두) 실패했는지 — 리더가 무한 "불러오는 중"에 안 갇히게 안내용
+// 네트워크/Storage/막힌 DB 승급으로 영영 안 멈추게 시간제한 — {ok,v}로 성공·실패 구분.
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<{ ok: boolean; v?: T }> {
+  return Promise.race([
+    Promise.resolve(p).then((v) => ({ ok: true, v })).catch(() => ({ ok: false })),
+    new Promise<{ ok: boolean }>((res) => setTimeout(() => res({ ok: false }), ms)),
+  ]);
+}
 async function reloadLogs() {
-  try { allLogs = dedupeLogList(await logsAll()).kept; } catch (_) {}
-  try { const ms = await metaAll(); metaByChar = {}; for (const m of ms) if (m && m.char) metaByChar[m.char] = m; } catch (_) {}
+  // 1) 현재 백엔드(로그인=클라우드) 우선. 2) 멈추거나 실패하면 로컬 미러로 폴백 — 클라우드가 막혀도 보관된 화는 뜬다.
+  let got = await withTimeout(logsAll(), 8000);
+  if (!got.ok) { try { got = await withTimeout(LocalBackend.logsAll(), 5000); } catch (_) { got = { ok: false }; } }
+  if (got.ok && got.v) { try { allLogs = dedupeLogList(got.v).kept; loadFailed = false; } catch (_) {} }
+  else { loadFailed = true; }   // 둘 다 실패 — 기존 allLogs 유지(빈 채로 안 덮음)
+  let gm = await withTimeout(metaAll(), 8000);
+  if (!gm.ok) { try { gm = await withTimeout(LocalBackend.metaAll(), 5000); } catch (_) { gm = { ok: false }; } }
+  if (gm.ok && gm.v) { metaByChar = {}; for (const m of (gm.v as any[])) if (m && m.char) metaByChar[m.char] = m; }
 }
 
 const rlog = createReaderLog({
   setStatus, reloadLogs, getAllLogs: () => allLogs, route, getUser: () => readerUser,
   nameOf: (char: string) => (metaByChar[char] && metaByChar[char].name) || char,
+  isLoadFailed: () => loadFailed,
 });
 
 // 내 서재(#/log) 진입 시에만 클라우드 1회 init(로그인=백엔드 교체+실시간). 공유는 안 거침.
@@ -83,5 +98,7 @@ window.addEventListener('hashchange', route);
 (async () => {
   await reloadLogs();
   route();
+  // 첫 로드가 비었으면(막힌 v7 승급·지연 등) 잠깐씩 재시도하며 풀리는 즉시 재렌더 — "불러오는 중"에 안 갇히게.
+  for (let i = 0; i < 6 && !allLogs.length; i++) { await new Promise((r) => setTimeout(r, 1000)); await reloadLogs(); route(); }
   if (fontsSupported()) { try { await refreshFonts(); route(); } catch (_) {} }
 })();

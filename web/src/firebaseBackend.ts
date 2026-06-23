@@ -59,6 +59,8 @@ export async function wipeUserCloud(uid: string, onProgress?: (n: number) => voi
 const THRESHOLD = 800 * 1024;     // 이보다 크면 Storage로 분리(1MB 한도 여유)
 const ENC = new TextEncoder();
 const byteLen = (s: string) => ENC.encode(s).length;
+// Storage blob 가져오기 시간제한 — 느리거나 멈춘 getBytes 하나가 logsAll 전체(=리더 로딩)를 못 막게. 초과 시 그 한 건만 건너뜀.
+const withBlobTimeout = <T>(p: Promise<T>, ms = 6000): Promise<T> => Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('blob timeout')), ms))]);
 const enc = (v: any) => encodeURIComponent(String(v));   // Firestore 문서ID/경로 안전화('/' 등)
 
 export function createFirebaseBackend(uid: string): any {
@@ -136,11 +138,11 @@ export function createFirebaseBackend(uid: string): any {
       for (const d of snap.docs) {
         const r: any = d.data();
         if (r.htmlRef && !r.html) {
-          try { r.html = new TextDecoder().decode(await getBytes(sref(storage(), r.htmlRef))); } catch (_) {}
+          try { r.html = new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.htmlRef)))); } catch (_) {}
           delete r.htmlRef;
         }
         if (r.origRef && !r.orig) {   // 분리 저장된 원문 스냅샷 복원(번역 토글 영속)
-          try { r.orig = JSON.parse(new TextDecoder().decode(await getBytes(sref(storage(), r.origRef)))); } catch (_) {}
+          try { r.orig = JSON.parse(new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.origRef))))); } catch (_) {}
           delete r.origRef;
         }
         out.push(r);
@@ -157,11 +159,11 @@ export function createFirebaseBackend(uid: string): any {
       for (const d of snap.docs) {
         const r: any = d.data();
         if (r.htmlRef && !r.html) {
-          try { r.html = new TextDecoder().decode(await getBytes(sref(storage(), r.htmlRef))); } catch (_) {}
+          try { r.html = new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.htmlRef)))); } catch (_) {}
           delete r.htmlRef;
         }
         if (r.origRef && !r.orig) {   // 분리 저장된 원문 스냅샷 복원(번역 토글 영속)
-          try { r.orig = JSON.parse(new TextDecoder().decode(await getBytes(sref(storage(), r.origRef)))); } catch (_) {}
+          try { r.orig = JSON.parse(new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.origRef))))); } catch (_) {}
           delete r.origRef;
         }
         out.push(r);
@@ -197,7 +199,7 @@ export function createFirebaseBackend(uid: string): any {
       if (!s.exists()) return null;
       const r: any = s.data();
       if (r.coverRef && !r.cover) {
-        try { r.cover = new TextDecoder().decode(await getBytes(sref(storage(), r.coverRef))); } catch (_) {}
+        try { r.cover = new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.coverRef)))); } catch (_) {}
         delete r.coverRef;
       }
       return r;

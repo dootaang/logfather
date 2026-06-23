@@ -40,8 +40,15 @@ export function idbOpen(): Promise<IDBDatabase> {
       // v7 번역 캐시(★로컬 전용·동기화/백업 안 함): k=정규화원문+대상언어+프롬프트해시, v=번역문, t=최근사용(LRU 인덱스).
       if (!db.objectStoreNames.contains(IDB_TRCACHE)) { const ts = db.createObjectStore(IDB_TRCACHE, { keyPath: 'k' }); ts.createIndex('t', 't'); }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    // ★절대 안 멈추게: 다른 탭/창이 옛 버전으로 DB를 잡고 있으면 v7 승급이 막혀 open이 영영 안 끝난다.
+    //   onversionchange로 우리 연결은 새 승급 때 스스로 닫고(다음부터 안 막힘), 그래도 안 풀리면 시간제한으로 reject
+    //   → 호출부(reloadLogs 등)가 폴백/재시도. resolve도 reject도 못 하고 영원히 펜딩되는 일이 없게.
+    let settled = false; let timer: any;
+    const finish = (fn: () => void) => { if (settled) return; settled = true; try { clearTimeout(timer); } catch (_) {} fn(); };
+    timer = setTimeout(() => finish(() => reject(new Error('IndexedDB 열기 시간 초과 — 다른 탭/창을 닫고 새로고침하세요'))), 8000);
+    req.onsuccess = () => { const db = req.result; try { db.onversionchange = () => { try { db.close(); } catch (_) {} }; } catch (_) {} finish(() => resolve(db)); };
+    req.onerror = () => finish(() => reject(req.error || new Error('IndexedDB 열기 실패')));
+    req.onblocked = () => { /* 다른 연결이 옛 버전 점유 — 그쪽 onversionchange가 닫으면 진행, 안 닫히면 위 timer가 reject */ };
   });
 }
 
