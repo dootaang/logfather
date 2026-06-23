@@ -1,8 +1,8 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.5.0
-//@description 현재 채팅 세션을 번역 캐시 적용본 + 삽화(생성 이미지)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
+//@version 1.6.0
+//@description 현재 채팅 세션을 번역 캐시 적용본 + 삽화(생성 이미지) + 에셋(감정 이미지)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 dootaang — LogPapa. Licensed under GNU GPL v3 (see LICENSE).
@@ -164,10 +164,44 @@
     return src.startsWith('data:') ? await shrinkImage(src) : src;   // dataURL만 축소(http는 그대로, 보통 작음)
   }
 
+  // ── 에셋봇 에셋(감정 스프라이트·아이콘) 흡수 — 삽화와 같은 구조(리스 내부 보관 + 메시지엔 이름 참조). ──
+  //   캐릭터 에셋 목록(이름→경로) + 메시지에서 실제 쓰인 이름만 → readImage(경로) → 축소·임베드. ★쓰인 것만(전체 6천장 방지).
+  function charAssetMap(char) {
+    const out = []; const seen = new Set();
+    const push = (n, p) => { n = String(n || '').trim(); p = String(p || '').trim(); if (n && p && !seen.has(n.toLowerCase())) { seen.add(n.toLowerCase()); out.push({ name: n, path: p }); } };
+    try { for (const e of (char && char.emotionImages) || []) if (Array.isArray(e)) push(e[0], e[1]); } catch (_) {}
+    try { for (const a of (char && char.additionalAssets) || []) if (Array.isArray(a)) push(a[0], a[1]); } catch (_) {}
+    return out;
+  }
+  const reEsc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // 메시지에서 실제 쓰인 에셋 수집(맵에 있는 이름만). 우리 4토큰 {{img::}}/{{img=}}/{{image::}}/<img src> + 리스 [🌠|이름].
+  function usedAssets(text, byName) {
+    if (!byName.size) return [];
+    const used = []; const seen = new Set(); let m;
+    const consider = (raw) => { const n = String(raw || '').trim().replace(/^['"″]|['"″]$/g, ''); const hit = byName.get(n.toLowerCase()) || byName.get(n.toLowerCase().replace(/\.[a-z0-9]+$/i, '')); if (hit && !seen.has(hit.path)) { seen.add(hit.path); used.push(hit); } };
+    const reTok = /\{\{(?:img|image)(?:::|=)\s*([^}|]+?)\s*\}\}/gi; while ((m = reTok.exec(text))) consider(m[1]);
+    const reImg = /<(?:img|image)\s+src=\s*['"″]?([^'"″>\s]+)/gi; while ((m = reImg.exec(text))) consider(m[1]);
+    const reStar = /\[\s*🌠\s*\|\s*([^\]]+?)\s*\]/g; while ((m = reStar.exec(text))) consider(m[1]);
+    return used;
+  }
+  // 본문에서 inlay/lb 마커(내부 참조·텍스트 가치 없음) + ★해결된 에셋 이름의 마커를 제거. 미해결 에셋 마커는 그대로 둠(무해).
+  function stripResolvedMarkers(body, names) {
+    let s = String(body || '')
+      .replace(/\{\{inlay(?:ed)?::[^}]*\}\}/gi, '')
+      .replace(/<lb-(?:xnai|lazy)\b[^>]*\/>/gi, '')
+      .replace(/<lb-(?:xnai|lazy)\b[^>]*>[\s\S]*?<\/lb-(?:xnai|lazy)>/gi, '');
+    for (const n of names) { const e = reEsc(n); s = s
+      .replace(new RegExp('\\{\\{(?:img|image)(?:::|=)\\s*[\'"″]?' + e + '[\'"″]?\\s*\\}\\}', 'gi'), '')
+      .replace(new RegExp('<(?:img|image)\\s+src=\\s*[\'"″]?' + e + '[\'"″]?[^>]*>', 'gi'), '')
+      .replace(new RegExp('\\[\\s*\\uD83C\\uDF20\\s*\\|\\s*' + e + '\\s*\\]', 'g'), ''); }
+    return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
   async function buildMessages(onProgress) {
     const { char, chat } = await getCurrentChat();
     const raw = Array.isArray(chat.message) ? chat.message : [];
     const messages = []; let hit = 0, miss = 0, imgCount = 0, imgDropped = 0, imgBytes = 0;
+    const assetByName = new Map(); for (const a of charAssetMap(char)) assetByName.set(a.name.toLowerCase(), a);   // 캐릭터 에셋(이름→경로) 1회 구축
     for (let i = 0; i < raw.length; i++) {
       onProgress?.(i + 1, raw.length);
       const m = raw[i];
@@ -179,19 +213,28 @@
       const tr = await translateViaCache(original);   // ★캐시 부분검색 매칭(원문/문단 정확조회는 키가 어긋나 미스)
       if (tr.hit) hit++; else miss++;
       let body = String(tr.text || '');
-      // ★삽화(inlay) 흡수 — 원문 마커에서 id 추출 → readImage → 축소·JPEG → 독립 문단 <img>로 본문에 추가.
-      //   미스/실패/한도초과는 그 삽화만 건너뜀(텍스트는 그대로). 총 dataURL 길이를 IMG_BUDGET 미만으로(inbox 1MB 회피).
+      // ★이미지 흡수 — 원문 마커에서 삽화(inlay) id + 에셋 이름을 찾아 readImage로 꺼내 축소·JPEG → 독립 문단 <img>로 본문에 추가.
+      //   미스/실패/한도초과는 건너뜀(텍스트는 그대로). 총 dataURL 길이를 IMG_BUDGET 미만으로(inbox 1MB 회피). 쓰인 에셋만(전체 X).
+      const resolvedNames = [];
       if (hasReadImage) {
         for (const id of extractInlayIds(original)) {
           if (imgBytes >= IMG_BUDGET) { imgDropped++; continue; }
           const du = await inlayDataUrl(id);
           if (!du) continue;
           if (imgBytes + du.length > IMG_BUDGET) { imgDropped++; continue; }
-          imgBytes += du.length; imgCount++;
-          body += '\n\n<img src="' + du + '">';
+          imgBytes += du.length; imgCount++; body += '\n\n<img src="' + du + '">';
+        }
+        for (const a of usedAssets(original, assetByName)) {
+          if (imgBytes >= IMG_BUDGET) { imgDropped++; continue; }
+          const du = await inlayDataUrl(a.path);   // readImage는 에셋 경로도 받음(실기기 확인) — 삽화와 동일 처리
+          if (!du) continue;   // 미스: resolvedNames에 안 들어가 그 에셋 마커는 남음(무해)
+          if (imgBytes + du.length > IMG_BUDGET) { imgDropped++; continue; }
+          imgBytes += du.length; imgCount++; resolvedNames.push(a.name); body += '\n\n<img src="' + du + '">';
         }
       }
-      if (!body.trim()) continue;   // 텍스트·삽화 둘 다 없으면 건너뜀(삽화만 있으면 보냄)
+      // inlay/lb 마커 + 해결된 에셋 마커 제거(HIT 본문은 이미 깨끗→no-op, MISS 본문의 군더더기 참조 정리). 미해결 에셋 마커는 그대로.
+      body = stripResolvedMarkers(body, resolvedNames);
+      if (!body.trim()) continue;   // 텍스트·이미지 둘 다 없으면 건너뜀(이미지만 있으면 보냄)
       messages.push({ role: m.role === 'user' ? 'user' : 'char', text: body });
     }
     const charName = String(char.name || '리스 로그').slice(0, 300);   // 규칙: char ≤300자
@@ -342,5 +385,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.5.0');
+  console.info('[LogPapaPush] loaded v1.6.0');
 })();
