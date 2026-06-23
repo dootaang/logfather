@@ -116,8 +116,9 @@ function trKey(unit: string, target: string, promptHash: string): string { retur
 // 텍스트 단위 배열을 한국어로 번역(이미 한국어면 스킵). 마크업 보존·진행률·부분 실패 격리는 코어가 담당.
 // ★로컬 캐시: 같은 원문+같은 프롬프트면 API 호출 0(히트) — 재푸시·삭제후재임포트·유실복구에서 공짜. opts.force=캐시 무시·갱신("다시 번역").
 // 결합 번역(기본 켬): 미스만 코어 translateBlocks로(토큰 예산 배치 → 헛짓하면 그 배치만 순차 폴백). 성공·실제 번역분만 캐시 기록.
-export async function translateUnits(units: string[], stylePrompt: string, onProgress?: (d: number, t: number) => void, opts?: { force?: boolean }): Promise<UnitsResult> {
+export async function translateUnits(units: string[], stylePrompt: string, onProgress?: (d: number, t: number) => void, opts?: { force?: boolean; cacheOnly?: boolean }): Promise<UnitsResult> {
   const force = !!(opts && opts.force);
+  const cacheOnly = !!(opts && opts.cacheOnly);   // ★캐시만(미스는 원문 유지·API 0·키 불필요) — 리더 재진입 자동 번역 복원용
   const TARGET = '한국어';
   const ph = fnv(stylePrompt);
   const keys = units.map((u) => trKey(u, TARGET, ph));
@@ -127,7 +128,7 @@ export async function translateUnits(units: string[], stylePrompt: string, onPro
   let cachedCount = 0; const missIdx: number[] = [];
   for (let i = 0; i < units.length; i++) { if (hits[i] != null) { out[i] = hits[i] as string; cachedCount++; } else missIdx.push(i); }
   let translated = 0, skipped = 0; const failed: { index: number; error: string }[] = [];
-  if (missIdx.length) {
+  if (missIdx.length && !cacheOnly) {   // cacheOnly면 미스는 원문 그대로(번역 호출 안 함)
     const missUnits = missIdx.map((i) => units[i]);
     const res = await translateBlocks(missUnits, makeRawTranslate(stylePrompt), { skipKorean: true, onProgress, combine: getCombineOn(), maxResponse: getActiveMaxResponse() });
     translated = res.translated; skipped = res.skipped;

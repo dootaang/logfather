@@ -98,19 +98,19 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
   }
 
   // 여러 로그 번역(구조화 원본→재렌더→재저장). 한국어/역할제외 스킵. 원문 백업 restore() 반환.
-  async function runTranslateFlow(logs: any[], char: string, opts: { excludeRole?: string; onStep?: (m: string) => void; force?: boolean } = {}): Promise<any | null> {
+  async function runTranslateFlow(logs: any[], char: string, opts: { excludeRole?: string; onStep?: (m: string) => void; force?: boolean; cacheOnly?: boolean; silent?: boolean } = {}): Promise<any | null> {
     const stylePrompt = getWorkPrompt(char);
     const excludeRole = opts.excludeRole || '';
     const slots = logs.map((r) => logTextSlots(r));
     const flat: string[] = []; const ref: [number, number][] = [];
     let roleSkipped = 0;
     slots.forEach((sl, li) => sl.texts.forEach((tx, si) => { if (excludeRole && sl.roles[si] === excludeRole) { roleSkipped++; return; } ref.push([li, si]); flat.push(tx); }));
-    if (!flat.length) { setStatus('번역할 내용이 없습니다.'); return null; }
-    const step = opts.onStep || ((m: string) => setStatus(m));
+    if (!flat.length) { if (!opts.silent) setStatus('번역할 내용이 없습니다.'); return null; }
+    const step = opts.silent ? (() => {}) : (opts.onStep || ((m: string) => setStatus(m)));
     const backup = logs.map((r) => ({ r, input: r.input, html: r.html, chat: clonej(r.chat), diary: clonej(r.diary), webnovel: clonej(r.webnovel), cardCfg: clonej(r.cardCfg), userCardCss: r.userCardCss }));
     let res: any;
-    try { res = await translateUnits(flat, stylePrompt, (d, t) => step(`번역 중… (${d}/${t})`), { force: !!opts.force }); }
-    catch (e: any) { setStatus('번역 실패: ' + ((e && e.message) || '')); return null; }
+    try { res = await translateUnits(flat, stylePrompt, (d, t) => step(`번역 중… (${d}/${t})`), { force: !!opts.force, cacheOnly: !!opts.cacheOnly }); }
+    catch (e: any) { if (!opts.silent) setStatus('번역 실패: ' + ((e && e.message) || '')); return null; }
     ref.forEach(([li, si], k) => { if (res.blocks[k] !== flat[k]) slots[li].set(si, res.blocks[k]); });
     let changedLogs = 0;
     for (let i = 0; i < logs.length; i++) {
@@ -131,7 +131,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     let msg = `번역 완료 — ${res.translated}개 번역` + (res.skipped ? ` · 한국어 ${res.skipped}개 건너뜀` : '') + (roleSkipped ? ` · 역할제외 ${roleSkipped}개` : '');
     if (res.failed.length) msg += ` · 실패 ${res.failed.length}개(원문 유지)`;
     if (changedLogs) msg += ` · ${changedLogs}개 화 갱신`;
-    setStatus(msg);
+    if (!opts.silent) setStatus(msg);
     if (res.failed.length) console.warn('[번역 실패]', res.failed);
     const restore = async () => { for (const b of backup) { Object.assign(b.r, { input: b.input, html: b.html, chat: b.chat, diary: b.diary, webnovel: b.webnovel, cardCfg: b.cardCfg }); try { await logsAdd(b.r); } catch (_) {} } await reloadLogs(); };
     return { changedLogs, translated: res.translated, skipped: res.skipped, roleSkipped, failed: res.failed, restore };
@@ -264,6 +264,18 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       location.hash = '#/series/' + encodeURIComponent(char); return;   // 로드됐는데 없음 = 진짜 없는 화 → 작품 페이지
     }
     const r = eps[idx];
+    // ★작업 3: 번역된 적 있는 화(r.orig)인데 본문이 원문으로 되돌아가 있으면(왕복/동기화 잔여) 캐시에서 자동 복원 — 무료·키 불필요·진입당 1회.
+    //   비파괴(원문 토글 유지) · 캐시 미스면 원문 유지(무해) · 진입=상단이라 스크롤 보존 회귀 없음.
+    if (r && r.orig && !origView[r.id] && !r._trAuto && translateAvailable()) {
+      r._trAuto = true;
+      try {
+        if (rerenderLog(origRecord(r)) === r.html) {   // 현재 본문 = 원문 렌더 = 번역이 되돌아감 → 캐시로 복원
+          runTranslateFlow([r], char, { cacheOnly: true, silent: true })
+            .then((res) => { if (res && res.changedLogs) { location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route(); } })
+            .catch(() => {});
+        }
+      } catch (_) {}
+    }
     const rcfg = rdCfg();
     const wn = isWebnovel(r);
     const rd = loadRead(); rd.readIds[r.id] = true; rd.lastByChar[char] = r.id; rd.lastReadAt = rd.lastReadAt || {}; rd.lastReadAt[char] = Date.now(); saveRead(rd);
