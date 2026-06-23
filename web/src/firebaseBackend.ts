@@ -66,6 +66,7 @@ export function createFirebaseBackend(uid: string): any {
   const docRef = (sub: string, id: string) => doc(db(), 'users', uid, sub, enc(id));
   const kvDocRef = () => doc(db(), 'users', uid, 'state', 'kv');
   const logHtmlPath = (id: string) => `users/${uid}/logs/${enc(id)}.html`;
+  const logOrigPath = (id: string) => `users/${uid}/logs/${enc(id)}.orig.json`;   // 번역 원문 스냅샷(r.orig) 분리본
   const metaCoverPath = (char: string) => `users/${uid}/meta/${enc(char)}.cover`;
 
   let kv: Record<string, any> = {};   // 로그인 시 hydrate로 채우는 메모리 캐시(동기 kvLoad용)
@@ -92,6 +93,16 @@ export function createFirebaseBackend(uid: string): any {
       // 작아졌으면 옛 Storage 분리본 참조 제거(+청소)
       delete r.htmlRef;
       try { await deleteObject(sref(storage(), logHtmlPath(r.id))); } catch (_) {}
+    }
+    // ★r.orig(번역 원문 스냅샷)도 커서 문서가 임계를 넘으면 Storage로 분리 — 큰 화에서 doc 1MB 초과로 setDoc이
+    //   실패해 클라우드에 r.orig가 누락(→ 재로드 시 원문/번역 토글이 사라지던 것)되던 것을 막는다(html과 대칭).
+    if (r.orig && byteLen(JSON.stringify(r)) > THRESHOLD) {
+      await uploadString(sref(storage(), logOrigPath(r.id)), JSON.stringify(r.orig), 'raw', { contentType: 'application/json' });
+      r.origRef = logOrigPath(r.id);
+      delete r.orig;
+    } else if (r.origRef) {
+      delete r.origRef;
+      try { await deleteObject(sref(storage(), logOrigPath(r.id))); } catch (_) {}
     }
     await setDoc(docRef('logs', r.id), r);
   }
@@ -128,6 +139,10 @@ export function createFirebaseBackend(uid: string): any {
           try { r.html = new TextDecoder().decode(await getBytes(sref(storage(), r.htmlRef))); } catch (_) {}
           delete r.htmlRef;
         }
+        if (r.origRef && !r.orig) {   // 분리 저장된 원문 스냅샷 복원(번역 토글 영속)
+          try { r.orig = JSON.parse(new TextDecoder().decode(await getBytes(sref(storage(), r.origRef)))); } catch (_) {}
+          delete r.origRef;
+        }
         out.push(r);
       }
       return out;
@@ -144,6 +159,10 @@ export function createFirebaseBackend(uid: string): any {
         if (r.htmlRef && !r.html) {
           try { r.html = new TextDecoder().decode(await getBytes(sref(storage(), r.htmlRef))); } catch (_) {}
           delete r.htmlRef;
+        }
+        if (r.origRef && !r.orig) {   // 분리 저장된 원문 스냅샷 복원(번역 토글 영속)
+          try { r.orig = JSON.parse(new TextDecoder().decode(await getBytes(sref(storage(), r.origRef)))); } catch (_) {}
+          delete r.origRef;
         }
         out.push(r);
       }
@@ -164,6 +183,7 @@ export function createFirebaseBackend(uid: string): any {
       try { await LocalBackend.logsDelete(id); } catch (_) {}   // 로컬 먼저(서재 즉시 반영)
       try { await deleteDoc(docRef('logs', id)); } catch (_) {}
       try { await deleteObject(sref(storage(), logHtmlPath(id))); } catch (_) {}
+      try { await deleteObject(sref(storage(), logOrigPath(id))); } catch (_) {}
     },
     // 실시간: 로그 컬렉션이 바뀌면(다른 기기 포함) cb 호출. unsubscribe 함수 반환.
     watchLogs(cb: () => void): () => void {

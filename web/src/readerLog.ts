@@ -125,6 +125,9 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       } catch (_) {}
     }
     await reloadLogs();
+    // ★명시적 갱신 보장: 클라우드 재읽기(logsAll)가 방금 쓴 변경을 아직 안 돌려줄 수 있어(stale) → 방금 갱신한
+    //   레코드를 현재 allLogs에 직접 반영. 호출부 route()가 옛 본문을 렌더하지 않게(백그라운드 동기화 재렌더 스킵과 무관).
+    { const cur = getAllLogs(); for (const r of logs) { const i = cur.findIndex((x: any) => x.id === r.id); if (i >= 0) cur[i] = r; } }
     let msg = `번역 완료 — ${res.translated}개 번역` + (res.skipped ? ` · 한국어 ${res.skipped}개 건너뜀` : '') + (roleSkipped ? ` · 역할제외 ${roleSkipped}개` : '');
     if (res.failed.length) msg += ` · 실패 ${res.failed.length}개(원문 유지)`;
     if (changedLogs) msg += ` · ${changedLogs}개 화 갱신`;
@@ -148,6 +151,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     let changedLogs = 0;
     for (const r of logs) { try { const nh = rerenderLog(r); if (nh !== r.html) { r.html = nh; await logsAdd(r); changedLogs++; } } catch (_) {} }
     await reloadLogs();
+    { const cur = getAllLogs(); for (const r of logs) { const i = cur.findIndex((x: any) => x.id === r.id); if (i >= 0) cur[i] = r; } }   // 명시적 갱신: 방금 정리분을 allLogs에 직접 반영(stale 재읽기 방지)
     let msg = `정리 완료 — ${res.cleaned}개 정리`;
     if (res.failed.length) msg += ` · 실패 ${res.failed.length}개(원문 유지)`;
     if (changedLogs) msg += ` · ${changedLogs}개 화 갱신`;
