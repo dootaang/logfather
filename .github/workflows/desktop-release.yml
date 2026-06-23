@@ -1,0 +1,26 @@
+# 데스크탑 패키징 + GitHub Releases 게시 — 웹(Firebase) 배포 CI와 완전 별개.
+# 트리거: 'v*' 태그 푸시(예: v0.1.0) 또는 수동 실행. 웹 CI(firebase-hosting.yml/deploy.yml)는 안 건드림.
+name: Desktop Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # GitHub Releases에 설치파일 업로드
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run web:build
+      # electron-builder가 web/dist + electron/ 을 NSIS 설치파일로 패키징하고 Releases에 게시(미서명).
+      - run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <!-- 페인트 전: 저장된 테마·스킨을 즉시 <html>에 적용 → 다크모드 흰 깜빡임(눈뽕) 방지(번들 로드 전). -->
+  <script>(function(){try{var t=localStorage.getItem('pro2-shell-theme')||'system';var d=t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');var s=localStorage.getItem('pro2-shell-skin');if(s)document.documentElement.dataset.skin=s.replace(/^custom:.*/,'aurora');}catch(e){}})();</script>
+  <!-- 기본 진입 = 서재 스튜디오 홈. 편집기는 "빠른 제작"(?new)·"새 화 쓰기"(?work)·수정(?log)으로만 직접 진입. -->
+  <!--   파라미터 없이 맨 URL로 들어오면(콜드 진입) 서재로 보낸다. 페인트 전이라 깜빡임 없음. -->
+  <script>(function(){try{var p=new URLSearchParams(location.search);if(p.has('new')||p.has('work')||p.has('log'))return;if(localStorage.getItem('pro2-open-log'))return;location.replace('library.html'+location.hash);}catch(e){}})();</script>
+  <title>LogPapa</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=2" />
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png?v=2" />
+  <link rel="manifest" href="./site.webmanifest?v=2" />
+  <meta name="theme-color" content="#1a1410" />
+  <!-- 폰트: Pretendard(본문/UI·한국어) · Fraunces(라틴 디스플레이) · JetBrains Mono(입력). 실패해도 폴백으로 동작. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="stylesheet" as="style" crossorigin
+        href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css" />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500;1,9..144,600&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <!-- 편집기엔 로고 없음(서재 홈에만). 홈 이동은 actions의 "서재" 버튼(#btn-archive). 좌측은 바인딩 모드 "← 서재"만 주입됨. -->
+    <div class="topbar-left"></div>
+    <div class="actions">
+      <!-- 복사(핵심) -->
+      <div class="btn-group">
+        <button id="btn-rich" class="primary" title="text/html로 복사 — 아카 일반 에디터에 붙여넣으면 이미지까지 자동 업로드">리치 복사</button>
+        <button id="btn-source" class="mode-pro" title="HTML 소스를 평문으로 — 코드보기에 붙여넣기 (이미지는 표시 안 됨, 이미지가 필요하면 리치 복사)">소스 복사</button>
+      </div>
+      <span class="vsep mode-pro"></span>
+      <!-- 보관/서재 -->
+      <div class="btn-group mode-pro">
+        <button id="btn-archive-save" title="지금 꾸민 로그를 서재에 원본 화질 그대로 저장. 서재에서 불러온 로그면 제자리에 덮어씀"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M12 4v9"/><path d="M9 10l3 3l3 -3"/></svg> 보관</button>
+        <button id="btn-archive-new" hidden title="현재 내용을 새 화/새 작품으로 원본 화질 그대로 저장 (불러온 로그를 덮어쓰지 않음)">새로 저장</button>
+        <button id="btn-help" class="reader-iconbtn" title="사용설명서"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M12 16v.01"/><path d="M12 13a2 2 0 0 0 .914 -3.782a1.98 1.98 0 0 0 -2.414 .483"/></svg></button>
+        <button id="btn-archive" class="btn-library" title="저장한 로그를 모아 읽는 서재(별도 페이지)로 이동"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 19a9 9 0 0 1 9 0a9 9 0 0 1 9 0"/><path d="M3 6a9 9 0 0 1 9 0a9 9 0 0 1 9 0"/><path d="M3 6l0 13"/><path d="M12 6l0 13"/><path d="M21 6l0 13"/></svg> 서재<span id="archive-count" class="lib-badge" hidden></span></button>
+      </div>
+      <span class="vsep mode-pro"></span>
+      <!-- 출력 디자인 (상단바 유지: 자주 바꾸는 핵심 컨트롤) -->
+      <div class="btn-group mode-pro">
+        <select id="output-design-select" class="skin-select output-design-select" title="출력 카드 디자인 선택" aria-label="출력 디자인"></select>
+      </div>
+      <!-- 앱-레벨 설정(로그인·외형·백업·Pro1·고급)은 서재 홈 ⚙로 이전 — 편집기엔 편집 액션만. -->
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- 모바일 탭 바(좁은 화면에서만 표시; 데스크탑은 CSS로 숨김) -->
+    <nav id="mtabs" class="mobile-tabs">
+      <button data-pane="pane-input" class="active">입력</button>
+      <button data-pane="pane-settings">설정</button>
+      <button data-pane="pane-preview">미리보기</button>
+    </nav>
+    <!-- 입력 + 카드 -->
+    <section class="pane pane-input m-active">
+      <div class="pane-head"><h2>입력</h2></div>
+      <!-- ★컨텍스트 칩(작품 바인딩, JS 주입) + 비우기 = 한 줄. 이 글이 어디로 보관되는지 최상단에 표시. -->
+      <div class="dest-row" id="dest-row"><button id="btn-clear-input" class="ghost-btn" title="현재 입력 내용을 비웁니다 (카드·설정은 유지)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 20h-10.5l-4.21 -4.3a1 1 0 0 1 0 -1.41l10 -10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41l-9.2 9.3"/><path d="M18 13.3l-6.3 -6.3"/></svg> 비우기</button></div>
+      <!-- ★본문 쓰기 영역(주인공): 통합 툴바(JS가 #input 앞에 삽입) + 본문/블록 -->
+      <textarea id="input" placeholder="여기에 로그를 붙여넣으세요...&#10;&#10;대사는 &quot;큰따옴표&quot;, 속마음은 '작은따옴표'(스마트 모드).&#10;이미지 태그: {{img::이름}}"></textarea>
+      <div id="diary-pages" class="diary-pages-editor" hidden></div>
+      <div id="card-blocks" class="diary-pages-editor" hidden></div>
+      <div id="chat-messages" class="diary-pages-editor" hidden></div>
+      <div id="webnovel-blocks" class="diary-pages-editor" hidden></div>
+      <!-- 보조: 카드 · 에셋 (접이식). 카드 로드 시 자동 펼침. 드래그는 pane 아무 데나 가능(오버레이). -->
+      <details id="card-asset" class="card-asset">
+        <summary class="card-asset-sum"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-18a1 1 0 0 1 -1 -1v-12a1 1 0 0 1 1 -1"/><path d="M7 10h4v4h-4z"/><path d="M15 11h3"/><path d="M15 14h3"/></svg> 카드 · 에셋 <small>표지·프로필·에셋·다중 블록</small></summary>
+        <div id="dropzone" class="dropzone dropzone-mini"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-18a1 1 0 0 1 -1 -1v-12a1 1 0 0 1 1 -1"/><path d="M7 10h4v4h-4z"/><path d="M15 11h3"/><path d="M15 14h3"/></svg> 카드 불러오기 <small>(.charx · .png · .json · .risum) — 또는 여기로 드래그</small></div>
+        <div id="card-info" class="card-info" hidden></div>
+        <label id="card-blocks-toggle-row" class="cardblk-toggle" hidden><input type="checkbox" id="card-blocks-toggle"> 다중 블록(섹션)으로 편집 — 제목·부제로 박스 나누기</label>
+        <label id="card-collapse-row" class="cardblk-toggle cardblk-sub" hidden><input type="checkbox" id="card-collapse-toggle"> 출력에서 접어두기 (모든 블록 일괄)</label>
+        <div id="tray" class="tray" hidden></div>
+      </details>
+      <!-- 드래그 중에만 뜨는 전체 드롭 오버레이 -->
+      <div id="pane-drop-overlay" class="pane-drop-overlay" aria-hidden="true"><span><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-18a1 1 0 0 1 -1 -1v-12a1 1 0 0 1 1 -1"/><path d="M7 10h4v4h-4z"/><path d="M15 11h3"/><path d="M15 14h3"/></svg> 카드/모듈 파일 놓기</span></div>
+    </section>
+
+    <!-- 설정 -->
+    <section class="pane pane-settings">
+      <div class="pane-head"><h2>설정</h2></div>
+      <div id="controls"></div>
+    </section>
+
+    <!-- 미리보기 -->
+    <section class="pane pane-preview">
+      <div class="pane-head"><h2>미리보기 <span id="status" class="status"></span></h2></div>
+      <!-- sandbox: 카드 작성자 정의 regex가 펼친 HTML을 격리(스크립트 실행 차단). 인라인 CSS·이미지는 정상 렌더 -->
+      <iframe id="preview" title="preview" sandbox></iframe>
+    </section>
+  </main>
+
+  <script type="module" src="./dist/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+# 의존성
+node_modules/
+
+# 빌드 산출물(웹 번들 — CI/Actions가 재생성)
+web/dist/
+
+# 데스크탑 패키징 산출물(설치파일 — electron-builder, 절대 push 금지)
+release/
+
+# 대형 샘플 카드/모듈(797MB — 절대 push 금지)
+캐릭터파일/
+
+# 로컬 도구 설정·데모 산출물
+.claude/
+demo/*.html
+
+# 로그 다이어리 원작 소스(분석용 — push 금지)
+_ref_logdiary/
+
+# 내부 설계문서 + Pro1 원본 소스(비공개 — 로컬엔 유지, 공개 레포엔 push 금지)
+Pro2_MVP_기술설계서.md
+Pro2_브레인스토밍_리포트.md
+로그제조기_6종분석_브리핑.md
+log_generator_pro.py
+# 내부 개발/계획 문서 + 옛 Pro1 빌드 잔재(로컬 유지·공개 금지)
+BACKLOG.md
+HANDOFF.md
+FIREBASE_PLAN.md
+LogGenerator-Pro.spec
+
+# 잡파일
+*.log
+.DS_Store
+Thumbs.db
+
+# 로컬 디자인 시안 데모(미커밋)
+demo/skins/

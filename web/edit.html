@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LogPapa</title>
+  <!-- 편집기는 index.html 한 페이지로 통합됨(URL 모드 분기). 옛 링크/북마크(edit.html#/log/<id>)는 여기서 리다이렉트. -->
+  <script>(function(){try{var m=/#\/log\/(.+)$/.exec(location.hash||'');location.replace('index.html'+(m?('?log='+encodeURIComponent(decodeURIComponent(m[1]))):''));}catch(e){location.replace('index.html');}})();</script>
+</head>
+<body></body>
+</html>

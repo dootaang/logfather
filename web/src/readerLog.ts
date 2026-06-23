@@ -1,0 +1,348 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 dootaang — LogPapa. Licensed under GNU GPL v3 (see LICENSE).
+// web/src/readerLog.ts — 내 서재 리더(단일 화 #/log) + 번역/정리 흐름 + 공유 팝오버. library·reader 공용(팩토리).
+//
+// 페이지별 상태(allLogs·setStatus·route·로그인 사용자·표시이름)는 ctx로 주입 → library(작품 페이지의 번역/정리)와
+// reader(단일 화 열람)가 같은 코드 1벌을 쓴다(중복 복붙 금지). 리더 본문/페이저/타이포는 readerView.ts 재사용.
+// @ts-nocheck
+import { mountReaderBody, rdCfg, isWebnovel, popAutoClose, mk } from './readerView.js';
+import { icon } from './icons.js';
+import { richCopy } from './clipboard.js';
+import { confirmModal } from './confirmModal.js';
+import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad } from './store.js';
+import { isLocalFirst, getSyncMode } from './desktopSync.js';
+import { translateAvailable, translateUnits, getWorkPrompt, ensureTranslateReady } from './translate.js';
+import { cleanUnits } from './cleanup.js';
+import { defaultSettings } from '../../core/preset/bundle.js';
+import { convertText } from '../../core/convert/convertText.js';
+import { expandCardRegex } from '../../core/convert/cardRegex.js';   // 관리실 정리 규칙(표시 정규식) 적용
+
+const loadShare = () => import('./share.js');
+const epOrder = (x: any) => (x && x.order != null ? x.order : 1e9);
+function sortEps(eps: any[]): any[] { return eps.slice().sort((a, b) => (epOrder(a) - epOrder(b)) || (a.date || '').localeCompare(b.date || '') || (a.id || '').localeCompare(b.id || '')); }
+const clonej = (x: any) => (x == null ? x : JSON.parse(JSON.stringify(x)));
+// 비파괴 번역: 원문 스냅샷(r.orig, 구조화 텍스트) ↔ 표시 레코드 사이 헬퍼.
+const ORIG_FIELDS = ['input', 'chat', 'diary', 'webnovel', 'cardCfg', 'userCardCss'];
+const origRecord = (r: any) => Object.assign({ template: r.template, char: r.char }, r.orig || {});   // 원문 → rerenderLog용 임시 레코드(즉석 원문 html)
+function applyOrig(r: any) { if (!r.orig) return; for (const k of ORIG_FIELDS) { if (k in r.orig) r[k] = clonej(r.orig[k]); else delete r[k]; } }   // 표시 본문을 원문으로 되돌림(번역 지우기/다시 번역)
+// ── 관리실 정리 규칙(표시 정규식) — 리더 전역 비파괴 적용(원본 로그 불변·토글) ──
+const CLEANUP_KEY = 'pro2-cleanup-rules';
+function cleanupRules(): any[] {   // 전역 enabled + ★소스별 enabled(개별 활성)인 것만 평탄화. 0개·꺼짐 = [](무동작).
+  try { const r = kvLoad(CLEANUP_KEY); if (!r || r.enabled === false || !Array.isArray(r.sources)) return []; const out: any[] = []; for (const s of r.sources) if (s && s.enabled !== false && Array.isArray(s.rules)) for (const x of s.rules) out.push(x); return out; } catch (_) { return []; }
+}
+function cleanupChanges(rec: any, rules: any[]): boolean {   // 이 레코드 텍스트를 바꾸나?(재렌더 없이 싸게 판정 — 토글 노출 여부)
+  try { const s = logTextSlots(clonej(rec)); for (const t of s.texts) if (expandCardRegex(t, rules) !== t) return true; } catch (_) {}
+  return false;
+}
+function renderCleaned(rec: any, rules: any[]): string {   // 비파괴 정리: 복제 → 텍스트 슬롯에 expandCardRegex → 재렌더
+  const c = clonej(rec); const s = logTextSlots(c);
+  for (let i = 0; i < s.texts.length; i++) s.set(i, expandCardRegex(s.texts[i], rules));
+  return rerenderLog(c);
+}
+
+// 한 로그의 번역/정리 대상 텍스트 슬롯(구조화 원본). role 있는 단위(채팅/카드블록)는 역할 제외에 쓰임.
+export function logTextSlots(rec: any): { texts: string[]; roles: (string | null)[]; set: (i: number, v: string) => void } {
+  const texts: string[] = []; const roles: (string | null)[] = []; const setters: ((v: string) => void)[] = [];
+  const push = (get: () => string, set: (v: string) => void, role?: string | null) => { texts.push(get()); roles.push(role || null); setters.push(set); };
+  const t = rec.template || 'card';
+  if (t === 'chat' && rec.chat && Array.isArray(rec.chat.messages)) {
+    rec.chat.messages.forEach((m: any) => push(() => String(m.text || ''), (v) => { m.text = v; }, m.role));
+  } else if (t === 'log-diary' && rec.diary && Array.isArray(rec.diary.pages)) {
+    rec.diary.pages.forEach((p: any) => { push(() => String(p.title || ''), (v) => { p.title = v; }); push(() => String(p.subtitle || ''), (v) => { p.subtitle = v; }); push(() => String(p.content || ''), (v) => { p.content = v; }); });
+  } else if (t === 'webnovel' && rec.webnovel && Array.isArray(rec.webnovel.blocks) && rec.webnovel.blocks.length) {
+    rec.webnovel.blocks.forEach((b: any) => { push(() => String(b.title || ''), (v) => { b.title = v; }); push(() => String(b.content || ''), (v) => { b.content = v; }, b.role); });
+  } else if (t === 'card' && rec.cardCfg && Array.isArray(rec.cardCfg.blocks) && rec.cardCfg.blocks.length) {
+    rec.cardCfg.blocks.forEach((b: any) => { push(() => String(b.title || ''), (v) => { b.title = v; }); push(() => String(b.subtitle || ''), (v) => { b.subtitle = v; }); push(() => String(b.content || ''), (v) => { b.content = v; }, b.role); });
+  } else {
+    push(() => String(rec.input || ''), (v) => { rec.input = v; });
+  }
+  return { texts, roles, set: (i, v) => setters[i](v) };
+}
+// 구조화 원본으로 html 재렌더(채팅 가져오기 buildAndSaveChat와 동일 = defaults 기준).
+export function rerenderLog(rec: any): string {
+  const s = defaultSettings();
+  s.template = rec.template || 'card';
+  s.profile = s.profile || {}; if (rec.char) s.profile.botName = rec.char;
+  s.templateSettings = s.templateSettings || {};
+  let input = '';
+  const t = s.template;
+  if (t === 'chat') s.templateSettings.chat = rec.chat || {};
+  else if (t === 'log-diary') s.templateSettings['log-diary'] = rec.diary || {};
+  else if (t === 'webnovel') { s.templateSettings.webnovel = rec.webnovel || {}; if (!(rec.webnovel && rec.webnovel.useBlocks)) input = String(rec.input || ''); }
+  else if (t === 'card' && rec.cardCfg && Array.isArray(rec.cardCfg.blocks) && rec.cardCfg.blocks.length) s.templateSettings.card = rec.cardCfg;
+  else if (t === 'custom-css') { s.userCardCss = String(rec.userCardCss || ''); input = String(rec.input || ''); }
+  else input = String(rec.input || '');
+  return convertText(input, s);
+}
+
+// 팩토리 — ctx: { setStatus, reloadLogs, getAllLogs, route, getUser, nameOf }.
+export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLogs: () => Promise<void>; getAllLogs: () => any[]; route: () => void; getUser: () => any; nameOf: (char: string) => string }) {
+  const { setStatus, reloadLogs, getAllLogs, route } = ctx;
+  const origView: Record<string, boolean> = {};   // 리더 토글 상태(true=원문 보기). 기본=번역. 세션 UI 상태(데이터는 r.orig로 영속). 옛 세션 ↩원문(trialRestores)을 이 영속 토글로 대체.
+  const cleanView: Record<string, boolean> = {};   // 정리 토글 상태(false=원본 보기). 기본=정리됨. 정규식은 관리실 KV(원본 로그 불변).
+  const cleanRestores: Record<string, () => Promise<void>> = {};
+
+  function shareAvailability(): { ok: boolean; reason: string } {
+    if (isLocalFirst()) {
+      if (getSyncMode() === 'off') return { ok: false, reason: 'off' };
+      if (!ctx.getUser()) return { ok: false, reason: 'login' };
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return { ok: false, reason: 'offline' };
+      return { ok: true, reason: '' };
+    }
+    return getBackendKind() === 'firebase' ? { ok: true, reason: '' } : { ok: false, reason: 'login' };
+  }
+  function shareGateMessage(reason: string): string {
+    if (reason === 'off') return '“연동 안 함(로컬 전용)” 모드에서는 공유할 수 없어요. 상단 “동기화”에서 모드를 바꾸면 공유할 수 있습니다.';
+    if (reason === 'offline') return '공유는 인터넷 연결이 필요해요. 온라인 상태에서 다시 시도하세요.';
+    return '공개 링크는 로그인해야 만들 수 있어요. 위쪽 “로그인”으로 로그인하세요.';
+  }
+
+  // 여러 로그 번역(구조화 원본→재렌더→재저장). 한국어/역할제외 스킵. 원문 백업 restore() 반환.
+  async function runTranslateFlow(logs: any[], char: string, opts: { excludeRole?: string; onStep?: (m: string) => void } = {}): Promise<any | null> {
+    const stylePrompt = getWorkPrompt(char);
+    const excludeRole = opts.excludeRole || '';
+    const slots = logs.map((r) => logTextSlots(r));
+    const flat: string[] = []; const ref: [number, number][] = [];
+    let roleSkipped = 0;
+    slots.forEach((sl, li) => sl.texts.forEach((tx, si) => { if (excludeRole && sl.roles[si] === excludeRole) { roleSkipped++; return; } ref.push([li, si]); flat.push(tx); }));
+    if (!flat.length) { setStatus('번역할 내용이 없습니다.'); return null; }
+    const step = opts.onStep || ((m: string) => setStatus(m));
+    const backup = logs.map((r) => ({ r, input: r.input, html: r.html, chat: clonej(r.chat), diary: clonej(r.diary), webnovel: clonej(r.webnovel), cardCfg: clonej(r.cardCfg), userCardCss: r.userCardCss }));
+    let res: any;
+    try { res = await translateUnits(flat, stylePrompt, (d, t) => step(`번역 중… (${d}/${t})`)); }
+    catch (e: any) { setStatus('번역 실패: ' + ((e && e.message) || '')); return null; }
+    ref.forEach(([li, si], k) => { if (res.blocks[k] !== flat[k]) slots[li].set(si, res.blocks[k]); });
+    let changedLogs = 0;
+    for (let i = 0; i < logs.length; i++) {
+      const r = logs[i];
+      try {
+        const nh = rerenderLog(r);
+        if (nh !== r.html) {
+          // ★비파괴: 번역 전 원문을 레코드 필드로 영속 스냅샷(구조화 텍스트만; html은 토글 때 rerenderLog로 재생성 → 용량·1MB 회피).
+          if (!r.orig) { const b = backup[i]; r.orig = { input: b.input, chat: b.chat, diary: b.diary, webnovel: b.webnovel, cardCfg: b.cardCfg, userCardCss: b.userCardCss }; }
+          r.html = nh; await logsAdd(r); changedLogs++;
+        }
+      } catch (_) {}
+    }
+    await reloadLogs();
+    let msg = `번역 완료 — ${res.translated}개 번역` + (res.skipped ? ` · 한국어 ${res.skipped}개 건너뜀` : '') + (roleSkipped ? ` · 역할제외 ${roleSkipped}개` : '');
+    if (res.failed.length) msg += ` · 실패 ${res.failed.length}개(원문 유지)`;
+    if (changedLogs) msg += ` · ${changedLogs}개 화 갱신`;
+    setStatus(msg);
+    if (res.failed.length) console.warn('[번역 실패]', res.failed);
+    const restore = async () => { for (const b of backup) { Object.assign(b.r, { input: b.input, html: b.html, chat: b.chat, diary: b.diary, webnovel: b.webnovel, cardCfg: b.cardCfg }); try { await logsAdd(b.r); } catch (_) {} } await reloadLogs(); };
+    return { changedLogs, translated: res.translated, skipped: res.skipped, roleSkipped, failed: res.failed, restore };
+  }
+  // 여러 로그 정리(1차 결정론 + 선택 2차 cleanFn). 원문 백업 restore() 반환.
+  async function runCleanFlow(logs: any[], char: string, opts: { onStep?: (m: string) => void; cleanFn?: any } = {}): Promise<any | null> {
+    const slots = logs.map((r) => logTextSlots(r));
+    const flat: string[] = []; const ref: [number, number][] = [];
+    slots.forEach((sl, li) => sl.texts.forEach((tx, si) => { ref.push([li, si]); flat.push(tx); }));
+    if (!flat.length) { setStatus('정리할 내용이 없습니다.'); return null; }
+    const step = opts.onStep || ((m: string) => setStatus(m));
+    const backup = logs.map((r) => ({ r, input: r.input, html: r.html, chat: clonej(r.chat), diary: clonej(r.diary), webnovel: clonej(r.webnovel), cardCfg: clonej(r.cardCfg) }));
+    let res: any;
+    try { res = await cleanUnits(flat, (d, t) => step(`정리 중… (${d}/${t})`), opts.cleanFn); }
+    catch (e: any) { setStatus('정리 실패: ' + ((e && e.message) || '')); return null; }
+    ref.forEach(([li, si], k) => { if (res.blocks[k] !== flat[k]) slots[li].set(si, res.blocks[k]); });
+    let changedLogs = 0;
+    for (const r of logs) { try { const nh = rerenderLog(r); if (nh !== r.html) { r.html = nh; await logsAdd(r); changedLogs++; } } catch (_) {} }
+    await reloadLogs();
+    let msg = `정리 완료 — ${res.cleaned}개 정리`;
+    if (res.failed.length) msg += ` · 실패 ${res.failed.length}개(원문 유지)`;
+    if (changedLogs) msg += ` · ${changedLogs}개 화 갱신`;
+    setStatus(msg);
+    if (res.failed.length) console.warn('[정리 실패]', res.failed);
+    const restore = async () => { for (const b of backup) { Object.assign(b.r, { input: b.input, html: b.html, chat: b.chat, diary: b.diary, webnovel: b.webnovel, cardCfg: b.cardCfg }); try { await logsAdd(b.r); } catch (_) {} } await reloadLogs(); };
+    return { changedLogs, cleaned: res.cleaned, failed: res.failed, restore };
+  }
+
+  // 공유 팝오버(단일 화): 공개 읽기전용 링크 만들기/복사/해제. 로그인 필요.
+  function toggleSharePop(reader: HTMLElement, r: any, btn: HTMLElement) {
+    const exist = reader.querySelector('.share-pop') as HTMLElement | null;
+    if (exist) { exist.remove(); return; }
+    const pop = document.createElement('div'); pop.className = 'reader-settings share-pop'; reader.appendChild(pop);
+    popAutoClose(pop, btn);
+    const draw = () => {
+      pop.innerHTML = '';
+      pop.appendChild(mk('div', 'share-title', '공개 읽기전용 링크'));
+      const av = shareAvailability();
+      if (!av.ok) { pop.appendChild(mk('div', 'share-note', shareGateMessage(av.reason))); return; }
+      if (r.shareId) {
+        pop.appendChild(mk('div', 'share-note', '이 링크를 받은 사람은 로그인 없이 이 화를 볼 수 있습니다 (이미지 포함). 이미지는 공유용으로 축소된 화질입니다.'));
+        const row = document.createElement('div'); row.className = 'share-link-row';
+        const input = document.createElement('input'); input.type = 'text'; input.readOnly = true; input.className = 'share-link';
+        loadShare().then((S) => { input.value = S.shareUrl(r.shareId); });
+        input.onclick = () => input.select();
+        const copyB = mk('button', 'primary', '링크 복사') as HTMLButtonElement;
+        copyB.onclick = async () => { try { await navigator.clipboard.writeText(input.value); copyB.textContent = '복사됨!'; } catch (_) { input.select(); copyB.textContent = 'Ctrl+C'; } setTimeout(() => { copyB.textContent = '링크 복사'; }, 1400); };
+        row.append(input, copyB); pop.appendChild(row);
+        const acts = document.createElement('div'); acts.className = 'share-actions';
+        const refreshB = mk('button', '', '내용 갱신') as HTMLButtonElement; refreshB.title = '편집 후 최신 내용으로 링크 갱신';
+        refreshB.onclick = async () => { refreshB.disabled = true; refreshB.textContent = '갱신 중…'; try { const S = await loadShare(); await S.createShare(r, r.shareId); setStatus('링크 내용을 갱신했습니다.'); } catch (e: any) { setStatus('갱신 실패: ' + ((e && e.message) || '')); } refreshB.disabled = false; refreshB.textContent = '내용 갱신'; };
+        const unshareB = mk('button', 'series-del', '공유 해제') as HTMLButtonElement;
+        unshareB.onclick = async () => { unshareB.disabled = true; try { const S = await loadShare(); await S.deleteShare(r.shareId); delete r.shareId; await logsAdd(r); btn.innerHTML = icon('link') + ' 공유'; setStatus('공유를 해제했습니다.'); draw(); } catch (e: any) { setStatus('해제 실패: ' + ((e && e.message) || '')); unshareB.disabled = false; } };
+        acts.append(refreshB, unshareB); pop.appendChild(acts);
+      } else {
+        pop.appendChild(mk('div', 'share-note', '이 화를 누구나 볼 수 있는 링크로 공개합니다 (이미지 포함, 읽기전용). 공유 링크는 용량 한도 때문에 이미지가 자동 축소돼요 — 원본 화질은 서재에 그대로 남습니다.'));
+        const makeB = mk('button', 'primary share-make') as HTMLButtonElement; makeB.innerHTML = icon('link') + ' 공개 링크 만들기';
+        makeB.onclick = async () => {
+          makeB.disabled = true; makeB.textContent = '만드는 중…';
+          try {
+            const S = await loadShare();
+            const id = await S.createShare(r);
+            r.shareId = id; await logsAdd(r); btn.innerHTML = icon('link') + ' 공유됨';
+            try { await navigator.clipboard.writeText(S.shareUrl(id)); setStatus('공개 링크를 클립보드에 복사했습니다.'); } catch (_) { setStatus('공개 링크가 만들어졌습니다.'); }
+            draw();
+          } catch (e: any) { setStatus('링크 생성 실패: ' + ((e && e.message) || '')); makeB.disabled = false; makeB.innerHTML = icon('link') + ' 공개 링크 만들기'; }
+        };
+        pop.appendChild(makeB);
+      }
+    };
+    draw();
+  }
+
+  // 단일 화 열람(그 로그만). char·epId로 allLogs에서 찾아 렌더. prev/next·복사·공유·편집기로·번역·정리·삭제·몰입.
+  function renderSingleLog(char: string, epId: string) {
+    const app = document.getElementById('app')!;
+    const all = getAllLogs();
+    const eps = sortEps(all.filter((r: any) => r.char === char));
+    const idx = eps.findIndex((r: any) => r.id === epId);
+    if (idx < 0) {
+      // ★데이터 미로드(빈 allLogs)면 파괴적으로 작품 페이지로 튕기지 말 것 — 로딩 표시 후 다음 route()에서 재렌더.
+      //   (로그 로드/클라우드 동기화가 끝나면 reader가 route()를 다시 부른다. 직접 진입·새로고침도 안전.)
+      if (!all.length) {
+        app.innerHTML = '';
+        const reader = document.createElement('div'); reader.className = 'reader'; reader.dataset.theme = rdCfg().theme;
+        const scroll = mk('div', 'reader-scroll'); const col = mk('div', 'reader-col');
+        col.appendChild(mk('div', 'reader-card', '불러오는 중…')); scroll.appendChild(col); reader.appendChild(scroll); app.appendChild(reader);
+        return;
+      }
+      location.hash = '#/series/' + encodeURIComponent(char); return;   // 로드됐는데 없음 = 진짜 없는 화 → 작품 페이지
+    }
+    const r = eps[idx];
+    const rcfg = rdCfg();
+    const wn = isWebnovel(r);
+    const rd = loadRead(); rd.readIds[r.id] = true; rd.lastByChar[char] = r.id; rd.lastReadAt = rd.lastReadAt || {}; rd.lastReadAt[char] = Date.now(); saveRead(rd);
+    app.innerHTML = '';
+    const wnTh = (r.webnovel && r.webnovel.theme) || rcfg.wnTheme;
+    const reader = document.createElement('div'); reader.className = 'reader' + (wn ? ' wn' : ''); reader.dataset.theme = wn ? wnTh : rcfg.theme;
+    const bar = document.createElement('div'); bar.className = 'reader-bar';
+    const back = document.createElement('button'); back.className = 'reader-back'; back.textContent = '← 작품'; back.onclick = () => { location.href = 'library.html#/series/' + encodeURIComponent(char); };
+    const rtitle = document.createElement('div'); rtitle.className = 'reader-title'; rtitle.textContent = `${idx + 1}화 · ${r.title || ctx.nameOf(char)}`;
+    const prevB = document.createElement('button'); prevB.className = 'reader-iconbtn'; prevB.textContent = '‹ 이전화'; prevB.disabled = idx === 0;
+    prevB.onclick = () => { location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(eps[idx - 1].id); };
+    const nextB = document.createElement('button'); nextB.className = 'reader-iconbtn'; nextB.textContent = '다음화 ›'; nextB.disabled = idx === eps.length - 1;
+    nextB.onclick = () => { location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(eps[idx + 1].id); };
+    const setBtn = document.createElement('button'); setBtn.className = 'reader-iconbtn'; setBtn.innerHTML = icon('sliders') + ' 보기';
+    const cp = document.createElement('button'); cp.className = 'reader-iconbtn'; cp.innerHTML = icon('copy') + ' 복사'; cp.title = '리치 복사 — 아카 에디터에 붙여넣으면 이미지까지 올라감';
+    cp.onclick = async () => { const o = cp.textContent; cp.textContent = '변환중…'; try { await richCopy(r.html, r.input || ''); cp.textContent = '복사됨!'; } catch (err: any) { cp.textContent = '실패'; setStatus('복사 오류: ' + ((err && err.message) || '')); } setTimeout(() => { cp.textContent = o; }, 1400); };
+    const shareB = document.createElement('button'); shareB.className = 'reader-iconbtn'; shareB.innerHTML = icon('link') + (r.shareId ? ' 공유됨' : ' 공유'); shareB.title = '공개 읽기전용 링크 — 받은 사람이 로그인 없이 이 화를 봄';
+    shareB.onclick = () => toggleSharePop(reader, r, shareB);
+    const editLog = document.createElement('button'); editLog.className = 'reader-iconbtn'; editLog.innerHTML = icon('pencil') + ' 편집기로'; editLog.title = '이 로그를 편집기에서 수정';
+    editLog.onclick = () => { location.href = 'index.html?log=' + encodeURIComponent(r.id); };
+    // 번역(비파괴): 원문 스냅샷(r.orig)이 있으면 "원문↔번역" 영속 토글 + 다시번역·번역지우기. 없으면 첫 번역 버튼.
+    const hasOrig = !!(r && r.orig);
+    let trB: HTMLButtonElement | null = null; let trClearB: HTMLButtonElement | null = null; let segWrap: HTMLElement | null = null;
+    if (hasOrig) {
+      segWrap = document.createElement('div'); segWrap.className = 'reader-seg';
+      const tBtn = document.createElement('button'); tBtn.className = 'reader-iconbtn' + (origView[r.id] ? '' : ' on'); tBtn.textContent = '번역';
+      const oBtn = document.createElement('button'); oBtn.className = 'reader-iconbtn' + (origView[r.id] ? ' on' : ''); oBtn.textContent = '원문';
+      tBtn.title = '번역본 보기'; oBtn.title = '원문 보기 (저장된 원문 — 재번역·API 0, 유실 0)';
+      tBtn.onclick = () => { if (origView[r.id]) { origView[r.id] = false; route(); } };
+      oBtn.onclick = () => { if (!origView[r.id]) { origView[r.id] = true; route(); } };
+      segWrap.append(tBtn, oBtn);
+      if (translateAvailable()) {
+        trB = document.createElement('button'); trB.className = 'reader-iconbtn'; trB.innerHTML = icon('language') + ' 다시 번역';
+        trB.title = '원문에서 다시 번역해 번역본을 갱신합니다 (원문은 보존).';
+        trB.onclick = async () => {
+          if (!(await ensureTranslateReady(setStatus))) return;
+          const o = trB!.innerHTML; trB!.disabled = true; trB!.textContent = '번역 중…';
+          applyOrig(r);   // 원문에서 다시 시작(r.orig는 보존됨 → 번역이 다시 덮어씀)
+          await runTranslateFlow([r], char, {});
+          origView[r.id] = false;
+          trB!.disabled = false; trB!.innerHTML = o;
+          location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route();
+        };
+      }
+      trClearB = document.createElement('button'); trClearB.className = 'reader-iconbtn'; trClearB.innerHTML = icon('undo') + ' 번역 지우기';
+      trClearB.title = '번역을 버리고 원문만 남깁니다 (언제든 다시 번역 가능).';
+      trClearB.onclick = async () => {
+        if (!(await confirmModal('번역을 지우고 원문만 남길까요? (언제든 다시 번역할 수 있어요)', { okText: '번역 지우기' }))) return;
+        applyOrig(r); r.html = rerenderLog(r); delete r.orig; delete origView[r.id];
+        try { await logsAdd(r); } catch (_) {}
+        await reloadLogs();
+        location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route(); setStatus('번역을 지우고 원문만 남겼어요.');
+      };
+    } else if (translateAvailable()) {
+      trB = document.createElement('button'); trB.className = 'reader-iconbtn'; trB.innerHTML = icon('language') + ' 번역';
+      trB.title = '이 화를 한국어로 번역(현재 작품 프롬프트·모델). 원문은 보존돼 언제든 “원문↔번역” 토글이 가능. 이미 한국어인 부분은 건너뜀.';
+      trB.onclick = async () => {
+        if (!(await ensureTranslateReady(setStatus))) return;
+        const o = trB!.innerHTML; trB!.disabled = true; trB!.textContent = '번역 중…';
+        await runTranslateFlow([r], char, {});
+        origView[r.id] = false;   // 번역 후 기본=번역 보기(원문 토글로 전환 가능)
+        trB!.disabled = false; trB!.innerHTML = o;
+        location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route();
+      };
+    }
+    const clB = document.createElement('button'); clB.className = 'reader-iconbtn'; clB.innerHTML = icon('broom') + ' 정리';
+    clB.title = '이 화의 군더더기(응답 헤더·생각의 사슬·OOC·화자 라벨 등)를 걷어내 본문만 남깁니다. 이미지·대사는 보존.';
+    clB.onclick = async () => {
+      const o = clB.innerHTML; clB.disabled = true; clB.textContent = '정리 중…';
+      const res = await runCleanFlow([r], char, {});
+      if (res) cleanRestores[r.id] = res.restore;
+      clB.disabled = false; clB.innerHTML = o;
+      location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route();
+    };
+    let clUndoB: HTMLButtonElement | null = null;
+    if (cleanRestores[r.id]) {
+      clUndoB = document.createElement('button'); clUndoB.className = 'reader-iconbtn'; clUndoB.innerHTML = icon('undo') + ' 정리 취소';
+      clUndoB.title = '이 화를 정리 전 원문으로 되돌립니다';
+      clUndoB.onclick = async () => { const f = cleanRestores[r.id]; delete cleanRestores[r.id]; if (f) await f(); location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route(); setStatus('정리 전 원문으로 되돌렸습니다.'); };
+    }
+    const delB = document.createElement('button'); delB.className = 'reader-iconbtn'; delB.innerHTML = icon('trash') + ' 삭제';
+    delB.title = '이 화를 서재에서 삭제합니다 (되돌릴 수 없음)';
+    delB.onclick = async () => {
+      if (!(await confirmModal(`이 화(${idx + 1}화${r.title ? ' · ' + r.title : ''})를 삭제할까요? 되돌릴 수 없습니다.`, { okText: '삭제', danger: true }))) return;
+      await logsDelete(r.id);
+      const rd2 = loadRead(); delete rd2.readIds[r.id]; if (rd2.lastByChar && rd2.lastByChar[char] === r.id) delete rd2.lastByChar[char]; saveRead(rd2);
+      await reloadLogs();
+      const remain = getAllLogs().filter((x: any) => x.char === char).length;
+      setStatus('화를 삭제했습니다.');
+      if (remain) location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent((sortEps(getAllLogs().filter((x: any) => x.char === char))[0] || {}).id || '');
+      else location.href = 'library.html#/';
+    };
+    const helpB = document.createElement('button'); helpB.className = 'reader-iconbtn'; helpB.innerHTML = icon('help') + ' 도움말'; helpB.title = '사용설명서'; helpB.onclick = () => { location.href = 'help.html#reader'; };
+    const actions = document.createElement('div'); actions.className = 'reader-actions';
+    actions.append(cp, shareB, editLog, clB, ...(clUndoB ? [clUndoB] : []), ...(trB ? [trB] : []), ...(trClearB ? [trClearB] : []), delB, helpB, setBtn);
+    const moreB = document.createElement('button'); moreB.className = 'reader-iconbtn reader-more';
+    moreB.innerHTML = icon('dots') + ' 더보기'; moreB.title = '더보기';
+    moreB.onclick = (e) => { e.stopPropagation(); actions.classList.toggle('open'); };
+    actions.addEventListener('click', (e) => { if ((e.target as HTMLElement).closest('button')) actions.classList.remove('open'); });
+    // ── 관리실 정리 규칙 비파괴 적용 + "정리/원본" 토글 (이 화를 실제로 바꾸는 규칙이 있을 때만 노출, 기본=정리됨) ──
+    const showOrig = !!(hasOrig && origView[r.id]);
+    const baseRec = showOrig ? origRecord(r) : r;
+    const baseHtml = showOrig ? rerenderLog(origRecord(r)) : r.html;
+    let displayHtml = baseHtml; let cleanSeg: HTMLElement | null = null;
+    const cRules = cleanupRules();
+    if (cRules.length && cleanupChanges(baseRec, cRules)) {
+      const on = cleanView[r.id] !== false;
+      displayHtml = on ? renderCleaned(baseRec, cRules) : baseHtml;
+      cleanSeg = document.createElement('div'); cleanSeg.className = 'reader-seg';
+      const cOn = document.createElement('button'); cOn.className = 'reader-iconbtn' + (on ? ' on' : ''); cOn.textContent = '정리';
+      const cOff = document.createElement('button'); cOff.className = 'reader-iconbtn' + (on ? '' : ' on'); cOff.textContent = '원본';
+      cOn.title = '등록된 규칙으로 군더더기 숨김(비파괴 — 원본 로그·복사물 불변)'; cOff.title = '숨김 없이 원본 그대로';
+      cOn.onclick = () => { if (cleanView[r.id] === false) { cleanView[r.id] = true; route(); } };
+      cOff.onclick = () => { if (cleanView[r.id] !== false) { cleanView[r.id] = false; route(); } };
+      cleanSeg.append(cOn, cOff);
+    }
+    bar.append(back, rtitle, ...(segWrap ? [segWrap] : []), ...(cleanSeg ? [cleanSeg] : []), prevB, nextB, actions, moreB); reader.appendChild(bar);
+
+    // 몰입 탭 토글·초기 상태·스크롤 리셋은 공용 mountReaderBody가 처리(일반·공유 리더 동일). 더보기 메뉴 닫힘도 거기서.
+    // displayHtml = 원문/번역 토글(origView) + 정리/원본 토글(cleanView) 비파괴 합성(위에서 계산). ★저장은 안 바뀜.
+    mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route);
+  }
+
+  return { renderSingleLog, runTranslateFlow, runCleanFlow, cleanRestores };
+}

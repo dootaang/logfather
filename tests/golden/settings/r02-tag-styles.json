@@ -1,0 +1,95 @@
+{
+  "box": {
+    "showInnerBox": false,
+    "outerBoxColor": "#ffffff",
+    "innerBoxColor": "#f8f9fa",
+    "shadowIntensity": 8,
+    "useBoxBorder": false,
+    "boxBorderColor": "#e2e8f0",
+    "boxBorderThickness": 2
+  },
+  "profile": {
+    "showProfile": true,
+    "showProfileImage": true,
+    "showBotName": true,
+    "showTags": true,
+    "showDivider": true,
+    "botName": "",
+    "botNameColor": "#4a4a4a",
+    "frameStyle": "배너",
+    "width": 80,
+    "height": 80,
+    "imageUrl": "",
+    "showProfileBorder": true,
+    "profileBorderColor": "#e2e8f0",
+    "showProfileShadow": true
+  },
+  "divider": {
+    "style": "그라데이션",
+    "thickness": 1,
+    "outerColor": "#e2e8f0",
+    "innerColor": "#ffffff",
+    "solidColor": null
+  },
+  "text": {
+    "useTextIndent": true,
+    "textIndent": 20,
+    "useTextSize": true,
+    "textSize": 14,
+    "dialogColor": "#2d3748",
+    "dialogBold": true,
+    "dialogNewline": true,
+    "innerThoughtsColor": null,
+    "innerThoughtsBold": false,
+    "narrationColor": "#4a5568",
+    "usePadding": true,
+    "removeAsterisk": true,
+    "convertEllipsis": true
+  },
+  "tags": [
+    {
+      "text": "하나",
+      "color": "#edf2f7",
+      "textColor": "#2d3748",
+      "style": "기본",
+      "borderRadius": 20,
+      "fontSize": 0.85,
+      "padding": {
+        "top": 0.2,
+        "right": 0.8,
+        "bottom": 0.2,
+        "left": 0.8
+      }
+    },
+    {
+      "text": "둘",
+      "color": "#e2e8f0",
+      "textColor": "#2d3748",
+      "style": "투명 배경",
+      "borderRadius": 20,
+      "fontSize": 0.85,
+      "padding": {
+        "top": 0.2,
+        "right": 0.8,
+        "bottom": 0.2,
+        "left": 0.8
+      }
+    },
+    {
+      "text": "셋",
+      "color": "#cbd5e0",
+      "textColor": "#2d3748",
+      "style": "그라데이션",
+      "borderRadius": 20,
+      "fontSize": 0.85,
+      "padding": {
+        "top": 0.2,
+        "right": 0.8,
+        "bottom": 0.2,
+        "left": 0.8
+      }
+    }
+  ],
+  "darkMode": true,
+  "cardTextColor": "#FFFFFF"
+}

@@ -1,0 +1,17 @@
+{
+  "text": {
+    "useTextIndent": true,
+    "textIndent": 20,
+    "useTextSize": true,
+    "textSize": 14,
+    "dialogColor": "#2d3748",
+    "dialogBold": true,
+    "dialogNewline": true,
+    "innerThoughtsColor": null,
+    "innerThoughtsBold": false,
+    "narrationColor": "#4a5568",
+    "usePadding": true,
+    "removeAsterisk": false,
+    "convertEllipsis": true
+  }
+}

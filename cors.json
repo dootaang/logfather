@@ -1,0 +1,27 @@
+[
+  {
+    "origin": [
+      "https://logpapa.web.app",
+      "https://logpapa.firebaseapp.com",
+      "app://logpapa",
+      "http://localhost:8123",
+      "http://localhost:5000",
+      "http://127.0.0.1:8123"
+    ],
+    "method": ["GET", "HEAD", "PUT", "POST", "DELETE"],
+    "responseHeader": [
+      "Content-Type",
+      "Content-Length",
+      "Content-Range",
+      "Content-Disposition",
+      "Authorization",
+      "Accept",
+      "Origin",
+      "Range",
+      "X-Requested-With",
+      "x-goog-resumable",
+      "x-goog-meta-*"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]

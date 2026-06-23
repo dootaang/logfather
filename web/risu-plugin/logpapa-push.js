@@ -1,0 +1,274 @@
+//@api 3.0
+//@name LogPapaPush
+//@display-name 로그파파로 보내기
+//@version 1.4.2
+//@description 현재 채팅 세션을 번역 캐시 적용본으로 로그파파 서재에 바로 보냅니다(파일 export 없이).
+//@arg connectKey string
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 dootaang — LogPapa. Licensed under GNU GPL v3 (see LICENSE).
+//
+// 쓰는 법: 1) 로그파파 앱 → 설정 → "리스 연결"에서 연결 키 복사(또는 리스 플러그인 설정의 connectKey에 입력)
+//          2) 한 번만 붙여넣으면 기기에 영속 저장 — 이후엔 버튼만
+//          3) "이 세션 보내기" → 로그파파 서재(받은 로그함)에 번역본으로 들어감(로그인한 그 계정)
+// 보안: 연결 키는 "넣기"만 가능(다른 데이터 접근 불가). 비밀번호는 절대 안 받습니다.
+//       아래 apiKey/projectId는 비밀이 아닌 공개 web config(보안은 Firestore 규칙).
+
+(async () => {
+  const risu = typeof risuai !== 'undefined' ? risuai : (typeof Risuai !== 'undefined' ? Risuai : null);
+  if (!risu) throw new Error('리스 v3 API 객체를 찾을 수 없습니다.');
+
+  // ── 로그파파 클라우드(공개 web config) ─────────────────────────────
+  const PROJECT = 'logpapa';
+  const API_KEY = 'AIzaSyDUR9_DGQTqdkZVfGzbQzEYO0qACR5vsfo';
+  const INBOX_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents/inbox?key=${API_KEY}`;
+  const ARG_NAME = 'connectKey';   // //@arg 이름 — RisuAI 플러그인 인자에 영속(getArgument/setArgument). localStorage 의존 제거.
+
+  // ── 인라인 라인 아이콘(Tabler·24·stroke·currentColor) = 우리 아이콘 패밀리. 플러그인은 icons.ts를 import 못 해 직접 둠. ──
+  const IC = {
+    flame: '<path d="M12 12c2 -2.96 0 -7 -1 -8c0 3.038 -1.773 4.741 -3 6c-1.226 1.26 -2 3.24 -2 5a6 6 0 1 0 12 0c0 -1.532 -1.056 -3.94 -2 -5c-1.786 3 -2.791 3 -4 2z"/>',
+    x: '<path d="M18 6l-12 12"/><path d="M6 6l12 12"/>',
+    send: '<path d="M10 14l11 -11"/><path d="M21 3l-6.5 18a.55 .55 0 0 1 -1 0l-3.5 -7l-7 -3.5a.55 .55 0 0 1 0 -1l18 -6.5"/>',
+    check: '<path d="M5 12l5 5l10 -10"/>',
+    alert: '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.24 3.957l-8.422 14.06a1.989 1.989 0 0 0 1.7 2.983h16.845a1.989 1.989 0 0 0 1.7 -2.983l-8.423 -14.06a1.989 1.989 0 0 0 -3.4 0z"/>',
+    loader: '<path d="M12 3a9 9 0 1 0 9 9"/>',
+  };
+  const ic = (n, cls) => `<svg class="ic${cls ? ' ' + cls : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n] || ''}</svg>`;
+
+  // ── 연결 키 영속 저장 = RisuAI 플러그인 인자(//@arg connectKey). getArgument/setArgument로 기기에 영속.
+  //   ★localStorage 의존 제거 — 리스 공식 저장이라 세션·재시작을 넘어 유지(한 기기당 한 번 붙여넣으면 끝).
+  //   RisuAI "플러그인 설정"에서 직접 입력해도 되고(같은 인자), 아래 입력칸은 그 인자를 읽고/쓴다.
+  async function loadKey() { try { return (await risu.getArgument(ARG_NAME)) || ''; } catch (_) { return ''; } }
+  async function saveKey(v) { try { await risu.setArgument(ARG_NAME, (v || '').trim()); } catch (_) {} }
+  // 연결 키 = "uid:secret" → 첫 ':' 기준 분리(uid·secret엔 ':' 없음).
+  function splitKey(raw) {
+    const s = String(raw || '').trim();
+    const i = s.indexOf(':');
+    if (i <= 0 || i >= s.length - 1) return null;
+    return { uid: s.slice(0, i), secret: s.slice(i + 1) };
+  }
+
+  // ── 현재 챗 읽기 + 번역 캐시 적용 ──────────────────────────────────
+  async function getCurrentChat() {
+    const char = await risu.getCharacter();
+    if (!char) throw new Error('현재 캐릭터를 찾을 수 없습니다.');
+    const page = char.chatPage || 0;
+    const chat = char.chats?.[page];
+    if (!chat) throw new Error('현재 챗을 찾을 수 없습니다.');
+    if (chat._placeholder) throw new Error('챗 데이터가 로드되지 않았습니다. 챗을 한 번 열어주세요.');
+    return { char, chat };
+  }
+  // 번역 캐시 조회 = ★메시지별 부분검색 매칭. 리스 LLM 번역 캐시 키 = "렌더된 메시지 HTML 통째"라
+  //   원문/문단 정확조회(getTranslationCache)는 단위·형식이 어긋나 100% 미스 → searchTranslationCache로
+  //   평문 스니펫을 부분검색해 이 메시지에 맞는 키를 고르고 그 value(번역 HTML)를 평문으로 정리해 담는다.
+  //   매칭 실패(수정·리롤·정리규칙 변경 등)는 원문 유지(유실 0). LLM 번역기 캐시만 잡힘(구글/DeepL은 in-memory라 못 읽음).
+  function stripHtml(h) {
+    return String(h == null ? '' : h).replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;/gi, ' ').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#0?39;|&apos;/gi, "'").replace(/&amp;/gi, '&')
+      .replace(/\s+/g, ' ').trim();
+  }
+  // 메시지를 "렌더돼도 그대로 남을 평문 조각"으로 쪼갬: 태그·CBS·에셋마커·따옴표·별표·마크다운 기호를 경계로.
+  //   이 조각들은 렌더된 HTML(캐시 키) 안에 그대로 들어있어 부분검색·매칭에 쓰인다.
+  function plainRuns(s) {
+    const t = String(s == null ? '' : s)
+      .replace(/<[^>]*>/g, '\n').replace(/\{\{[^}]*\}\}/g, '\n').replace(/\[[^\]\n|]*\|[^\]\n]*\]/g, '\n');
+    return t.split(/[\n*_~`#>\[\]()"'“”‘’「」『』\r]+/).map((r) => r.replace(/\s+/g, ' ').trim()).filter((r) => r.length >= 4);
+  }
+  // 번역 HTML(value) → 우리 메시지 형식(평문)으로 정리: 블록태그·br=줄바꿈, 나머지 태그 제거, 엔티티 복원.
+  function cleanTranslatedHtml(h) {
+    const t = String(h == null ? '' : h)
+      .replace(/<\s*br\s*\/?>/gi, '\n').replace(/<\/(p|div|h[1-6]|li|blockquote|tr)>/gi, '\n').replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#0?39;|&apos;/gi, "'").replace(/&amp;/gi, '&');
+    return t.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  const _searchMemo = new Map();   // 스니펫→검색결과 재사용(중복/동일 메시지 호출 절감)
+  async function searchCache(snip) {
+    if (_searchMemo.has(snip)) return _searchMemo.get(snip);
+    let r = null;
+    try { if (typeof risu.searchTranslationCache === 'function') r = await risu.searchTranslationCache(snip); } catch (_) { r = null; }
+    if (!Array.isArray(r)) r = [];
+    _searchMemo.set(snip, r);
+    return r;
+  }
+  // 원문 1메시지 → 번역본(캐시 매칭). 실패 시 원문 유지(유실 0).
+  async function translateViaCache(text) {
+    const original = String(text == null ? '' : text);
+    const runs = plainRuns(original);
+    if (!runs.length) return { text: original, hit: false };
+    const snip = runs.slice().sort((a, b) => b.length - a.length)[0];   // 가장 길고 고유한 평문 조각으로 검색(오매칭 최소)
+    if (snip.length < 6) return { text: original, hit: false };
+    const results = await searchCache(snip);
+    if (!results.length) return { text: original, hit: false };
+    // 후보 키 중 "이 메시지 평문을 가장 많이 담은 것" 선택 → 스니펫이 여러 메시지에 걸려도 통짜가 든 키가 최고점.
+    let best = null, bestScore = -1;
+    for (const r of results) {
+      if (!r || typeof r.key !== 'string' || typeof r.value !== 'string') continue;
+      const keyPlain = stripHtml(r.key);
+      let score = 0; for (const run of runs) if (keyPlain.indexOf(run) >= 0) score += run.length;
+      if (score > bestScore) { bestScore = score; best = r; }
+    }
+    if (!best || bestScore < snip.length) return { text: original, hit: false };   // 스니펫조차 안 든 키 = 오매칭 → 폴백
+    const cleaned = cleanTranslatedHtml(best.value);
+    return cleaned ? { text: cleaned, hit: true } : { text: original, hit: false };
+  }
+  async function buildMessages(onProgress) {
+    const { char, chat } = await getCurrentChat();
+    const raw = Array.isArray(chat.message) ? chat.message : [];
+    const messages = []; let hit = 0, miss = 0;
+    for (let i = 0; i < raw.length; i++) {
+      onProgress?.(i + 1, raw.length);
+      const m = raw[i];
+      if (!m || typeof m.data !== 'string') continue;
+      // 활성(표시중) swipe 우선 — 나머지 swipe는 제외.
+      const hasSwipes = Array.isArray(m.swipes) && m.swipes.length > 0;
+      const sid = hasSwipes ? (m.swipeId ?? 0) : -1;
+      const original = (sid >= 0 && m.swipes[sid] !== undefined) ? m.swipes[sid] : m.data;
+      const tr = await translateViaCache(original);   // ★캐시 부분검색 매칭(원문/문단 정확조회는 키가 어긋나 미스)
+      const text = tr.text;
+      if (tr.hit) hit++; else miss++;
+      if (!String(text).trim()) continue;
+      messages.push({ role: m.role === 'user' ? 'user' : 'char', text: String(text) });
+    }
+    return { charName: String(char.name || '리스 로그').slice(0, 300), messages, hit, miss };   // 규칙: char ≤300자
+  }
+
+  // ── Firestore REST(타입 지정 본문)로 inbox에 create ───────────────
+  function msgArray(messages) {
+    return { arrayValue: { values: messages.map((m) => ({ mapValue: { fields: {
+      role: { stringValue: m.role }, text: { stringValue: m.text },
+    } } })) } };
+  }
+  async function postInbox(uid, secret, charName, messages, translated) {
+    const body = { fields: {
+      uid: { stringValue: uid },
+      key: { stringValue: secret },
+      char: { stringValue: charName },
+      translated: { booleanValue: !!translated },
+      source: { stringValue: 'risu' },
+      createdAt: { integerValue: String(Date.now()) },
+      messages: msgArray(messages),
+    } };
+    const fetchFn = (typeof risu.nativeFetch === 'function') ? risu.nativeFetch : fetch;   // CORS 우회(데스크탑/탑) 위해 nativeFetch 우선
+    let res;
+    try { res = await fetchFn(INBOX_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
+    catch (e) { throw new Error('네트워크 오류: ' + ((e && e.message) || e)); }
+    // 응답을 표준 fetch / RisuAI nativeFetch 양쪽 모양에서 관대하게 해석.
+    const status = (res && (typeof res.status === 'number' ? res.status : (res.ok ? 200 : 0))) || 0;
+    let raw = '';
+    try { raw = (typeof res.text === 'function') ? await res.text() : (typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? res.body ?? '')); } catch (_) {}
+    let json = {}; try { json = JSON.parse(raw); } catch (_) {}
+    const ok = status === 200 || status === 201 || !!(json && json.name);   // create 성공 = 문서 name 반환
+    if (!ok) {
+      const msg = (json && json.error && json.error.message) || raw || ('status ' + status);
+      throw new Error('전송 실패 (' + status + '): ' + String(msg).slice(0, 300));
+    }
+  }
+
+  function escapeHtml(t) { return String(t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+  const STYLES = `
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#1a1410; color:#ece2d2; display:flex; justify-content:center; padding:24px; min-height:100vh; }
+    .wrap { max-width:520px; width:100%; }
+    .ic { width:1.05em; height:1.05em; vertical-align:-.16em; }
+    .spin { animation:lp-spin .9s linear infinite; }
+    @keyframes lp-spin { to { transform:rotate(360deg); } }
+    .top-bar { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
+    h1 { font-size:17px; color:#fff; display:inline-flex; align-items:center; gap:7px; }
+    .section { background:#221c15; border:1px solid #342b20; border-radius:10px; padding:18px; margin-bottom:14px; }
+    .desc { font-size:13px; color:#b3a692; line-height:1.7; }
+    .section-title { font-size:12px; color:#897d6a; margin-bottom:10px; text-transform:uppercase; letter-spacing:.05em; }
+    input[type=text] { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #423626; background:#18140f; color:#ece2d2; font-size:13px; font-family:monospace; }
+    .btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:11px 20px; border-radius:8px; border:none; font-size:14px; font-weight:600; cursor:pointer; }
+    .btn:active { transform:scale(.98); }
+    .btn-primary { background:#d07440; color:#1a140e; width:100%; margin-top:10px; }
+    .btn-primary:hover { filter:brightness(1.08); }
+    .btn-primary:disabled { background:#3a2f22; color:#776; cursor:default; filter:none; }
+    .btn-danger { background:#2a1a14; color:#e07a5f; border:1px solid #5a2a1a; }
+    .hint { font-size:11px; color:#776; margin-top:8px; line-height:1.6; }
+    .status { display:flex; align-items:flex-start; gap:8px; padding:11px 14px; border-radius:8px; font-size:13px; margin-top:14px; line-height:1.6; }
+    .status .ic { flex:none; margin-top:.2em; }
+    .status:empty { display:none; }
+    .status.progress { background:#221c15; border:1px solid #423626; color:#c8bca6; }
+    .status.info { background:#2a2418; border:1px solid #4a3f2c; color:#d9c89a; }
+    .status.success { background:#16281a; border:1px solid #2a5a3a; color:#7fae80; }
+    .status.error { background:#2a1410; border:1px solid #5a2a1a; color:#e07a5f; }
+  `;
+
+  function renderUI() {
+    document.body.innerHTML = `
+      <style>${STYLES}</style>
+      <div class="wrap">
+        <div class="top-bar">
+          <h1>${ic('flame')} 로그파파로 보내기</h1>
+          <button class="btn btn-danger" id="closeBtn" style="width:auto;">${ic('x')} 닫기</button>
+        </div>
+        <div class="section">
+          <div class="section-title">연결 키</div>
+          <div id="keyConnected" class="desc" style="display:none;">${ic('check')} 연결됨 — 리스 플러그인 설정(connectKey)에서 바꿀 수 있어요. <a id="keyEdit" style="color:#d07440;cursor:pointer;text-decoration:underline;">키 바꾸기</a></div>
+          <div id="keyInputWrap">
+            <div class="desc" style="margin-bottom:10px;">로그파파 앱 → 설정 → <b>리스 연결</b>에서 키를 복사해 붙여넣으세요. 한 번만 하면 기억됩니다.</div>
+            <input type="text" id="keyInput" placeholder="uid:secret 형태의 연결 키" autocomplete="off" spellcheck="false" />
+            <div class="hint">이 키는 비밀번호가 아닙니다 — 채팅 세션을 "넣기"만 가능합니다.</div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">이 세션 보내기 (번역 캐시 적용)</div>
+          <div class="desc">지금 보고 있는 채팅 세션을 번역 캐시와 함께 로그파파 서재로 보냅니다(리스 <b>LLM 번역기</b>로 번역한 부분만 — 구글·DeepL은 캐시를 안 남겨요). 캐시 없는 메시지는 원문 유지.</div>
+          <button class="btn btn-primary" id="sendBtn">${ic('send')} 이 세션 보내기</button>
+        </div>
+        <div id="status" class="status" style="display:none;"></div>
+      </div>
+    `;
+    const statusEl = document.getElementById('status');
+    // ★회전 로더(spin)는 진행 단계(progress)에서만. 완료·안내(success/info)·에러는 정지 아이콘 →
+    //   캐시 0이라 info로 띄워도 스피너가 안 돈다(끝났는데 무한히 돌던 버그 수정). 캐시 0 구분은 .status 색·문구로만.
+    const setStatus = (type, msg) => {
+      const i = type === 'progress' ? ic('loader', 'spin') : type === 'success' ? ic('check') : type === 'error' ? ic('alert') : ic('check');
+      statusEl.className = `status ${type}`; statusEl.style.display = 'flex'; statusEl.innerHTML = i + '<span>' + msg + '</span>';
+    };
+    const keyInput = document.getElementById('keyInput');
+    const keyWrap = document.getElementById('keyInputWrap');
+    const keyDone = document.getElementById('keyConnected');
+    loadKey().then((k) => { keyInput.value = k; if (k) { keyWrap.style.display = 'none'; keyDone.style.display = 'block'; } });   // 키 있으면(리스 설정/이전 입력) 입력란 숨김 → "연결됨 ✓"
+    keyInput.addEventListener('change', () => { saveKey(keyInput.value); });
+    document.getElementById('keyEdit').addEventListener('click', () => { keyDone.style.display = 'none'; keyWrap.style.display = 'block'; keyInput.focus(); });
+
+    document.getElementById('closeBtn').addEventListener('click', async () => { await risu.hideContainer(); });
+
+    document.getElementById('sendBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('sendBtn');
+      saveKey(keyInput.value);   // 입력한 키 영속 저장(다음부터 자동 채움)
+      const parsed = splitKey(keyInput.value);
+      if (!parsed) { setStatus('error', '연결 키 형식이 올바르지 않아요. 로그파파 "리스 연결"에서 키를 다시 복사해 붙여넣으세요.'); return; }
+      btn.disabled = true;
+      setStatus('progress', '챗을 읽고 번역 캐시를 적용하는 중...');
+      try {
+        const { charName, messages, hit, miss } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`));
+        if (!messages.length) { setStatus('error', '보낼 메시지가 없습니다.'); btn.disabled = false; return; }
+        if (messages.length > 5000) { setStatus('error', '메시지가 너무 많습니다(5000개 초과). 챗을 나눠 보내주세요.'); btn.disabled = false; return; }
+        setStatus('progress', `로그파파로 보내는 중... (${messages.length}개)`);
+        await postInbox(parsed.uid, parsed.secret, charName, messages, hit > 0);
+        let okMsg = `보냈어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개, 캐시 ${hit} / 원문 ${miss})<br>로그파파 앱(서재)의 받은 로그함에서 보관하세요.`;
+        if (miss > 0) okMsg += `<br><br>${hit === 0 ? '번역이 안 따라왔어요 — ' : '일부는 원문이에요 — '}리스에서 <b>LLM 번역기</b>로 번역한 챗만 따라와요(구글·DeepL은 플러그인용 캐시를 안 남깁니다). 또는 GigaTrans로 번역한 챗은 번역기와 무관하게 그대로 들어와요.`;
+        setStatus(hit === 0 && miss > 0 ? 'info' : 'success', okMsg);
+      } catch (err) {
+        setStatus('error', escapeHtml((err && err.message) || String(err)));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
+  await risu.registerButton(
+    {
+      name: '로그파파로 보내기',
+      icon: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12c2 -2.96 0 -7 -1 -8c0 3.038 -1.773 4.741 -3 6c-1.226 1.26 -2 3.24 -2 5a6 6 0 1 0 12 0c0 -1.532 -1.056 -3.94 -2 -5c-1.786 3 -2.791 3 -4 2z"></path></svg>`,
+      iconType: 'html',
+      location: 'chat',
+    },
+    async () => { await risu.showContainer('fullscreen'); renderUI(); }
+  );
+
+  await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
+  console.info('[LogPapaPush] loaded v1.4.2');
+})();

@@ -1,0 +1,65 @@
+{
+  "name": "log-maker-pro2",
+  "version": "0.1.0",
+  "private": true,
+  "description": "로그 제조기 Pro 2 — core (Pro 1.2 패리티 우선)",
+  "author": "dootaang",
+  "license": "GPL-3.0-or-later",
+  "type": "commonjs",
+  "main": "electron/main.js",
+  "scripts": {
+    "demo": "node demo/build-demo.js",
+    "app": "npm run web:build && electron .",
+    "app:dev": "electron .",
+    "dist": "npm run web:build && electron-builder --win",
+    "dist:publish": "npm run web:build && electron-builder --win --publish always",
+    "web:build": "node -e \"require('fs').rmSync('web/dist',{recursive:true,force:true})\" && esbuild web/src/main.ts web/src/library.ts web/src/reader.ts web/src/management.ts web/src/help.ts --bundle --format=esm --splitting --outdir=web/dist",
+    "web:dev": "esbuild web/src/main.ts web/src/library.ts web/src/reader.ts web/src/management.ts web/src/help.ts --bundle --format=esm --splitting --outdir=web/dist --servedir=web --serve=8123 --watch",
+    "test:heavy": "node --max-old-space-size=4096 core/card/cardSet.test.js",
+    "test": "node core/color/qtColor.test.js && node core/color/palette.test.js && node core/convert/renderTags.test.js && node core/convert/formatConversation.test.js && node core/convert/smartInnerThoughts.test.js && node core/convert/inlineHtml.test.js && node core/convert/bakeImages.test.js && node core/translate/translateLog.test.js && node core/translate/providers.test.js && node core/convert/fullCard.test.js && node core/convert/processImageTags.test.js && node core/convert/cardRegex.test.js && node core/convert/cardStyles.test.js && node core/convert/emphasisBox.test.js && node core/convert/logDiary.test.js && node core/convert/cardBlocks.test.js && node core/convert/templates/chatBubble.test.js && node core/convert/templates/webnovel.test.js && node core/cleanup/stripJunk.test.js && node core/cleanup/cleanLog.test.js && node core/import/risuLog.test.js && node core/card/charx.test.js && node core/card/charxResolve.test.js && node core/card/parseCard.test.js && node core/card/msgpack.test.js && node core/card/sourceRegex.test.js && node core/card/tagScheme.test.js && node core/card/risumLazy.test.js && node core/card/charxLazy.test.js && node core/card/cardAssets.test.js && node core/card/cardEncode.test.js && node core/preset/bundle.test.js && node core/preset/backupZip.test.js"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "fflate": "^0.8.3",
+    "firebase": "^12.15.0"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.28.1"
+  },
+  "build": {
+    "appId": "app.logpapa.desktop",
+    "productName": "LogPapa",
+    "artifactName": "LogPapa-Setup-${version}.${ext}",
+    "files": [
+      "electron/**/*",
+      "web/**/*",
+      "!web/src/**/*.ts",
+      "!web/__preview_*.html",
+      "core/translate/**/*.js",
+      "!core/translate/*.test.js",
+      "package.json",
+      "LICENSE",
+      "README.md",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "extraMetadata": { "main": "electron/main.js" },
+    "directories": { "output": "release" },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "dootaang",
+      "repo": "logfather"
+    }
+  }
+}

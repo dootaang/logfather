@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>LogPapa — 관리실</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=2" />
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png?v=2" />
+  <meta name="theme-color" content="#1a1410" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="stylesheet" as="style" crossorigin
+        href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css" />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Serif+KR:wght@400;500;700&display=swap" />
+  <link rel="stylesheet" href="./src/style.css" />
+  <!-- 페인트 전: 테마·스킨 즉시 적용(다크 깜빡임 방지). -->
+  <script>(function(){try{var t=localStorage.getItem('pro2-shell-theme')||'system';var d=t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');var s=localStorage.getItem('pro2-shell-skin');if(s)document.documentElement.dataset.skin=s.replace(/^custom:.*/,'aurora');}catch(e){}})();</script>
+</head>
+<body class="lib-body">
+  <main id="app" class="lib-app"></main>
+  <script type="module" src="./dist/management.js"></script>
+</body>
+</html>

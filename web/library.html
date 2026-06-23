@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>LogPapa — 서재</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=2" />
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png?v=2" />
+  <link rel="manifest" href="./site.webmanifest?v=2" />
+  <meta name="theme-color" content="#1a1410" />
+  <!-- 폰트: Pretendard(UI) · Noto Serif KR(다이어리 명조 카드) · JetBrains Mono. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="stylesheet" as="style" crossorigin
+        href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css" />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600&family=JetBrains+Mono:wght@400;500&family=Noto+Serif+KR:wght@400;500;700&display=swap" />
+  <link rel="stylesheet" href="./src/style.css" />
+  <!-- 페인트 전: 테마·스킨 즉시 적용(다크 깜빡임 방지) + 이미 동기화한 세션이면 로딩 오버레이 숨김. -->
+  <script>(function(){try{var t=localStorage.getItem('pro2-shell-theme')||'system';var d=t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');var s=localStorage.getItem('pro2-shell-skin');if(s)document.documentElement.dataset.skin=s.replace(/^custom:.*/,'aurora');if(sessionStorage.getItem('pro2-session-synced')==='1')document.documentElement.classList.add('lib-synced');}catch(e){}})();</script>
+</head>
+<body class="lib-body">
+  <header class="topbar lib-topbar">
+    <div class="topbar-left">
+      <button class="brand" id="brand" title="서재 홈으로">
+        <span class="wm wm-papa" role="img" aria-label="LogPapa">
+          <span class="wm-log">Log</span><span class="wm-flametext">Papa</span>
+        </span>
+      </button>
+    </div>
+    <div class="actions">
+      <span id="lib-status" class="lib-status" aria-live="polite"></span>
+      <!-- 받은 로그함(우체통) — 리스 푸시. 로그인 시 표시 + 라이브 배지(쌓인 개수). -->
+      <button id="btn-inbox" class="btn-inbox" title="받은 로그함 — 리스에서 보낸 챗" hidden><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1"/><path d="M4 13h3l3 3h4l3 -3h3"/></svg><span id="inbox-count" class="lib-badge inbox-badge" hidden></span></button>
+      <!-- 관리실(정리 규칙·영구 보관) — ★웹·데스크탑 둘 다 항상 표시(내부 게이팅은 management.html 쪽). 로그인 등 비동기 상태에 안 묶이므로 첫 페인트부터 보이게(library.ts는 클릭만 연결). -->
+      <button id="btn-mgmt" class="btn-inbox" title="관리실 — 정리 규칙(소스 등록)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5"/></svg></button>
+      <!-- 사용설명서(전 화면 ?). -->
+      <button id="btn-help" class="btn-inbox" title="사용설명서"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M12 16v.01"/><path d="M12 13a2 2 0 0 0 .914 -3.782a1.98 1.98 0 0 0 -2.414 .483"/></svg></button>
+      <!-- 앱-레벨 설정 = 서재 홈이 단독 소유(편집기엔 없음). 마이페이지(로그인)·외형·복사화질·백업·고급. -->
+      <details class="menu settings-menu">
+        <summary title="마이페이지(로그인) · 외형(스킨/테마) · 복사화질 · 전체 백업/복원 · 고급 설정"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z"/><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/></svg> 설정</summary>
+        <div class="menu-pop">
+          <div class="menu-label">마이페이지</div>
+          <div class="menu-auth" id="auth-group" hidden>
+            <button id="btn-auth" title="로그인하면 서재·설정을 여러 기기에서 동기화할 수 있습니다">로그인</button>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="menu-label">외형</div>
+          <!-- 스킨·테마 드롭다운/토글은 "디자인 설정" 모달로 이전(injectDesign이 여기에 버튼 추가). -->
+          <label id="jpeg-toggle" class="jpeg-toggle" title="복사·공유에만 적용 — 서재 저장은 항상 원본 화질. 끄면 PNG(고화질) · 켜면 JPEG(작은 용량, 모바일)">
+            <input type="checkbox" id="chk-jpeg"> 복사·공유 화질 낮춤(JPEG)
+          </label>
+          <div class="menu-sep"></div>
+          <div class="menu-label">백업 · 가져오기</div>
+          <button id="btn-export" title="모든 프리셋(디자인별 3종) + 서재(로그·작품)를 파일 하나로 백업">전체 백업 내보내기</button>
+          <button id="btn-import" title="전체 백업 불러오기 (프리셋·서재 복원)">전체 백업 불러오기</button>
+        </div>
+      </details>
+    </div>
+    <!-- 숨김 파일 입력(전체 백업 불러오기용) -->
+    <input id="file-import" type="file" accept=".json,.zip,application/json,application/zip" hidden />
+  </header>
+  <main id="app" class="lib-app"></main>
+  <div id="lib-loading" class="lib-loading">
+    <div class="lib-loading-inner">
+      <div class="lib-spinner"></div>
+      <div class="lib-loading-pct" id="lib-loading-pct">0%</div>
+      <div class="lib-loading-text" id="lib-loading-text">서재 동기화 중…</div>
+    </div>
+  </div>
+  <script type="module" src="./dist/library.js"></script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+name: Deploy web shell to Firebase Hosting
+
+# main 푸시마다 web/ 정적 셸을 빌드해 Firebase Hosting(logpapa)으로 배포.
+# 인증 = GitHub 비밀값 FIREBASE_SERVICE_ACCOUNT_LOGPAPA (서비스 계정 JSON).
+#   비밀값이 없으면 이 잡은 건너뛴다(아래 if) → 설정 전엔 빨간 X 안 뜸.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# CI는 web/만 빌드한다. electron은 devDependency라 npm ci가 매번 Electron 바이너리(수십 MB)를
+# 받아 느려지므로, 다운로드를 건너뛴다. 로컬 개발자(npm run app)는 영향 없음.
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    # 서비스 계정 비밀값이 등록된 뒤에만 실행(미등록이면 스킵).
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.FIREBASE_HOSTING_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run web:build
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_LOGPAPA }}
+          channelId: live
+          projectId: logpapa
+      # action-hosting-deploy는 "호스팅만" 배포함 → Firestore 보안 규칙은 여기서 따로 올린다.
+      # (안 하면 repo의 firestore.rules가 서버에 반영 안 돼 공유 생성 shares 쓰기가 막힘 = "공유 없음".)
+      # ※ storage 규칙은 별도 배포(serviceusage 권한 필요)이고 이미 서버에 반영돼 있어 여기선 firestore만 올린다.
+      - name: Deploy Firestore rules
+        run: |
+          printf '%s' "$FIREBASE_SA" > "$RUNNER_TEMP/sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
+          npx --yes firebase-tools deploy --only firestore:rules --project logpapa --non-interactive
+        env:
+          FIREBASE_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_LOGPAPA }}

@@ -1,0 +1,13 @@
+{
+  "name": "LogPapa",
+  "short_name": "LogPapa",
+  "icons": [
+    { "src": "./favicon.svg?v=2", "type": "image/svg+xml", "sizes": "any" },
+    { "src": "./icon-192.png?v=2", "type": "image/png", "sizes": "192x192", "purpose": "any maskable" },
+    { "src": "./icon-512.png?v=2", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+  ],
+  "theme_color": "#1a1410",
+  "background_color": "#1a1410",
+  "display": "standalone",
+  "start_url": "./index.html"
+}

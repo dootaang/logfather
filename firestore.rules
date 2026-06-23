@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 본인 데이터(users/{본인uid}/**)만 읽고 쓸 수 있다. 그 외 전부 차단.
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    // 공개 공유 링크(서재 로그를 링크로 보여주기).
+    //   읽기 = 누구나(로그인 불필요) — 받은 사람이 링크만으로 열람.
+    //   생성/수정/삭제 = 본인(owner=uid)만. id는 추측 불가 난수라 URL을 모르면 접근 불가.
+    match /shares/{id} {
+      allow read: if true;
+      allow create: if request.auth != null && request.resource.data.owner == request.auth.uid;
+      allow update: if request.auth != null
+                    && resource.data.owner == request.auth.uid
+                    && request.resource.data.owner == request.auth.uid;
+      allow delete: if request.auth != null && resource.data.owner == request.auth.uid;
+    }
+
+    // ── RisuAI 푸시 "받은 편지함"(inbox) — 별도 top-level 컬렉션 ──────────────────────────────
+    //   흐름: RisuAI 로그파파 플러그인(비인증)이 "연결 키(uid:secret)"로 현재 챗을 여기에 create만 한다.
+    //   앱(인증된 owner)이 자기 것만 읽어 서재로 변환·저장한 뒤 삭제한다(drain). update 없음.
+    //   ★페어링 secret = users/{uid}/state/pairing 문서의 secret 필드(앱이 본인만 저장 — 위 users 규칙).
+    //     플러그인은 그 문서를 직접 못 읽고(owner-only), 아래 create 규칙이 get()으로 들고 온 key와 대조한다.
+    //   ★최소 권한: 키가 유출돼도 피해 = inbox 스팸뿐(남의 데이터 읽기·삭제·다른 경로 일절 불가).
+    match /inbox/{docId} {
+      // 모양/크기 제한: 허용 필드만·필수 필드·타입·메시지 배열 상한(여분 필드 금지).
+      function validInbox() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['uid', 'key', 'char', 'messages', 'translated', 'source', 'createdAt'])
+          && d.keys().hasAll(['uid', 'key', 'messages'])
+          && d.uid is string && d.uid.size() > 0 && d.uid.size() <= 128
+          && d.key is string && d.key.size() >= 8 && d.key.size() <= 256
+          && d.messages is list && d.messages.size() > 0 && d.messages.size() <= 5000
+          && (!('char' in d) || (d.char is string && d.char.size() <= 300))
+          && (!('translated' in d) || d.translated is bool)
+          && (!('source' in d) || (d.source is string && d.source.size() <= 50))
+          && (!('createdAt' in d) || d.createdAt is number);
+      }
+      // 연결 키 대조: 들고 온 key가 그 uid가 저장해 둔 pairing secret과 일치할 때만.
+      function keyMatches() {
+        return exists(/databases/$(database)/documents/users/$(request.resource.data.uid)/state/pairing)
+          && get(/databases/$(database)/documents/users/$(request.resource.data.uid)/state/pairing).data.secret == request.resource.data.key;
+      }
+      allow create: if validInbox() && keyMatches();
+      allow read, delete: if request.auth != null && request.auth.uid == resource.data.uid;
+      allow update: if false;
+    }
+  }
+}

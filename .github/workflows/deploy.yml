@@ -1,0 +1,47 @@
+name: Deploy web shell to GitHub Pages
+
+# main 푸시마다 web/ 정적 셸을 빌드해 GitHub Pages로 배포.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+# CI는 web/만 빌드한다. electron은 devDependency라 npm ci가 매번 Electron 바이너리(수십 MB)를
+# 받아 느려지므로, 다운로드를 건너뛴다. 로컬 개발자(npm run app)는 영향 없음.
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run web:build          # core를 web/dist/app.js로 번들
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: web                     # 정적 사이트 루트 = web/ (index.html + src/ + dist/)
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
