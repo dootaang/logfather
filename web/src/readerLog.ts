@@ -11,7 +11,7 @@ import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
 import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad } from './store.js';
 import { isLocalFirst, getSyncMode } from './desktopSync.js';
-import { translateAvailable, translateUnits, getWorkPrompt, ensureTranslateReady } from './translate.js';
+import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, ensureTranslateReady, openTranslateSettings } from './translate.js';
 import { cleanUnits } from './cleanup.js';
 import { defaultSettings } from '../../core/preset/bundle.js';
 import { convertText } from '../../core/convert/convertText.js';
@@ -206,6 +206,35 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     draw();
   }
 
+  // 번역 설정 팝오버(단일 화) — 번역 가능하면 ★항상 노출(번역 후에도 조정 가능). 공유/보기 팝오버와 같은 방식.
+  //   작품 번역 지침(프롬프트) 인라인 편집 + 모델/키/파라미터 모달 연결 + "이 설정으로 (다시) 번역".
+  function toggleTransSetPop(reader: HTMLElement, r: any, char: string, btn: HTMLElement) {
+    const exist = reader.querySelector('.trset-pop') as HTMLElement | null;
+    if (exist) { exist.remove(); return; }
+    const pop = document.createElement('div'); pop.className = 'reader-settings trset-pop'; reader.appendChild(pop);
+    popAutoClose(pop, btn);
+    pop.appendChild(mk('div', 'share-title', '번역 설정'));
+    pop.appendChild(mk('div', 'share-note', '이 작품의 번역 지침(문체)입니다. 고치면 저장돼 이 작품 번역에 쓰여요. 모델·키·생성 파라미터는 아래 “모델·키 설정”에서.'));
+    const ta = document.createElement('textarea'); ta.className = 'tr-prompt'; ta.rows = 4; ta.value = getWorkPrompt(char);
+    ta.onchange = () => { setWorkPrompt(char, ta.value); setStatus('이 작품 번역 지침을 저장했어요.'); };
+    pop.appendChild(ta);
+    const acts = document.createElement('div'); acts.className = 'share-actions';
+    const modelB = mk('button', '', '모델·키 설정') as HTMLButtonElement;
+    modelB.onclick = () => openTranslateSettings(setStatus);
+    const runB = mk('button', 'primary', (r && r.orig) ? '이 설정으로 다시 번역' : '이 설정으로 번역') as HTMLButtonElement;
+    runB.onclick = async () => {
+      if (!(await ensureTranslateReady(setStatus))) return;
+      setWorkPrompt(char, ta.value);   // 최신 프롬프트 반영 후 번역
+      runB.disabled = true; runB.textContent = '번역 중…';
+      if (r && r.orig) applyOrig(r);   // 원문에서 다시(원문 스냅샷은 보존)
+      await runTranslateFlow([r], char, {});
+      origView[r.id] = false;
+      pop.remove();
+      location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route();
+    };
+    acts.append(modelB, runB); pop.appendChild(acts);
+  }
+
   // 단일 화 열람(그 로그만). char·epId로 allLogs에서 찾아 렌더. prev/next·복사·공유·편집기로·번역·정리·삭제·몰입.
   function renderSingleLog(char: string, epId: string) {
     const app = document.getElementById('app')!;
@@ -290,6 +319,13 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
         location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route();
       };
     }
+    // ★번역 설정(⚙) — 번역 가능하면 항상(번역 전·후 무관). 작품 프롬프트·파라미터 조정 + 이 설정으로 번역.
+    let trSetB: HTMLButtonElement | null = null;
+    if (translateAvailable()) {
+      trSetB = document.createElement('button'); trSetB.className = 'reader-iconbtn'; trSetB.innerHTML = icon('settings') + ' 번역 설정';
+      trSetB.title = '번역 지침(작품 프롬프트)·모델·파라미터 조정 + 이 설정으로 번역';
+      trSetB.onclick = () => toggleTransSetPop(reader, r, char, trSetB!);
+    }
     const clB = document.createElement('button'); clB.className = 'reader-iconbtn'; clB.innerHTML = icon('broom') + ' 정리';
     clB.title = '이 화의 군더더기(응답 헤더·생각의 사슬·OOC·화자 라벨 등)를 걷어내 본문만 남깁니다. 이미지·대사는 보존.';
     clB.onclick = async () => {
@@ -319,7 +355,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     };
     const helpB = document.createElement('button'); helpB.className = 'reader-iconbtn'; helpB.innerHTML = icon('help') + ' 도움말'; helpB.title = '사용설명서'; helpB.onclick = () => { location.href = 'help.html#reader'; };
     const actions = document.createElement('div'); actions.className = 'reader-actions';
-    actions.append(cp, shareB, editLog, clB, ...(clUndoB ? [clUndoB] : []), ...(trB ? [trB] : []), ...(trClearB ? [trClearB] : []), delB, helpB, setBtn);
+    actions.append(cp, shareB, editLog, clB, ...(clUndoB ? [clUndoB] : []), ...(trB ? [trB] : []), ...(trClearB ? [trClearB] : []), ...(trSetB ? [trSetB] : []), delB, helpB, setBtn);
     const moreB = document.createElement('button'); moreB.className = 'reader-iconbtn reader-more';
     moreB.innerHTML = icon('dots') + ' 더보기'; moreB.title = '더보기';
     moreB.onclick = (e) => { e.stopPropagation(); actions.classList.toggle('open'); };
