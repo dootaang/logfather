@@ -1,8 +1,8 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.4.3
-//@description 현재 채팅 세션을 번역 캐시 적용본으로 로그파파 서재에 바로 보냅니다(파일 export 없이).
+//@version 1.5.0
+//@description 현재 채팅 세션을 번역 캐시 적용본 + 삽화(생성 이미지)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 dootaang — LogPapa. Licensed under GNU GPL v3 (see LICENSE).
@@ -112,10 +112,62 @@
   }
   // 안정 해시(FNV-1a) — 챗 지문(fp)용.
   function fpHash(s) { let h = 0x811c9dc5; s = String(s || ''); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16); }
+
+  // ── 삽화(inlay) 가져오기 — 리스가 보관한 생성 이미지를 readImage로 꺼내 메시지 본문에 심는다. ──
+  //   마커: 리스 네이티브 {{inlay::ID}}/{{inlayed::ID}} + 라이트보드 등 모듈의 <lb-xnai>/<lb-lazy> 태그(내부가 그 마커 또는 id).
+  //   ★못 찾거나 readImage 실패면 그 삽화만 건너뜀(텍스트는 그대로 — 절대 안 깨지게). inbox 1MB 위해 축소·JPEG + 총량 상한.
+  const hasReadImage = typeof risu.readImage === 'function';
+  const IMG_MAX_PX = 800, IMG_QUALITY = 0.7, IMG_BUDGET = 700 * 1024;   // 총 dataURL 길이 상한(텍스트·오버헤드 여유 두고 1MB 미만)
+  function extractInlayIds(text) {
+    const ids = []; const seen = new Set();
+    const add = (id) => { id = String(id || '').trim(); if (id && id.length <= 256 && !seen.has(id)) { seen.add(id); ids.push(id); } };
+    let m;
+    const re1 = /\{\{inlay(?:ed)?::\s*([^}|]+?)\s*\}\}/gi;   // 리스 네이티브 마커
+    while ((m = re1.exec(String(text || '')))) add(m[1]);
+    const re2 = /<lb-(?:xnai|lazy)\b[^>]*>([\s\S]*?)<\/lb-(?:xnai|lazy)>/gi;   // 모듈 태그
+    while ((m = re2.exec(String(text || '')))) {
+      const inner = m[1]; let mm, found = false; const reIn = /\{\{[\w-]+::\s*([^}|]+?)\s*\}\}/g;
+      while ((mm = reIn.exec(inner))) { add(mm[1]); found = true; }   // 내부의 어떤 {{타입::id}} 마커든 id 추출(네이티브 형식 달라도 모듈 태그 안이면 잡음)
+      if (!found) { const t = inner.replace(/<[^>]*>/g, '').trim(); if (t) add(t); }   // 마커 없으면 내부 토큰을 id 후보로(readImage가 검증)
+    }
+    return ids;
+  }
+  function imgSrcFrom(v) {   // readImage 반환을 <img src>용으로 정규화(자체완결 dataURL 우선, http(s)도 허용).
+    if (!v) return '';
+    if (typeof v === 'string') return (v.startsWith('data:') || /^https?:\/\//.test(v)) ? v : (v.startsWith('//') ? 'https:' + v : '');
+    try { if (v instanceof Uint8Array || v instanceof ArrayBuffer) { const b = new Uint8Array(v); let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return 'data:image/png;base64,' + btoa(s); } } catch (_) {}
+    if (typeof v === 'object' && typeof v.data === 'string') return imgSrcFrom(v.data);
+    return '';
+  }
+  function shrinkImage(src) {   // canvas로 최대 IMG_MAX_PX·JPEG 재인코딩(실패·교차출처 오염 시 원본 그대로).
+    return new Promise((resolve) => {
+      try {
+        const img = new Image();
+        img.onload = () => { try {
+          let w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+          if (!w || !h) return resolve(src);
+          const sc = Math.min(1, IMG_MAX_PX / Math.max(w, h));
+          w = Math.max(1, Math.round(w * sc)); h = Math.max(1, Math.round(h * sc));
+          const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(cv.toDataURL('image/jpeg', IMG_QUALITY));
+        } catch (_) { resolve(src); } };
+        img.onerror = () => resolve(src);
+        img.src = src;
+      } catch (_) { resolve(src); }
+    });
+  }
+  async function inlayDataUrl(id) {
+    let raw; try { raw = await risu.readImage(id); } catch (_) { return ''; }
+    const src = imgSrcFrom(raw);
+    if (!src) return '';
+    return src.startsWith('data:') ? await shrinkImage(src) : src;   // dataURL만 축소(http는 그대로, 보통 작음)
+  }
+
   async function buildMessages(onProgress) {
     const { char, chat } = await getCurrentChat();
     const raw = Array.isArray(chat.message) ? chat.message : [];
-    const messages = []; let hit = 0, miss = 0;
+    const messages = []; let hit = 0, miss = 0, imgCount = 0, imgDropped = 0, imgBytes = 0;
     for (let i = 0; i < raw.length; i++) {
       onProgress?.(i + 1, raw.length);
       const m = raw[i];
@@ -125,16 +177,28 @@
       const sid = hasSwipes ? (m.swipeId ?? 0) : -1;
       const original = (sid >= 0 && m.swipes[sid] !== undefined) ? m.swipes[sid] : m.data;
       const tr = await translateViaCache(original);   // ★캐시 부분검색 매칭(원문/문단 정확조회는 키가 어긋나 미스)
-      const text = tr.text;
       if (tr.hit) hit++; else miss++;
-      if (!String(text).trim()) continue;
-      messages.push({ role: m.role === 'user' ? 'user' : 'char', text: String(text) });
+      let body = String(tr.text || '');
+      // ★삽화(inlay) 흡수 — 원문 마커에서 id 추출 → readImage → 축소·JPEG → 독립 문단 <img>로 본문에 추가.
+      //   미스/실패/한도초과는 그 삽화만 건너뜀(텍스트는 그대로). 총 dataURL 길이를 IMG_BUDGET 미만으로(inbox 1MB 회피).
+      if (hasReadImage) {
+        for (const id of extractInlayIds(original)) {
+          if (imgBytes >= IMG_BUDGET) { imgDropped++; continue; }
+          const du = await inlayDataUrl(id);
+          if (!du) continue;
+          if (imgBytes + du.length > IMG_BUDGET) { imgDropped++; continue; }
+          imgBytes += du.length; imgCount++;
+          body += '\n\n<img src="' + du + '">';
+        }
+      }
+      if (!body.trim()) continue;   // 텍스트·삽화 둘 다 없으면 건너뜀(삽화만 있으면 보냄)
+      messages.push({ role: m.role === 'user' ? 'user' : 'char', text: body });
     }
     const charName = String(char.name || '리스 로그').slice(0, 300);   // 규칙: char ≤300자
     // ★챗 지문(fp) = 캐릭터명 + 첫 메시지 해시(이어가도 불변) → 보관 시 같은 챗 이어붙이기·중복 방지.
     const firstRaw = raw.find((m) => m && typeof m.data === 'string' && m.data.trim());
     const fp = fpHash(charName + '::' + ((firstRaw && firstRaw.data) || ''));
-    return { charName, messages, hit, miss, fp };
+    return { charName, messages, hit, miss, fp, imgCount, imgDropped };
   }
 
   // ── Firestore REST(타입 지정 본문)로 inbox에 create ───────────────
@@ -250,12 +314,13 @@
       btn.disabled = true;
       setStatus('progress', '챗을 읽고 번역 캐시를 적용하는 중...');
       try {
-        const { charName, messages, hit, miss, fp } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`));
+        const { charName, messages, hit, miss, fp, imgCount, imgDropped } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`));
         if (!messages.length) { setStatus('error', '보낼 메시지가 없습니다.'); btn.disabled = false; return; }
         if (messages.length > 5000) { setStatus('error', '메시지가 너무 많습니다(5000개 초과). 챗을 나눠 보내주세요.'); btn.disabled = false; return; }
         setStatus('progress', `로그파파로 보내는 중... (${messages.length}개)`);
         await postInbox(parsed.uid, parsed.secret, charName, messages, hit > 0, fp);
-        let okMsg = `보냈어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개, 캐시 ${hit} / 원문 ${miss})<br>로그파파 앱(서재)의 받은 로그함에서 보관하세요.`;
+        let okMsg = `보냈어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개, 캐시 ${hit} / 원문 ${miss}${imgCount ? ` · 삽화 ${imgCount}장` : ''})<br>로그파파 앱(서재)의 받은 로그함에서 보관하세요.`;
+        if (imgDropped > 0) okMsg += `<br><br>삽화 ${imgDropped}장은 용량(1MB) 한도로 못 담았어요 — 챗을 나눠 보내면 다 들어와요.`;
         if (miss > 0) okMsg += `<br><br>${hit === 0 ? '번역이 안 따라왔어요 — ' : '일부는 원문이에요 — '}리스에서 <b>LLM 번역기</b>로 번역한 챗만 따라와요(구글·DeepL은 플러그인용 캐시를 안 남깁니다). 또는 GigaTrans로 번역한 챗은 번역기와 무관하게 그대로 들어와요.`;
         setStatus(hit === 0 && miss > 0 ? 'info' : 'success', okMsg);
       } catch (err) {
@@ -277,5 +342,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.4.3');
+  console.info('[LogPapaPush] loaded v1.5.0');
 })();
