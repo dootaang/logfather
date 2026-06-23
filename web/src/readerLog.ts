@@ -85,6 +85,19 @@ export function rerenderLog(rec: any): string {
   else input = String(rec.input || '');
   return applyAssetMap(convertText(input, s), rec.assets);   // ★재렌더 끝에 에셋 맵 재적용 → 정리·번역·토글·편집 어디서도 에셋 이미지 보존
 }
+// 공유용 html — 내 입력(user 역할) 항목을 구조에서 빼고 재렌더(★rec.assets 재적용 = 에셋 보존). ★비파괴(복제만, 원본 r 불변).
+//   역할 구조가 있는 디자인(chat/card/webnovel)만 필터 가능 — 없으면(단일 input·custom-css) 원본 html 그대로 반환(안전).
+export function filteredShareHtml(r: any): string {
+  const hasRole = (r.chat && Array.isArray(r.chat.messages) && r.chat.messages.length)
+    || (r.cardCfg && Array.isArray(r.cardCfg.blocks) && r.cardCfg.blocks.length)
+    || (r.webnovel && Array.isArray(r.webnovel.blocks) && r.webnovel.blocks.length);
+  if (!hasRole) return String(r.html || '');
+  const c = clonej(r);
+  if (c.chat && Array.isArray(c.chat.messages)) c.chat.messages = c.chat.messages.filter((m: any) => m && m.role !== 'user');
+  if (c.cardCfg && Array.isArray(c.cardCfg.blocks)) c.cardCfg.blocks = c.cardCfg.blocks.filter((b: any) => b && b.role !== 'user');
+  if (c.webnovel && Array.isArray(c.webnovel.blocks)) c.webnovel.blocks = c.webnovel.blocks.filter((b: any) => b && b.role !== 'user');
+  return rerenderLog(c);
+}
 
 // 팩토리 — ctx: { setStatus, reloadLogs, getAllLogs, route, getUser, nameOf }.
 export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLogs: () => Promise<void>; getAllLogs: () => any[]; route: () => void; getUser: () => any; nameOf: (char: string) => string }) {
@@ -183,6 +196,14 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       pop.appendChild(mk('div', 'share-title', '공개 읽기전용 링크'));
       const av = shareAvailability();
       if (!av.ok) { pop.appendChild(mk('div', 'share-note', shareGateMessage(av.reason))); return; }
+      // ★내 입력 가리기 — 공유본에서만 user 메시지 제거(★내 서재 로그는 불변). 마지막 선택 기억. 만들기·내용갱신 둘 다 적용.
+      const hideWrap = document.createElement('label'); hideWrap.className = 'import-check'; (hideWrap as HTMLElement).style.margin = '0 0 8px';
+      const hideChk = document.createElement('input'); hideChk.type = 'checkbox';
+      try { hideChk.checked = localStorage.getItem('pro2-share-hideuser') === '1'; } catch (_) {}
+      hideChk.onchange = () => { try { localStorage.setItem('pro2-share-hideuser', hideChk.checked ? '1' : '0'); } catch (_) {} };
+      hideWrap.append(hideChk, document.createTextNode(' 내 입력 가리기 (공유본에서 내 메시지 빼기 — 내 서재는 그대로)'));
+      pop.appendChild(hideWrap);
+      const shareRec = () => Object.assign({}, r, { html: hideChk.checked ? filteredShareHtml(r) : r.html, hideUser: hideChk.checked });
       if (r.shareId) {
         pop.appendChild(mk('div', 'share-note', '이 링크를 받은 사람은 로그인 없이 이 화를 볼 수 있습니다 (이미지 포함). 이미지는 공유용으로 축소된 화질입니다.'));
         const row = document.createElement('div'); row.className = 'share-link-row';
@@ -194,7 +215,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
         row.append(input, copyB); pop.appendChild(row);
         const acts = document.createElement('div'); acts.className = 'share-actions';
         const refreshB = mk('button', '', '내용 갱신') as HTMLButtonElement; refreshB.title = '편집 후 최신 내용으로 링크 갱신';
-        refreshB.onclick = async () => { refreshB.disabled = true; refreshB.textContent = '갱신 중…'; try { const S = await loadShare(); await S.createShare(r, r.shareId); setStatus('링크 내용을 갱신했습니다.'); } catch (e: any) { setStatus('갱신 실패: ' + ((e && e.message) || '')); } refreshB.disabled = false; refreshB.textContent = '내용 갱신'; };
+        refreshB.onclick = async () => { refreshB.disabled = true; refreshB.textContent = '갱신 중…'; try { const S = await loadShare(); await S.createShare(shareRec(), r.shareId); setStatus('링크 내용을 갱신했습니다.'); } catch (e: any) { setStatus('갱신 실패: ' + ((e && e.message) || '')); } refreshB.disabled = false; refreshB.textContent = '내용 갱신'; };
         const unshareB = mk('button', 'series-del', '공유 해제') as HTMLButtonElement;
         unshareB.onclick = async () => { unshareB.disabled = true; try { const S = await loadShare(); await S.deleteShare(r.shareId); delete r.shareId; await logsAdd(r); btn.innerHTML = icon('link') + ' 공유'; setStatus('공유를 해제했습니다.'); draw(); } catch (e: any) { setStatus('해제 실패: ' + ((e && e.message) || '')); unshareB.disabled = false; } };
         acts.append(refreshB, unshareB); pop.appendChild(acts);
@@ -205,7 +226,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
           makeB.disabled = true; makeB.textContent = '만드는 중…';
           try {
             const S = await loadShare();
-            const id = await S.createShare(r);
+            const id = await S.createShare(shareRec());
             r.shareId = id; await logsAdd(r); btn.innerHTML = icon('link') + ' 공유됨';
             try { await navigator.clipboard.writeText(S.shareUrl(id)); setStatus('공개 링크를 클립보드에 복사했습니다.'); } catch (_) { setStatus('공개 링크가 만들어졌습니다.'); }
             draw();

@@ -10,7 +10,7 @@ import { richCopy } from './clipboard.js';         // 리치 복사(아카 붙�
 import { desktopAvailable, externalCount, bakeLogs } from './bake.js';   // 이미지 굳히기(데스크탑 전용)
 import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, openTranslateSettings, ensureTranslateReady } from './translate.js';   // 로그 번역(웹·데스크탑)
 import { cleanUnits, getCleanPrompt, setCleanPrompt, makeCleanFn, ensureCleanReady } from './cleanup.js';   // 가져온 로그 군더더기 정리(1차 결정론 + 2차 LLM·작품별 프롬프트)
-import { createReaderLog } from './readerLog.js';   // 번역/정리 흐름 공용(작품 페이지·reader 단일화가 같이 씀)
+import { createReaderLog, filteredShareHtml } from './readerLog.js';   // 번역/정리 흐름 + 공유 필터(내 입력 가리기) 공용
 import { popAutoClose } from './readerView.js';   // 공유 팝오버 바깥 탭=닫힘(리더 단일화 공유와 거동 통일)
 import { isLocalFirst, getSyncMode, shareBaseUrl, isDesktop } from './desktopSync.js';   // 로컬-퍼스트(데스크탑 OR 웹-수동) + 수동 동기화 상태 + 플랫폼
 import { mountUpdateBanner } from './updateBanner.js';   // 자동 업데이트 배너(데스크탑 전용)
@@ -435,6 +435,13 @@ function toggleSeriesSharePop(host: HTMLElement, s: any, btn: HTMLElement) {
     pop.appendChild(mk('div', 'share-title', '작품 통째 공유'));
     const av = shareAvailability();
     if (!av.ok) { pop.appendChild(mk('div', 'share-note', shareGateMessage(av.reason))); return; }
+    // ★내 입력 가리기 — 공유본에서만 user 메시지 제거(★내 서재 로그 불변). 마지막 선택 기억. 만들기·내용갱신 둘 다 적용.
+    const hideWrap = document.createElement('label'); hideWrap.className = 'import-check'; (hideWrap as HTMLElement).style.margin = '0 0 8px';
+    const hideChk = document.createElement('input'); hideChk.type = 'checkbox';
+    try { hideChk.checked = localStorage.getItem('pro2-share-hideuser') === '1'; } catch (_) {}
+    hideChk.onchange = () => { try { localStorage.setItem('pro2-share-hideuser', hideChk.checked ? '1' : '0'); } catch (_) {} };
+    hideWrap.append(hideChk, document.createTextNode(' 내 입력 가리기 (공유본에서 내 메시지 빼기 — 내 서재는 그대로)'));
+    pop.appendChild(hideWrap);
     const sid = seriesShareId(s.char);
     if (sid) {
       pop.appendChild(mk('div', 'share-note', `이 작품 ${s.count}화를 누구나 링크로 읽을 수 있습니다.`));
@@ -445,27 +452,27 @@ function toggleSeriesSharePop(host: HTMLElement, s: any, btn: HTMLElement) {
       row.append(input, copyB); pop.appendChild(row);
       const acts = mk('div', 'share-actions');
       const reB = mk('button', '', '내용 갱신') as HTMLButtonElement; reB.title = '화 추가/수정 후 최신 내용으로 다시 공유';
-      reB.onclick = async () => { await doShareSeries(s, pop, draw); };
+      reB.onclick = async () => { await doShareSeries(s, pop, draw, undefined, hideChk.checked); };
       const unB = mk('button', 'series-del', '공유 해제') as HTMLButtonElement;
       unB.onclick = async () => { unB.disabled = true; try { const S = await loadShare(); await S.deleteSeriesShare(sid); setSeriesShareId(s.char, ''); btn.innerHTML = icon('link') + ' 작품 공유'; setStatus('작품 공유를 해제했습니다.'); draw(); } catch (e: any) { setStatus('해제 실패: ' + ((e && e.message) || '')); unB.disabled = false; } };
       acts.append(reB, unB); pop.appendChild(acts);
     } else {
       pop.appendChild(mk('div', 'share-note', `이 작품 ${s.count}화 전체를 누구나 볼 수 있는 링크로 공개합니다 (이미지 포함, 읽기전용).`));
       const makeB = mk('button', 'primary share-make') as HTMLButtonElement; makeB.innerHTML = icon('link') + ' 작품 공유 링크 만들기';
-      makeB.onclick = async () => { await doShareSeries(s, pop, draw, makeB); };
+      makeB.onclick = async () => { await doShareSeries(s, pop, draw, makeB, hideChk.checked); };
       pop.appendChild(makeB);
     }
   };
   draw();
 }
 // 작품 공유 생성/갱신(화별 공유 문서 N개 + 인덱스). 진행률 표시.
-async function doShareSeries(s: any, pop: HTMLElement, redraw: () => void, makeBtn?: HTMLButtonElement) {
+async function doShareSeries(s: any, pop: HTMLElement, redraw: () => void, makeBtn?: HTMLButtonElement, hideUser?: boolean) {
   const prev = seriesShareId(s.char);
   const note = pop.querySelector('.share-note') as HTMLElement | null;
   if (makeBtn) { makeBtn.disabled = true; makeBtn.textContent = '만드는 중…'; }
   try {
     const S = await loadShare();
-    const episodes = s.eps.map((e: any) => ({ char: s.char, title: e.title, date: e.date, html: e.html }));
+    const episodes = s.eps.map((e: any) => ({ char: s.char, title: e.title, date: e.date, html: hideUser ? filteredShareHtml(e) : e.html, hideUser: !!hideUser }));   // ★내 입력 가리기: 공유본만 필터(원본 불변)
     // 표지·소개도 함께 공유 → 공유 열람 화면이 작품 페이지처럼 보임.
     let cm: any = {}; try { cm = (await metaGet(s.char)) || {}; } catch (_) {}
     let cover = cm.cover || s.cover || '';
@@ -1013,6 +1020,14 @@ function showChatImportModal(parsed: any, total: number, onDone?: () => Promise<
   cleanWrap.append(cleanCb, document.createTextNode(' 가져온 뒤 군더더기 자동 정리 (응답 헤더·생각의 사슬·OOC·화자 라벨 등 — 무료, 본문·이미지 보존)'));
   card.appendChild(cleanWrap);
 
+  // ★내 입력(user 메시지) 빼고 캐릭터 응답만 저장 — 공유 시 부끄러운 입력 노출 방지(영구·내 사본도). 마지막 선택 기억.
+  const hideWrap = document.createElement('label'); hideWrap.className = 'import-check';
+  const hideUserCb = document.createElement('input'); hideUserCb.type = 'checkbox';
+  try { hideUserCb.checked = localStorage.getItem(IMPORT_HIDEU_KEY) === '1'; } catch (_) {}
+  hideUserCb.onchange = () => { try { localStorage.setItem(IMPORT_HIDEU_KEY, hideUserCb.checked ? '1' : '0'); } catch (_) {} };
+  hideWrap.append(hideUserCb, document.createTextNode(' 내 입력 빼기 (캐릭터 응답만 저장 — 채팅형은 한쪽만 남아 휑할 수 있어요)'));
+  card.appendChild(hideWrap);
+
   const est = document.createElement('div'); est.className = 'import-info';
   const updateEst = () => { const n = Math.max(1, +num.value || 1); const eps = mode.value === 'total' ? n : Math.ceil(total / n); est.textContent = `→ 약 ${eps}화로 저장`; };
   mode.onchange = updateEst; num.oninput = updateEst; updateEst();
@@ -1024,7 +1039,7 @@ function showChatImportModal(parsed: any, total: number, onDone?: () => Promise<
   go.onclick = async () => {
     go.disabled = true; go.textContent = '가져오는 중…';
     try {
-      await buildAndSaveChat(parsed, { char: (nameIn.value.trim() || parsed.char), fp: parsed.fp, design: design.value, mode: mode.value, n: Math.max(1, +num.value || 1), roleColor: roleCb.checked, userLabel: userLbl.value.trim() || '나', charLabel: charLbl.value.trim() || (nameIn.value.trim() || parsed.char), numbered: numCb.checked, clean: cleanCb.checked });
+      await buildAndSaveChat(parsed, { char: (nameIn.value.trim() || parsed.char), fp: parsed.fp, design: design.value, mode: mode.value, n: Math.max(1, +num.value || 1), roleColor: roleCb.checked, userLabel: userLbl.value.trim() || '나', charLabel: charLbl.value.trim() || (nameIn.value.trim() || parsed.char), numbered: numCb.checked, clean: cleanCb.checked, hideUser: hideUserCb.checked });
       ov.remove();
       if (onDone) { try { await onDone(); } catch (_) {} }   // 우체통 보관: 성공 후 그 inbox 항목 삭제(배지 −1)
     } catch (e: any) { setStatus('가져오기 실패: ' + e.message); go.disabled = false; go.textContent = '가져오기'; }
@@ -1038,6 +1053,7 @@ const newChatId = () => Date.now().toString(36) + Math.random().toString(36).sli
 
 // ── 챗 지문(fp) 이어붙이기 — 같은 챗 재유입 시 새 작품 대신 델타(새 메시지)만 잇는다(동기화 KV). ──
 const IMPORTS_KEY = 'pro2-chat-imports';   // { [fp]: { workKey, count, sig } } — count=보관한 메시지 수, sig=그 앞부분 해시
+const IMPORT_HIDEU_KEY = 'pro2-import-hideuser';   // 가져오기 "내 입력 빼기(캐릭터 응답만)" 마지막 선택 기억
 function loadImports(): Record<string, any> { const o = kvLoad(IMPORTS_KEY); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; }
 function saveImports(o: any) { kvSave(IMPORTS_KEY, o); }
 // 메시지 시퀀스 안정 해시(FNV-1a) — "앞부분 그대로(이어짐) vs 바뀜(수정·리롤)" 판정용.
@@ -1069,6 +1085,11 @@ async function buildAndSaveChat(parsed: any, opts: any) {
     }
   }
   if (!workKey) workKey = newWorkKey();   // 새 작품(첫 보관 또는 앞부분 어긋남)
+  if (opts.hideUser) {   // ★내 입력(user) 빼고 캐릭터 응답만 저장 — 저장 콘텐츠에만 적용(fp·델타·imports는 위에서 원본 기준으로 끝나 재유입 매칭 안 깨짐).
+    const onlyChar = messages.filter((m: any) => m && m.role !== 'user');
+    if (!onlyChar.length) { setStatus(`“${opts.char}” — 캐릭터 응답이 없어 건너뛰었어요(내 입력만 있음).`); if (!opts.noNav) { location.hash = '#/series/' + encodeURIComponent(workKey); route(); } return; }
+    messages = onlyChar;
+  }
   const eps = splitMessages(messages, opts.n, opts.mode);
   // 새 작품일 때만 표시이름 메타 등록(이어붙이기는 기존 작품 이름·표지 유지).
   if (!isAppend) { try { await metaSet({ char: workKey, name: opts.char, cover: '', desc: '' }); } catch (_) {} }
@@ -1265,12 +1286,13 @@ function bulkImport() {
   const num = document.createElement('input'); num.type = 'number'; num.min = '1'; num.max = '500'; num.value = String(last.n || 20); row('N (개수/화수)', num);
   const roleWrap = document.createElement('label'); roleWrap.className = 'import-check'; const roleCb = document.createElement('input'); roleCb.type = 'checkbox'; roleCb.checked = last.roleColor !== false; roleWrap.append(roleCb, document.createTextNode(' 유저/캐릭터 박스색 구분 (기본 카드만)')); card.appendChild(roleWrap);
   const cleanWrap = document.createElement('label'); cleanWrap.className = 'import-check'; const cleanCb = document.createElement('input'); cleanCb.type = 'checkbox'; cleanCb.checked = !!last.clean; cleanWrap.append(cleanCb, document.createTextNode(' 보관 시 군더더기 자동 정리 (무료·본문 보존)')); card.appendChild(cleanWrap);
+  const hideWrap = document.createElement('label'); hideWrap.className = 'import-check'; const hideUserCb = document.createElement('input'); hideUserCb.type = 'checkbox'; hideUserCb.checked = !!last.hideUser; hideWrap.append(hideUserCb, document.createTextNode(' 내 입력 빼기 (캐릭터 응답만 저장)')); card.appendChild(hideWrap);
   const btns = document.createElement('div'); btns.className = 'import-btns';
   const go = Object.assign(document.createElement('button'), { className: 'primary', textContent: '전체 보관' }) as HTMLButtonElement;
   const cancel = Object.assign(document.createElement('button'), { textContent: '취소' }) as HTMLButtonElement; cancel.onclick = () => ov.remove();
   go.onclick = async () => {
     go.disabled = true; cancel.disabled = true;
-    const opts: any = { design: design.value, mode: mode.value, n: Math.max(1, +num.value || 1), roleColor: roleCb.checked, numbered: false, clean: cleanCb.checked };
+    const opts: any = { design: design.value, mode: mode.value, n: Math.max(1, +num.value || 1), roleColor: roleCb.checked, numbered: false, clean: cleanCb.checked, hideUser: hideUserCb.checked };
     saveInboxOpts(opts);
     let done = 0, fail = 0;
     for (const it of items) {
