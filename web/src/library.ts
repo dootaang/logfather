@@ -962,7 +962,7 @@ function importChatLog() {
     chatInput.addEventListener('change', async () => {
       const f = chatInput!.files && chatInput!.files[0]; chatInput!.value = ''; if (!f) return;
       let parsed: any;
-      try { parsed = parseRisuLog(JSON.parse(await f.text()), f.name); }
+      try { const _obj = JSON.parse(await f.text()); parsed = parseRisuLog(_obj, f.name); if (_obj && _obj.assets && typeof _obj.assets === 'object' && !Array.isArray(_obj.assets)) parsed.assets = _obj.assets; }   // ★다운로드 JSON의 assets 맵(에셋 → 카드 스타일 렌더)
       catch (e: any) { setStatus('JSON 파싱 실패: ' + e.message); return; }
       const total = parsed.chats.reduce((n: number, c: any) => n + c.messages.length, 0);
       if (!total) { setStatus('메시지를 찾을 수 없습니다 (리스 채팅 export .json인지 확인하세요).'); return; }
@@ -1072,6 +1072,9 @@ async function buildAndSaveChat(parsed: any, opts: any) {
   const eps = splitMessages(messages, opts.n, opts.mode);
   // 새 작품일 때만 표시이름 메타 등록(이어붙이기는 기존 작품 이름·표지 유지).
   if (!isAppend) { try { await metaSet({ char: workKey, name: opts.char, cover: '', desc: '' }); } catch (_) {} }
+  // ★삽화(장면)는 본문 인라인(플러그인이 박음), 에셋(감정 스프라이트)은 assets 맵으로 와서 여기서 카드 스타일로 렌더(블록 X) = 카드 드롭과 동일 경로.
+  const assetMap: any = (parsed && parsed.assets && typeof parsed.assets === 'object' && !Array.isArray(parsed.assets) && Object.keys(parsed.assets).length) ? parsed.assets : null;
+  const ASSET_IMG_STYLE = { size: 100, margin: 10, useBorder: false, borderColor: '#000000', useShadow: true };
   const created: any[] = [];
   for (let i = 0; i < eps.length; i++) {
     const chunk = eps[i];
@@ -1101,6 +1104,8 @@ async function buildAndSaveChat(parsed: any, opts: any) {
       rec.html = convertText(input, s);
       if (opts.design === 'custom-css') rec.userCardCss = '';
     }
+    // ★에셋(감정 스프라이트) 박제: assets 맵이 있으면 마커({{img::이름}}·CBS 등)를 카드 드롭과 동일 크기·스타일로 렌더(블록 임베드 X).
+    if (assetMap) { let h = String(rec.html || ''); h = resolveAssetCBS(h, assetMap); h = processImageTags(h, assetMap, ASSET_IMG_STYLE); h = resolveAssetMarkers(h, assetMap, ASSET_IMG_STYLE); rec.html = h; }
     await logsAdd(rec); created.push(rec);
   }
   // fp 기록 갱신 — 다음 재유입 때 이 시점까지를 "이미 보관한 앞부분"으로 보고 델타만 잇는다.
@@ -1155,7 +1160,8 @@ function inboxParsed(it: any): { parsed: any; total: number } {
   const messages = (Array.isArray(it && it.messages) ? it.messages : [])
     .map((m: any) => ({ role: (m && m.role === 'user') ? 'user' : 'char', text: stripGigaTrans(String((m && m.text) || '')) }))   // GigaTrans 마커 정규화(번역문만)
     .filter((m: any) => m.text.trim());
-  return { parsed: { char: name, fp: String((it && it.fp) || ''), chats: [{ name: '리스', messages }] }, total: messages.length };
+  const assets = (it && it.assets && typeof it.assets === 'object' && !Array.isArray(it.assets)) ? it.assets : null;   // ★에셋 맵(이름→dataURL) — Firestore SDK가 mapValue를 평문으로 디코드
+  return { parsed: { char: name, fp: String((it && it.fp) || ''), assets, chats: [{ name: '리스', messages }] }, total: messages.length };
 }
 async function inboxDelete(id: string) { try { const R = await import('./risuPush.js'); await R.deleteInbox(id); } catch (_) { setStatus('삭제 실패 — 잠시 후 다시'); } }   // 라이브 감지가 목록·배지 갱신
 

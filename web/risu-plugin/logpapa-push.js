@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.7.0
+//@version 1.8.0
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 삽화(생성 이미지) + 에셋(감정 이미지)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -140,29 +140,38 @@
     if (typeof v === 'object' && typeof v.data === 'string') return imgSrcFrom(v.data);
     return '';
   }
-  function shrinkImage(src) {   // canvas로 최대 IMG_MAX_PX·JPEG 재인코딩(실패·교차출처 오염 시 원본 그대로).
+  function shrinkImage(src, maxPx, png) {   // canvas로 최대 maxPx 재인코딩. png=true면 PNG(알파 보존·스프라이트용), 아니면 JPEG(장면용). 실패·교차출처 오염 시 원본 그대로.
+    maxPx = maxPx || IMG_MAX_PX;
     return new Promise((resolve) => {
       try {
         const img = new Image();
         img.onload = () => { try {
           let w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
           if (!w || !h) return resolve(src);
-          const sc = Math.min(1, IMG_MAX_PX / Math.max(w, h));
+          const sc = Math.min(1, maxPx / Math.max(w, h));
           w = Math.max(1, Math.round(w * sc)); h = Math.max(1, Math.round(h * sc));
           const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
           cv.getContext('2d').drawImage(img, 0, 0, w, h);
-          resolve(cv.toDataURL('image/jpeg', IMG_QUALITY));
+          resolve(png ? cv.toDataURL('image/png') : cv.toDataURL('image/jpeg', IMG_QUALITY));
         } catch (_) { resolve(src); } };
         img.onerror = () => resolve(src);
         img.src = src;
       } catch (_) { resolve(src); }
     });
   }
+  // 삽화(장면) = 큰 블록 → 800px JPEG. 본문에 인라인 <img>로 박는다.
   async function inlayDataUrl(id) {
     let raw; try { raw = await risu.readImage(id); } catch (_) { return ''; }
     const src = imgSrcFrom(raw);
     if (!src) return '';
-    return src.startsWith('data:') ? await shrinkImage(src) : src;   // dataURL만 축소(http는 그대로, 보통 작음)
+    return src.startsWith('data:') ? await shrinkImage(src, IMG_MAX_PX, false) : src;
+  }
+  // 에셋(감정 스프라이트) = 작게 → 512px ★PNG(알파 보존). assets 맵에 담아 마커로 카드 스타일 렌더(블록 임베드 X).
+  async function assetDataUrl(path) {
+    let raw; try { raw = await risu.readImage(path); } catch (_) { return ''; }
+    const src = imgSrcFrom(raw);
+    if (!src) return '';
+    return src.startsWith('data:') ? await shrinkImage(src, 512, true) : src;
   }
 
   // ── 에셋봇 에셋(감정 스프라이트·아이콘) 흡수 — 삽화와 같은 구조(리스 내부 보관 + 메시지엔 이름 참조). ──
@@ -180,22 +189,22 @@
     if (!byName.size) return [];
     const used = []; const seen = new Set(); let m;
     const consider = (raw) => { const n = String(raw || '').trim().replace(/^['"″]|['"″]$/g, ''); const hit = byName.get(n.toLowerCase()) || byName.get(n.toLowerCase().replace(/\.[a-z0-9]+$/i, '')); if (hit && !seen.has(hit.path)) { seen.add(hit.path); used.push(hit); } };
-    const reTok = /\{\{(?:img|image)(?:::|=)\s*([^}|]+?)\s*\}\}/gi; while ((m = reTok.exec(text))) consider(m[1]);
+    const reTok = /\{\{(?:img|image|raw|asset|source|emotion|image_asset)(?:::|=)\s*([^}|]+?)\s*\}\}/gi; while ((m = reTok.exec(text))) consider(m[1]);
     const reImg = /<(?:img|image)\s+src=\s*['"″]?([^'"″>\s]+)/gi; while ((m = reImg.exec(text))) consider(m[1]);
-    const reStar = /\[\s*🌠\s*\|\s*([^\]]+?)\s*\]/g; while ((m = reStar.exec(text))) consider(m[1]);
+    const reCBS = /\[[^\]\n|]*\|\s*([^\]\n]+?)\s*\]/g; while ((m = reCBS.exec(text))) consider(m[1]);   // 리스 CBS [x|이름] (감정/에셋 표시)
     return used;
   }
-  // 본문에서 inlay/lb 마커(내부 참조·텍스트 가치 없음) + ★해결된 에셋 이름의 마커를 제거. 미해결 에셋 마커는 그대로 둠(무해).
-  function stripResolvedMarkers(body, names) {
-    let s = String(body || '')
+  // 본문(번역본)에서 원본 이미지 마커를 싹 제거 — inlay/lb(내부참조) + 우리/리스 에셋 마커 + CBS + 맨이름 <img>. ★data:/http <img>는 유지.
+  //   HIT 본문은 이미 깨끗(no-op), MISS 원본의 군더더기 정리. 이후 깨끗한 마커/이미지로 본문을 재구성한다.
+  function stripImageMarkers(body) {
+    return String(body || '')
       .replace(/\{\{inlay(?:ed)?::[^}]*\}\}/gi, '')
       .replace(/<lb-(?:xnai|lazy)\b[^>]*\/>/gi, '')
-      .replace(/<lb-(?:xnai|lazy)\b[^>]*>[\s\S]*?<\/lb-(?:xnai|lazy)>/gi, '');
-    for (const n of names) { const e = reEsc(n); s = s
-      .replace(new RegExp('\\{\\{(?:img|image)(?:::|=)\\s*[\'"″]?' + e + '[\'"″]?\\s*\\}\\}', 'gi'), '')
-      .replace(new RegExp('<(?:img|image)\\s+src=\\s*[\'"″]?' + e + '[\'"″]?[^>]*>', 'gi'), '')
-      .replace(new RegExp('\\[\\s*\\uD83C\\uDF20\\s*\\|\\s*' + e + '\\s*\\]', 'g'), ''); }
-    return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+      .replace(/<lb-(?:xnai|lazy)\b[^>]*>[\s\S]*?<\/lb-(?:xnai|lazy)>/gi, '')
+      .replace(/\{\{(?:img|image|raw|asset|source|emotion|image_asset)(?:::|=)[^}]*\}\}/gi, '')
+      .replace(/\[[^\]\n|]*\|[^\]\n]*\]/g, '')
+      .replace(/<(?:img|image)\s+src=\s*(?!['"″]?(?:data:|https?:|\/\/))[^>]*>/gi, '')
+      .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
   async function buildMessages(onProgress, opts) {
@@ -206,6 +215,7 @@
     const raw = Array.isArray(chat.message) ? chat.message : [];
     const messages = []; let hit = 0, miss = 0, imgCount = 0, imgDropped = 0, imgBytes = 0;
     const assetByName = new Map(); for (const a of charAssetMap(char)) assetByName.set(a.name.toLowerCase(), a);   // 캐릭터 에셋(이름→경로) 1회 구축
+    const assets = {};   // 쓰인 에셋 dataURL 맵(이름→dataURL) — 푸시/다운로드 본체에 동봉, 우리 import가 카드 스타일로 렌더(블록 임베드 X)
     for (let i = 0; i < raw.length; i++) {
       onProgress?.(i + 1, raw.length);
       const m = raw[i];
@@ -216,11 +226,10 @@
       const original = (sid >= 0 && m.swipes[sid] !== undefined) ? m.swipes[sid] : m.data;
       const tr = await translateViaCache(original);   // ★캐시 부분검색 매칭(원문/문단 정확조회는 키가 어긋나 미스)
       if (tr.hit) hit++; else miss++;
-      let body = String(tr.text || '');
-      // ★이미지 흡수 — 원문 마커에서 삽화(inlay) id + 에셋 이름을 찾아 readImage로 꺼내 축소·JPEG → 독립 문단 <img>로 본문에 추가.
-      //   미스/실패/한도초과는 건너뜀(텍스트는 그대로). 총 dataURL 길이를 IMG_BUDGET 미만으로(inbox 1MB 회피). 쓰인 에셋만(전체 X).
-      const resolvedNames = [];
+      // 원본 이미지 마커를 먼저 싹 정리(HIT=깨끗 no-op, MISS=군더더기 제거) → 아래서 깨끗하게 재구성. ★1MB 예산은 삽화+에셋 공유.
+      let body = stripImageMarkers(String(tr.text || ''));
       if (hasReadImage && !noImages) {
+        // ① 삽화(inlay) = 장면 = 큰 블록 → 본문에 인라인 <img>(800px JPEG)로 박음.
         for (const id of extractInlayIds(original)) {
           if (imgBytes >= budget) { imgDropped++; continue; }
           const du = await inlayDataUrl(id);
@@ -228,16 +237,18 @@
           if (imgBytes + du.length > budget) { imgDropped++; continue; }
           imgBytes += du.length; imgCount++; body += '\n\n<img src="' + du + '">';
         }
+        // ② 에셋(감정 스프라이트) = 작게 → assets 맵에 1회만 담고, 본문엔 {{img::이름}} 마커만 → 우리 import가 카드 크기·스타일로 렌더(블록 X).
         for (const a of usedAssets(original, assetByName)) {
-          if (imgBytes >= budget) { imgDropped++; continue; }
-          const du = await inlayDataUrl(a.path);   // readImage는 에셋 경로도 받음(실기기 확인) — 삽화와 동일 처리
-          if (!du) continue;   // 미스: resolvedNames에 안 들어가 그 에셋 마커는 남음(무해)
-          if (imgBytes + du.length > budget) { imgDropped++; continue; }
-          imgBytes += du.length; imgCount++; resolvedNames.push(a.name); body += '\n\n<img src="' + du + '">';
+          if (!assets[a.name]) {
+            if (imgBytes >= budget) { imgDropped++; continue; }
+            const du = await assetDataUrl(a.path);
+            if (!du) continue;
+            if (imgBytes + du.length > budget) { imgDropped++; continue; }
+            assets[a.name] = du; imgBytes += du.length; imgCount++;
+          }
+          if (assets[a.name]) body += '\n\n{{img::' + a.name + '}}';
         }
       }
-      // inlay/lb 마커 + 해결된 에셋 마커 제거(HIT 본문은 이미 깨끗→no-op, MISS 본문의 군더더기 참조 정리). 미해결 에셋 마커는 그대로.
-      body = stripResolvedMarkers(body, resolvedNames);
       if (!body.trim()) continue;   // 텍스트·이미지 둘 다 없으면 건너뜀(이미지만 있으면 보냄)
       messages.push({ role: m.role === 'user' ? 'user' : 'char', text: body });
     }
@@ -245,7 +256,7 @@
     // ★챗 지문(fp) = 캐릭터명 + 첫 메시지 해시(이어가도 불변) → 보관 시 같은 챗 이어붙이기·중복 방지.
     const firstRaw = raw.find((m) => m && typeof m.data === 'string' && m.data.trim());
     const fp = fpHash(charName + '::' + ((firstRaw && firstRaw.data) || ''));
-    return { charName, messages, hit, miss, fp, imgCount, imgDropped };
+    return { charName, messages, hit, miss, fp, imgCount, imgDropped, assets };
   }
 
   // ── Firestore REST(타입 지정 본문)로 inbox에 create ───────────────
@@ -254,7 +265,11 @@
       role: { stringValue: m.role }, text: { stringValue: m.text },
     } } })) } };
   }
-  async function postInbox(uid, secret, charName, messages, translated, fp) {
+  function assetsMapValue(assets) {   // {이름:dataURL} → Firestore mapValue
+    const fields = {}; for (const k of Object.keys(assets || {})) fields[k] = { stringValue: String(assets[k]) };
+    return { mapValue: { fields } };
+  }
+  async function postInbox(uid, secret, charName, messages, translated, fp, assets) {
     const body = { fields: {
       uid: { stringValue: uid },
       key: { stringValue: secret },
@@ -265,6 +280,7 @@
       messages: msgArray(messages),
       fp: { stringValue: String(fp || '') },   // ★챗 지문(이어붙이기용)
     } };
+    if (assets && Object.keys(assets).length) body.fields.assets = assetsMapValue(assets);   // ★쓰인 에셋(이름→dataURL) — import가 카드 스타일로 렌더
     const fetchFn = (typeof risu.nativeFetch === 'function') ? risu.nativeFetch : fetch;   // CORS 우회(데스크탑/탑) 위해 nativeFetch 우선
     let res;
     try { res = await fetchFn(INBOX_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
@@ -365,13 +381,13 @@
       setStatus('progress', '챗을 읽고 번역 캐시를 적용하는 중...');
       try {
         const noImages = document.getElementById('noImgChk').checked;
-        const { charName, messages, hit, miss, fp, imgCount, imgDropped } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`), { noImages });
+        const { charName, messages, hit, miss, fp, imgCount, imgDropped, assets } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`), { noImages });
         if (!messages.length) { setStatus('error', '보낼 메시지가 없습니다.'); btn.disabled = false; return; }
         if (messages.length > 5000) { setStatus('error', '메시지가 너무 많습니다(5000개 초과). 챗을 나눠 보내주세요.'); btn.disabled = false; return; }
         setStatus('progress', `로그파파로 보내는 중... (${messages.length}개)`);
-        await postInbox(parsed.uid, parsed.secret, charName, messages, hit > 0, fp);
-        let okMsg = `보냈어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개, 캐시 ${hit} / 원문 ${miss}${imgCount ? ` · 삽화 ${imgCount}장` : ''})<br>로그파파 앱(서재)의 받은 로그함에서 보관하세요.`;
-        if (imgDropped > 0) okMsg += `<br><br>삽화 ${imgDropped}장은 용량(1MB) 한도로 못 담았어요 — 챗을 나눠 보내면 다 들어와요.`;
+        await postInbox(parsed.uid, parsed.secret, charName, messages, hit > 0, fp, assets);
+        let okMsg = `보냈어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개, 캐시 ${hit} / 원문 ${miss}${imgCount ? ` · 이미지 ${imgCount}개` : ''})<br>로그파파 앱(서재)의 받은 로그함에서 보관하세요.`;
+        if (imgDropped > 0) okMsg += `<br><br>이미지 ${imgDropped}개는 용량(1MB) 한도로 못 담았어요 — “이미지 JSON 내려받기”로 받으면 다 들어와요.`;
         if (miss > 0) okMsg += `<br><br>${hit === 0 ? '번역이 안 따라왔어요 — ' : '일부는 원문이에요 — '}리스에서 <b>LLM 번역기</b>로 번역한 챗만 따라와요(구글·DeepL은 플러그인용 캐시를 안 남깁니다). 또는 GigaTrans로 번역한 챗은 번역기와 무관하게 그대로 들어와요.`;
         setStatus(hit === 0 && miss > 0 ? 'info' : 'success', okMsg);
       } catch (err) {
@@ -387,9 +403,9 @@
       setStatus('progress', '챗을 읽고 번역·이미지를 모으는 중...');
       try {
         const noImages = document.getElementById('noImgChk').checked;
-        const { charName, messages, imgCount } = await buildMessages((c, t) => setStatus('progress', `모으는 중... ${c}/${t}`), { noImages, noBudget: true });
+        const { charName, messages, imgCount, assets } = await buildMessages((c, t) => setStatus('progress', `모으는 중... ${c}/${t}`), { noImages, noBudget: true });
         if (!messages.length) { setStatus('error', '내려받을 메시지가 없습니다.'); dl.disabled = false; return; }
-        const obj = { type: 'risuChat', ver: 1, data: { name: charName, message: messages.map((m) => ({ role: m.role, data: m.text })) } };
+        const obj = { type: 'risuChat', ver: 1, data: { name: charName, message: messages.map((m) => ({ role: m.role, data: m.text })) }, assets };   // ★assets 맵 동봉(우리 import가 카드 스타일로 렌더)
         const iso = new Date().toISOString().replace(/[:.]/g, '-');
         const safe = (String(charName).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || '로그');
         const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
@@ -413,5 +429,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.7.0');
+  console.info('[LogPapaPush] loaded v1.8.0');
 })();
