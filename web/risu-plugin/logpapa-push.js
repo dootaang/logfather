@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.6.0
+//@version 1.7.0
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 삽화(생성 이미지) + 에셋(감정 이미지)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -31,6 +31,7 @@
     check: '<path d="M5 12l5 5l10 -10"/>',
     alert: '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.24 3.957l-8.422 14.06a1.989 1.989 0 0 0 1.7 2.983h16.845a1.989 1.989 0 0 0 1.7 -2.983l-8.423 -14.06a1.989 1.989 0 0 0 -3.4 0z"/>',
     loader: '<path d="M12 3a9 9 0 1 0 9 9"/>',
+    download: '<path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/>',
   };
   const ic = (n, cls) => `<svg class="ic${cls ? ' ' + cls : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n] || ''}</svg>`;
 
@@ -197,7 +198,10 @@
     return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
-  async function buildMessages(onProgress) {
+  async function buildMessages(onProgress, opts) {
+    opts = opts || {};
+    const noImages = !!opts.noImages;                          // 토글: 이미지(삽화·에셋) 빼고 텍스트만
+    const budget = opts.noBudget ? Infinity : IMG_BUDGET;      // 다운로드(noBudget)=inbox 1MB 우회, 이미지 전량 포함
     const { char, chat } = await getCurrentChat();
     const raw = Array.isArray(chat.message) ? chat.message : [];
     const messages = []; let hit = 0, miss = 0, imgCount = 0, imgDropped = 0, imgBytes = 0;
@@ -216,19 +220,19 @@
       // ★이미지 흡수 — 원문 마커에서 삽화(inlay) id + 에셋 이름을 찾아 readImage로 꺼내 축소·JPEG → 독립 문단 <img>로 본문에 추가.
       //   미스/실패/한도초과는 건너뜀(텍스트는 그대로). 총 dataURL 길이를 IMG_BUDGET 미만으로(inbox 1MB 회피). 쓰인 에셋만(전체 X).
       const resolvedNames = [];
-      if (hasReadImage) {
+      if (hasReadImage && !noImages) {
         for (const id of extractInlayIds(original)) {
-          if (imgBytes >= IMG_BUDGET) { imgDropped++; continue; }
+          if (imgBytes >= budget) { imgDropped++; continue; }
           const du = await inlayDataUrl(id);
           if (!du) continue;
-          if (imgBytes + du.length > IMG_BUDGET) { imgDropped++; continue; }
+          if (imgBytes + du.length > budget) { imgDropped++; continue; }
           imgBytes += du.length; imgCount++; body += '\n\n<img src="' + du + '">';
         }
         for (const a of usedAssets(original, assetByName)) {
-          if (imgBytes >= IMG_BUDGET) { imgDropped++; continue; }
+          if (imgBytes >= budget) { imgDropped++; continue; }
           const du = await inlayDataUrl(a.path);   // readImage는 에셋 경로도 받음(실기기 확인) — 삽화와 동일 처리
           if (!du) continue;   // 미스: resolvedNames에 안 들어가 그 에셋 마커는 남음(무해)
-          if (imgBytes + du.length > IMG_BUDGET) { imgDropped++; continue; }
+          if (imgBytes + du.length > budget) { imgDropped++; continue; }
           imgBytes += du.length; imgCount++; resolvedNames.push(a.name); body += '\n\n<img src="' + du + '">';
         }
       }
@@ -328,7 +332,10 @@
         <div class="section">
           <div class="section-title">이 세션 보내기 (번역 캐시 적용)</div>
           <div class="desc">지금 보고 있는 채팅 세션을 번역 캐시와 함께 로그파파 서재로 보냅니다(리스 <b>LLM 번역기</b>로 번역한 부분만 — 구글·DeepL은 캐시를 안 남겨요). 캐시 없는 메시지는 원문 유지.</div>
+          <label style="display:flex;align-items:center;gap:8px;margin:10px 0;cursor:pointer;font-size:14px;"><input type="checkbox" id="noImgChk" /> 이미지(삽화·에셋) 빼고 텍스트만 보내기</label>
           <button class="btn btn-primary" id="sendBtn">${ic('send')} 이 세션 보내기</button>
+          <div class="hint" style="margin-top:14px;">이미지가 많아 전송이 무겁거나 실패하면(받은편지함 1MB 한도) 아래로 받아 “채팅 가져오기”로 넣으세요 — 용량 제한 없이 삽화·에셋이 다 들어옵니다.</div>
+          <button class="btn btn-primary" id="dlBtn" style="margin-top:8px;opacity:.9;">${ic('download')} 번역+이미지 JSON 내려받기</button>
         </div>
         <div id="status" class="status" style="display:none;"></div>
       </div>
@@ -357,7 +364,8 @@
       btn.disabled = true;
       setStatus('progress', '챗을 읽고 번역 캐시를 적용하는 중...');
       try {
-        const { charName, messages, hit, miss, fp, imgCount, imgDropped } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`));
+        const noImages = document.getElementById('noImgChk').checked;
+        const { charName, messages, hit, miss, fp, imgCount, imgDropped } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`), { noImages });
         if (!messages.length) { setStatus('error', '보낼 메시지가 없습니다.'); btn.disabled = false; return; }
         if (messages.length > 5000) { setStatus('error', '메시지가 너무 많습니다(5000개 초과). 챗을 나눠 보내주세요.'); btn.disabled = false; return; }
         setStatus('progress', `로그파파로 보내는 중... (${messages.length}개)`);
@@ -372,6 +380,26 @@
         btn.disabled = false;
       }
     });
+
+    // (b) 번역+이미지 JSON 내려받기 — ★inbox 1MB 우회. 받은 파일을 앱의 "채팅 가져오기"로 임포트(우리 parseRisuLog가 읽는 risuChat 형식, 본문에 이미지 임베드).
+    document.getElementById('dlBtn').addEventListener('click', async () => {
+      const dl = document.getElementById('dlBtn'); dl.disabled = true;
+      setStatus('progress', '챗을 읽고 번역·이미지를 모으는 중...');
+      try {
+        const noImages = document.getElementById('noImgChk').checked;
+        const { charName, messages, imgCount } = await buildMessages((c, t) => setStatus('progress', `모으는 중... ${c}/${t}`), { noImages, noBudget: true });
+        if (!messages.length) { setStatus('error', '내려받을 메시지가 없습니다.'); dl.disabled = false; return; }
+        const obj = { type: 'risuChat', ver: 1, data: { name: charName, message: messages.map((m) => ({ role: m.role, data: m.text })) } };
+        const iso = new Date().toISOString().replace(/[:.]/g, '-');
+        const safe = (String(charName).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || '로그');
+        const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = `${safe}_${iso}_chat.json`;
+        document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+        setStatus('success', `내려받았어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개${imgCount ? ` · 이미지 ${imgCount}장` : ''}).<br>로그파파 앱(서재)의 <b>채팅 가져오기</b>로 넣으면 삽화·에셋이 다 보여요(용량 제한 없음).`);
+      } catch (err) { setStatus('error', escapeHtml((err && err.message) || String(err))); }
+      finally { dl.disabled = false; }
+    });
   }
 
   await risu.registerButton(
@@ -385,5 +413,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.6.0');
+  console.info('[LogPapaPush] loaded v1.7.0');
 })();
