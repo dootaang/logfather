@@ -14,7 +14,7 @@
 // kvLoad/kvSave는 작은 블롭이라 Firestore kv 문서. 동기 getter 유지를 위해 로그인 시
 // 작은 KV 블롭을 메모리에 미리 적재(hydrate)하고 write-through 한다 → 호출부 시그니처 불변.
 // @ts-nocheck
-export const IDB_NAME = 'pro2', IDB_STORE = 'cards', IDB_KEY = 'last', IDB_LOGS = 'logs', IDB_META = 'meta', IDB_FONTS = 'fonts', IDB_BLOBS = 'blobs', IDB_SRC = 'srcCatalog', IDB_SRCFILE = 'srcFiles';
+export const IDB_NAME = 'pro2', IDB_STORE = 'cards', IDB_KEY = 'last', IDB_LOGS = 'logs', IDB_META = 'meta', IDB_FONTS = 'fonts', IDB_BLOBS = 'blobs', IDB_SRC = 'srcCatalog', IDB_SRCFILE = 'srcFiles', IDB_TRCACHE = 'trcache';
 
 // 동기화 대상 KV 키(한 곳에서 관리 → Firebase 마이그레이션/문서모델이 참조).
 export const READ_KEY = 'pro2-read';            // 읽기상태(이어보기·읽음·즐겨찾기·lastReadAt)
@@ -26,7 +26,7 @@ export const OPEN_LOG_KEY = 'pro2-open-log';
 
 export function idbOpen(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_NAME, 6);   // v4: 커스텀 폰트 / v5: 굳힌 이미지 dedup 블롭 / v6: 관리실 보관(소스 카탈로그+원본파일)
+    const req = indexedDB.open(IDB_NAME, 7);   // v4: 커스텀 폰트 / v5: 굳힌 이미지 dedup 블롭 / v6: 관리실 보관(소스 카탈로그+원본파일) / v7: 번역 캐시(trcache)
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
@@ -37,6 +37,8 @@ export function idbOpen(): Promise<IDBDatabase> {
       // v6 관리실 보관(데스크탑 전용·서재와 독립·동기화 안 함): 카탈로그(소스 메타, id=파일해시) + 원본파일(콘텐츠해시 dedup).
       if (!db.objectStoreNames.contains(IDB_SRC)) db.createObjectStore(IDB_SRC, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(IDB_SRCFILE)) db.createObjectStore(IDB_SRCFILE, { keyPath: 'h' });
+      // v7 번역 캐시(★로컬 전용·동기화/백업 안 함): k=정규화원문+대상언어+프롬프트해시, v=번역문, t=최근사용(LRU 인덱스).
+      if (!db.objectStoreNames.contains(IDB_TRCACHE)) { const ts = db.createObjectStore(IDB_TRCACHE, { keyPath: 'k' }); ts.createIndex('t', 't'); }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -436,5 +438,37 @@ export async function archiveImport(entry: any, bytes: Uint8Array): Promise<void
     tx.objectStore(IDB_SRCFILE).put({ h: id, bytes: b, format: e.format });
     tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
   });
+  db.close();
+}
+
+// ── 번역 캐시(★로컬 전용·동기화/백업 안 함) — 한 번 번역한 블록을 키(정규화원문+대상언어+프롬프트해시)로 재사용. LRU 상한. ──
+const TRCACHE_CAP = 5000;   // 항목 수 상한(초과 시 가장 오래 안 쓴 것부터 제거)
+export async function trcacheGet(keys: string[]): Promise<(string | null)[]> {
+  if (!keys || !keys.length) return [];
+  const db = await idbOpen();
+  const out = await new Promise<(string | null)[]>((res) => {
+    const tx = db.transaction(IDB_TRCACHE, 'readonly'); const st = tx.objectStore(IDB_TRCACHE);
+    const r: (string | null)[] = new Array(keys.length).fill(null); let left = keys.length;
+    keys.forEach((k, i) => { const g = st.get(k); g.onsuccess = () => { if (g.result) r[i] = g.result.v; if (--left === 0) res(r); }; g.onerror = () => { if (--left === 0) res(r); }; });
+    if (!left) res(r);
+  });
+  // LRU 터치: 히트한 키의 최근사용 시각 갱신(best-effort).
+  const hitKeys = keys.filter((k, i) => out[i] != null);
+  if (hitKeys.length) { try { await new Promise<void>((res) => { const tx = db.transaction(IDB_TRCACHE, 'readwrite'); const st = tx.objectStore(IDB_TRCACHE); const now = Date.now(); hitKeys.forEach((k) => { const g = st.get(k); g.onsuccess = () => { if (g.result) { g.result.t = now; st.put(g.result); } }; }); tx.oncomplete = () => res(); tx.onerror = () => res(); }); } catch (_) {} }
+  db.close(); return out;
+}
+export async function trcachePut(items: { k: string; v: string }[]): Promise<void> {
+  if (!items || !items.length) return;
+  const db = await idbOpen();
+  const now = Date.now();
+  await new Promise<void>((res) => { const tx = db.transaction(IDB_TRCACHE, 'readwrite'); const st = tx.objectStore(IDB_TRCACHE); for (const it of items) st.put({ k: it.k, v: it.v, t: now }); tx.oncomplete = () => res(); tx.onerror = () => res(); });
+  // LRU 정리: 상한 초과 시 가장 오래된 사용분부터 제거.
+  try {
+    const cnt = await new Promise<number>((res) => { const c = db.transaction(IDB_TRCACHE, 'readonly').objectStore(IDB_TRCACHE).count(); c.onsuccess = () => res(c.result || 0); c.onerror = () => res(0); });
+    if (cnt > TRCACHE_CAP) {
+      const remove = cnt - TRCACHE_CAP;
+      await new Promise<void>((res) => { const tx = db.transaction(IDB_TRCACHE, 'readwrite'); const cur = tx.objectStore(IDB_TRCACHE).index('t').openCursor(); let n = 0; cur.onsuccess = () => { const c = cur.result; if (c && n < remove) { c.delete(); n++; c.continue(); } }; tx.oncomplete = () => res(); tx.onerror = () => res(); });
+    }
+  } catch (_) {}
   db.close();
 }

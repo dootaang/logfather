@@ -9,6 +9,7 @@
 // @ts-nocheck
 import { translateBlocks } from '../../core/translate/translateLog.js';
 import { getWebConfig, webPublicConfig, setWebConfig, clearWebConfig, webTranslate } from './webLlm.js';
+import { trcacheGet, trcachePut } from './store.js';   // 번역 캐시(로컬 — 같은 원문·프롬프트면 API 0)
 
 const D = () => (window as any).desktop;
 /** 데스크탑(IPC 어댑터)인가. 아니면 웹(브라우저 fetch). */
@@ -109,10 +110,34 @@ export function getCombineOn(): boolean { try { const v = localStorage.getItem(C
 export function setCombineOn(on: boolean): void { try { localStorage.setItem(COMBINE_KEY, on ? '1' : '0'); } catch (_) {} }
 
 export interface UnitsResult { blocks: string[]; translated: number; skipped: number; failed: { index: number; error: string }[]; }
+// 번역 캐시 키: 정규화 원문 + 대상언어 + 프롬프트 해시(FNV-1a). 프롬프트 바뀌면 미스=새 문체 재번역, 같으면 히트=공짜.
+function fnv(s: string): string { let h = 0x811c9dc5; s = String(s || ''); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16); }
+function trKey(unit: string, target: string, promptHash: string): string { return String(unit == null ? '' : unit).replace(/\r\n/g, '\n').trim() + '␟' + target + '␟' + promptHash; }
 // 텍스트 단위 배열을 한국어로 번역(이미 한국어면 스킵). 마크업 보존·진행률·부분 실패 격리는 코어가 담당.
-// 결합 번역(기본 켬): 여러 블록을 토큰 예산 내 배치로 묶어 한 번에 — 모델이 헛짓하면 코어가 그 배치만 순차 폴백.
-export async function translateUnits(units: string[], stylePrompt: string, onProgress?: (d: number, t: number) => void): Promise<UnitsResult> {
-  return await translateBlocks(units, makeRawTranslate(stylePrompt), { skipKorean: true, onProgress, combine: getCombineOn(), maxResponse: getActiveMaxResponse() });
+// ★로컬 캐시: 같은 원문+같은 프롬프트면 API 호출 0(히트) — 재푸시·삭제후재임포트·유실복구에서 공짜. opts.force=캐시 무시·갱신("다시 번역").
+// 결합 번역(기본 켬): 미스만 코어 translateBlocks로(토큰 예산 배치 → 헛짓하면 그 배치만 순차 폴백). 성공·실제 번역분만 캐시 기록.
+export async function translateUnits(units: string[], stylePrompt: string, onProgress?: (d: number, t: number) => void, opts?: { force?: boolean }): Promise<UnitsResult> {
+  const force = !!(opts && opts.force);
+  const TARGET = '한국어';
+  const ph = fnv(stylePrompt);
+  const keys = units.map((u) => trKey(u, TARGET, ph));
+  let hits: (string | null)[] = new Array(units.length).fill(null);
+  if (!force) { try { hits = await trcacheGet(keys); } catch (_) {} }
+  const out = units.slice();
+  let cachedCount = 0; const missIdx: number[] = [];
+  for (let i = 0; i < units.length; i++) { if (hits[i] != null) { out[i] = hits[i] as string; cachedCount++; } else missIdx.push(i); }
+  let translated = 0, skipped = 0; const failed: { index: number; error: string }[] = [];
+  if (missIdx.length) {
+    const missUnits = missIdx.map((i) => units[i]);
+    const res = await translateBlocks(missUnits, makeRawTranslate(stylePrompt), { skipKorean: true, onProgress, combine: getCombineOn(), maxResponse: getActiveMaxResponse() });
+    translated = res.translated; skipped = res.skipped;
+    const failedK = new Set(res.failed.map((f: any) => f.index));
+    res.failed.forEach((f: any) => failed.push({ index: missIdx[f.index], error: f.error }));
+    const toCache: { k: string; v: string }[] = [];
+    missIdx.forEach((origI, k) => { out[origI] = res.blocks[k]; if (!failedK.has(k) && res.blocks[k] !== units[origI]) toCache.push({ k: keys[origI], v: res.blocks[k] }); });   // 실제 번역분만 캐시(한국어스킵·실패·미변경 제외)
+    if (toCache.length) { try { await trcachePut(toCache); } catch (_) {} }
+  }
+  return { blocks: out, translated: translated + cachedCount, skipped, failed };
 }
 
 export interface TranslateResult { restore: () => void; translated: number; skipped: number; failed: number; }

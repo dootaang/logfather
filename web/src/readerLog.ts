@@ -98,7 +98,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
   }
 
   // 여러 로그 번역(구조화 원본→재렌더→재저장). 한국어/역할제외 스킵. 원문 백업 restore() 반환.
-  async function runTranslateFlow(logs: any[], char: string, opts: { excludeRole?: string; onStep?: (m: string) => void } = {}): Promise<any | null> {
+  async function runTranslateFlow(logs: any[], char: string, opts: { excludeRole?: string; onStep?: (m: string) => void; force?: boolean } = {}): Promise<any | null> {
     const stylePrompt = getWorkPrompt(char);
     const excludeRole = opts.excludeRole || '';
     const slots = logs.map((r) => logTextSlots(r));
@@ -109,7 +109,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     const step = opts.onStep || ((m: string) => setStatus(m));
     const backup = logs.map((r) => ({ r, input: r.input, html: r.html, chat: clonej(r.chat), diary: clonej(r.diary), webnovel: clonej(r.webnovel), cardCfg: clonej(r.cardCfg), userCardCss: r.userCardCss }));
     let res: any;
-    try { res = await translateUnits(flat, stylePrompt, (d, t) => step(`번역 중… (${d}/${t})`)); }
+    try { res = await translateUnits(flat, stylePrompt, (d, t) => step(`번역 중… (${d}/${t})`), { force: !!opts.force }); }
     catch (e: any) { setStatus('번역 실패: ' + ((e && e.message) || '')); return null; }
     ref.forEach(([li, si], k) => { if (res.blocks[k] !== flat[k]) slots[li].set(si, res.blocks[k]); });
     let changedLogs = 0;
@@ -227,7 +227,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       setWorkPrompt(char, ta.value);   // 최신 프롬프트 반영 후 번역
       runB.disabled = true; runB.textContent = '번역 중…';
       if (r && r.orig) applyOrig(r);   // 원문에서 다시(원문 스냅샷은 보존)
-      await runTranslateFlow([r], char, {});
+      await runTranslateFlow([r], char, { force: !!(r && r.orig) });   // 다시 번역=캐시 무시(새로 갱신), 첫 번역=캐시 사용
       origView[r.id] = false;
       pop.remove();
       location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route();
@@ -292,7 +292,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
           if (!(await ensureTranslateReady(setStatus))) return;
           const o = trB!.innerHTML; trB!.disabled = true; trB!.textContent = '번역 중…';
           applyOrig(r);   // 원문에서 다시 시작(r.orig는 보존됨 → 번역이 다시 덮어씀)
-          await runTranslateFlow([r], char, {});
+          await runTranslateFlow([r], char, { force: true });   // "다시 번역" = 캐시 무시하고 새로(캐시도 갱신)
           origView[r.id] = false;
           trB!.disabled = false; trB!.innerHTML = o;
           location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route();
