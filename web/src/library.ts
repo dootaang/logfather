@@ -182,7 +182,12 @@ async function syncMetaCache(char: string) { try { const mm = await metaGet(char
 
 // 작품 표시 이름 = meta.name(사용자가 바꾼 이름) || char(불변 작품 키 — 기존엔 이름이기도 함).
 // char는 절대 안 바뀌는 키(그룹핑·라우팅·읽기상태·공유), 사람이 보는 글자만 이 함수로.
-const nameOf = (char: string): string => (metaByChar[char] && metaByChar[char].name) || char;
+const nameOf = (char: string): string => {
+  const n = metaByChar[char] && metaByChar[char].name;
+  if (n) return n;
+  // ★불변 작품키(wk_…)는 절대 화면에 노출 금지 — meta.name이 없거나 안 실려도 raw 키 대신 사람이 읽을 폴백.
+  return /^wk_[a-z0-9]+$/i.test(char) ? '이름 없는 작품' : char;
+};
 
 // 작품(캐릭터)별 묶음 — 기본(검색/정렬 미적용). 홈 선반·전체목록·작품상세가 공유.
 function seriesBase(): any[] {
@@ -199,7 +204,10 @@ function seriesBase(): any[] {
     const cover = (metaByChar[char] && metaByChar[char].cover) || eps.map((e: any) => firstImg(e.html)).find(Boolean) || '';   // 사용자 지정 표지 우선
     const lastReadId = read.lastByChar[char];
     const readIdx = lastReadId ? eps.findIndex((e: any) => e.id === lastReadId) : -1;
-    return { char, name: nameOf(char), eps, count: eps.length, latest, cover, fav: !!read.fav[char], unread, lastReadId, readIdx, lastReadAt: lastAt[char] || 0 };
+    // 표시이름: meta.name 우선 → 로그에 저장된 표시이름(workName, meta 실패 대비) → wk_ 하드닝 폴백.
+    const logName = eps.map((e: any) => e.workName).find(Boolean) || '';
+    const name = (metaByChar[char] && metaByChar[char].name) || logName || nameOf(char);
+    return { char, name, eps, count: eps.length, latest, cover, fav: !!read.fav[char], unread, lastReadId, readIdx, lastReadAt: lastAt[char] || 0 };
   });
 }
 // 전체 목록용: 검색 + 정렬 적용.
@@ -1040,7 +1048,7 @@ async function buildAndSaveChat(parsed: any, opts: any) {
     const chunk = eps[i];
     const s = defaultSettings(); s.template = opts.design; s.profile.botName = opts.char;
     const input = chunk.map((m: any) => m.text).join('\n\n');
-    const rec: any = { id: newChatId() + '-' + i, char: workKey, title: `${i + 1}화`, date: today, input, html: '', template: opts.design, order: i };
+    const rec: any = { id: newChatId() + '-' + i, char: workKey, title: `${i + 1}화`, date: today, input, html: '', template: opts.design, order: i, workName: opts.char };
     // 디자인별 구조(편집기에서 그대로 복원 가능)도 함께 저장.
     if (opts.design === 'card' && opts.roleColor) {
       const cardCfg = { blocks: chunk.map((m: any) => ({ role: m.role, content: m.text, title: '', subtitle: '' })), collapseAll: false, userLabel: opts.userLabel || '나', charLabel: opts.charLabel || opts.char, numbered: !!opts.numbered };
