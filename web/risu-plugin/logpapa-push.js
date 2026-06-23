@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.4.2
+//@version 1.4.3
 //@description 현재 채팅 세션을 번역 캐시 적용본으로 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -110,6 +110,8 @@
     const cleaned = cleanTranslatedHtml(best.value);
     return cleaned ? { text: cleaned, hit: true } : { text: original, hit: false };
   }
+  // 안정 해시(FNV-1a) — 챗 지문(fp)용.
+  function fpHash(s) { let h = 0x811c9dc5; s = String(s || ''); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16); }
   async function buildMessages(onProgress) {
     const { char, chat } = await getCurrentChat();
     const raw = Array.isArray(chat.message) ? chat.message : [];
@@ -128,7 +130,11 @@
       if (!String(text).trim()) continue;
       messages.push({ role: m.role === 'user' ? 'user' : 'char', text: String(text) });
     }
-    return { charName: String(char.name || '리스 로그').slice(0, 300), messages, hit, miss };   // 규칙: char ≤300자
+    const charName = String(char.name || '리스 로그').slice(0, 300);   // 규칙: char ≤300자
+    // ★챗 지문(fp) = 캐릭터명 + 첫 메시지 해시(이어가도 불변) → 보관 시 같은 챗 이어붙이기·중복 방지.
+    const firstRaw = raw.find((m) => m && typeof m.data === 'string' && m.data.trim());
+    const fp = fpHash(charName + '::' + ((firstRaw && firstRaw.data) || ''));
+    return { charName, messages, hit, miss, fp };
   }
 
   // ── Firestore REST(타입 지정 본문)로 inbox에 create ───────────────
@@ -137,7 +143,7 @@
       role: { stringValue: m.role }, text: { stringValue: m.text },
     } } })) } };
   }
-  async function postInbox(uid, secret, charName, messages, translated) {
+  async function postInbox(uid, secret, charName, messages, translated, fp) {
     const body = { fields: {
       uid: { stringValue: uid },
       key: { stringValue: secret },
@@ -146,6 +152,7 @@
       source: { stringValue: 'risu' },
       createdAt: { integerValue: String(Date.now()) },
       messages: msgArray(messages),
+      fp: { stringValue: String(fp || '') },   // ★챗 지문(이어붙이기용)
     } };
     const fetchFn = (typeof risu.nativeFetch === 'function') ? risu.nativeFetch : fetch;   // CORS 우회(데스크탑/탑) 위해 nativeFetch 우선
     let res;
@@ -243,11 +250,11 @@
       btn.disabled = true;
       setStatus('progress', '챗을 읽고 번역 캐시를 적용하는 중...');
       try {
-        const { charName, messages, hit, miss } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`));
+        const { charName, messages, hit, miss, fp } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`));
         if (!messages.length) { setStatus('error', '보낼 메시지가 없습니다.'); btn.disabled = false; return; }
         if (messages.length > 5000) { setStatus('error', '메시지가 너무 많습니다(5000개 초과). 챗을 나눠 보내주세요.'); btn.disabled = false; return; }
         setStatus('progress', `로그파파로 보내는 중... (${messages.length}개)`);
-        await postInbox(parsed.uid, parsed.secret, charName, messages, hit > 0);
+        await postInbox(parsed.uid, parsed.secret, charName, messages, hit > 0, fp);
         let okMsg = `보냈어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개, 캐시 ${hit} / 원문 ${miss})<br>로그파파 앱(서재)의 받은 로그함에서 보관하세요.`;
         if (miss > 0) okMsg += `<br><br>${hit === 0 ? '번역이 안 따라왔어요 — ' : '일부는 원문이에요 — '}리스에서 <b>LLM 번역기</b>로 번역한 챗만 따라와요(구글·DeepL은 플러그인용 캐시를 안 남깁니다). 또는 GigaTrans로 번역한 챗은 번역기와 무관하게 그대로 들어와요.`;
         setStatus(hit === 0 && miss > 0 ? 'info' : 'success', okMsg);
@@ -270,5 +277,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.4.2');
+  console.info('[LogPapaPush] loaded v1.4.3');
 })();

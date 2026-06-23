@@ -1024,7 +1024,7 @@ function showChatImportModal(parsed: any, total: number, onDone?: () => Promise<
   go.onclick = async () => {
     go.disabled = true; go.textContent = '가져오는 중…';
     try {
-      await buildAndSaveChat(parsed, { char: (nameIn.value.trim() || parsed.char), design: design.value, mode: mode.value, n: Math.max(1, +num.value || 1), roleColor: roleCb.checked, userLabel: userLbl.value.trim() || '나', charLabel: charLbl.value.trim() || (nameIn.value.trim() || parsed.char), numbered: numCb.checked, clean: cleanCb.checked });
+      await buildAndSaveChat(parsed, { char: (nameIn.value.trim() || parsed.char), fp: parsed.fp, design: design.value, mode: mode.value, n: Math.max(1, +num.value || 1), roleColor: roleCb.checked, userLabel: userLbl.value.trim() || '나', charLabel: charLbl.value.trim() || (nameIn.value.trim() || parsed.char), numbered: numCb.checked, clean: cleanCb.checked });
       ov.remove();
       if (onDone) { try { await onDone(); } catch (_) {} }   // 우체통 보관: 성공 후 그 inbox 항목 삭제(배지 −1)
     } catch (e: any) { setStatus('가져오기 실패: ' + e.message); go.disabled = false; go.textContent = '가져오기'; }
@@ -1035,20 +1035,50 @@ function showChatImportModal(parsed: any, total: number, onDone?: () => Promise<
 }
 
 const newChatId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+// ── 챗 지문(fp) 이어붙이기 — 같은 챗 재유입 시 새 작품 대신 델타(새 메시지)만 잇는다(동기화 KV). ──
+const IMPORTS_KEY = 'pro2-chat-imports';   // { [fp]: { workKey, count, sig } } — count=보관한 메시지 수, sig=그 앞부분 해시
+function loadImports(): Record<string, any> { const o = kvLoad(IMPORTS_KEY); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; }
+function saveImports(o: any) { kvSave(IMPORTS_KEY, o); }
+// 메시지 시퀀스 안정 해시(FNV-1a) — "앞부분 그대로(이어짐) vs 바뀜(수정·리롤)" 판정용.
+function msgsSig(msgs: any[]): string {
+  let h = 0x811c9dc5; const s = msgs.map((m: any) => (m.role || '') + '' + (m.text || '')).join('');
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16);
+}
+
 async function buildAndSaveChat(parsed: any, opts: any) {
-  const messages = parsed.chats.flatMap((c: any) => c.messages);
-  const eps = splitMessages(messages, opts.n, opts.mode);
+  const allMsgs = parsed.chats.flatMap((c: any) => c.messages);
   const today = new Date().toISOString().slice(0, 10);
-  // 가져오기 = 늘 새 작품 한 권. 키는 불변 wk_(이름과 분리 → 나중에 이름 바꿔도 안 흩어짐, 동명 가져오기 허용),
-  // 사용자가 입력한 이름은 meta.name(표시이름)에 등록. opts.char는 표시이름으로 계속 사용(botName·라벨·상태).
-  const workKey = newWorkKey();
-  try { await metaSet({ char: workKey, name: opts.char, cover: '', desc: '' }); } catch (_) {}
+  // ★fp(챗 지문)가 있으면 같은 챗 재유입을 이어붙임: 앞부분(이미 보관한 count개)이 그대로면 델타만 그 작품에,
+  //   어긋나면(중간 수정·리롤) 새 작품으로 폴백(유실 0). fp 없으면(파일 가져오기) 늘 새 작품(기존 동작).
+  const fp = opts.fp ? String(opts.fp) : '';
+  const imports = fp ? loadImports() : {};
+  const prev = fp ? imports[fp] : null;
+  let workKey = '', startEp = 0, isAppend = false;
+  let messages = allMsgs;
+  if (prev && prev.workKey && allLogs.some((r: any) => r.char === prev.workKey)) {   // 기존 작품이 아직 있고
+    if (allMsgs.length >= prev.count && msgsSig(allMsgs.slice(0, prev.count)) === prev.sig) {   // 앞부분 일치 = 진짜 이어짐
+      messages = allMsgs.slice(prev.count);
+      if (!messages.length) {   // 새 메시지 없음(이미 최신·중복 보관) → 아무것도 안 만들고 끝
+        setStatus(`“${opts.char}” — 새 화가 없어요(이미 최신).`);
+        if (!opts.noNav) { location.hash = '#/series/' + encodeURIComponent(prev.workKey); route(); }
+        return;
+      }
+      workKey = prev.workKey; isAppend = true;
+      startEp = allLogs.filter((r: any) => r.char === workKey).length;   // 기존 화 수 → 이어서 번호
+    }
+  }
+  if (!workKey) workKey = newWorkKey();   // 새 작품(첫 보관 또는 앞부분 어긋남)
+  const eps = splitMessages(messages, opts.n, opts.mode);
+  // 새 작품일 때만 표시이름 메타 등록(이어붙이기는 기존 작품 이름·표지 유지).
+  if (!isAppend) { try { await metaSet({ char: workKey, name: opts.char, cover: '', desc: '' }); } catch (_) {} }
   const created: any[] = [];
   for (let i = 0; i < eps.length; i++) {
     const chunk = eps[i];
+    const epIdx = startEp + i;   // 이어붙이기면 기존 화 뒤로 번호 계속
     const s = defaultSettings(); s.template = opts.design; s.profile.botName = opts.char;
     const input = chunk.map((m: any) => m.text).join('\n\n');
-    const rec: any = { id: newChatId() + '-' + i, char: workKey, title: `${i + 1}화`, date: today, input, html: '', template: opts.design, order: i, workName: opts.char };
+    const rec: any = { id: newChatId() + '-' + epIdx, char: workKey, title: `${epIdx + 1}화`, date: today, input, html: '', template: opts.design, order: epIdx, workName: opts.char };
     // 디자인별 구조(편집기에서 그대로 복원 가능)도 함께 저장.
     if (opts.design === 'card' && opts.roleColor) {
       const cardCfg = { blocks: chunk.map((m: any) => ({ role: m.role, content: m.text, title: '', subtitle: '' })), collapseAll: false, userLabel: opts.userLabel || '나', charLabel: opts.charLabel || opts.char, numbered: !!opts.numbered };
@@ -1073,14 +1103,17 @@ async function buildAndSaveChat(parsed: any, opts: any) {
     }
     await logsAdd(rec); created.push(rec);
   }
+  // fp 기록 갱신 — 다음 재유입 때 이 시점까지를 "이미 보관한 앞부분"으로 보고 델타만 잇는다.
+  if (fp) { imports[fp] = { workKey, count: allMsgs.length, sig: msgsSig(allMsgs) }; saveImports(imports); }
+  const verb = isAppend ? '이어받음' : '가져옴';
   // ★가져온 직후 군더더기 정리(옵션, 기본 켜짐) — 1차 결정론(무료). runCleanFlow가 재렌더·재저장·reloadLogs.
   if (opts.clean && created.length) {
-    setStatus(`“${opts.char}” — ${eps.length}화 가져옴, 정리 중…`);
+    setStatus(`“${opts.char}” — ${eps.length}화 ${verb}, 정리 중…`);
     try { await runCleanFlow(created, workKey, { onStep: (m: string) => setStatus(m) }); } catch (_) { await reloadLogs(); }
   } else {
     await reloadLogs();
   }
-  setStatus(`“${opts.char}” — ${eps.length}화 가져옴` + (opts.clean ? ' · 정리 완료' : ''));
+  setStatus(`“${opts.char}” — ${eps.length}화 ${verb}` + (opts.clean ? ' · 정리 완료' : ''));
   if (!opts.noNav) { location.hash = '#/series/' + encodeURIComponent(workKey); route(); }   // 드레인(여러 건·백그라운드)은 네비 생략
 }
 
@@ -1122,7 +1155,7 @@ function inboxParsed(it: any): { parsed: any; total: number } {
   const messages = (Array.isArray(it && it.messages) ? it.messages : [])
     .map((m: any) => ({ role: (m && m.role === 'user') ? 'user' : 'char', text: stripGigaTrans(String((m && m.text) || '')) }))   // GigaTrans 마커 정규화(번역문만)
     .filter((m: any) => m.text.trim());
-  return { parsed: { char: name, chats: [{ name: '리스', messages }] }, total: messages.length };
+  return { parsed: { char: name, fp: String((it && it.fp) || ''), chats: [{ name: '리스', messages }] }, total: messages.length };
 }
 async function inboxDelete(id: string) { try { const R = await import('./risuPush.js'); await R.deleteInbox(id); } catch (_) { setStatus('삭제 실패 — 잠시 후 다시'); } }   // 라이브 감지가 목록·배지 갱신
 
