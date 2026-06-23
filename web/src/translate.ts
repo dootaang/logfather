@@ -167,6 +167,8 @@ const PROVIDERS: { v: string; t: string; mh: string; key: boolean; base: boolean
   { v: 'anthropic',    t: 'Anthropic (Claude)',          mh: '예: claude-3-5-haiku-latest', key: true, base: false, web: true },
   { v: 'ollama-turbo', t: 'Ollama Turbo — 클라우드(유료)', mh: '예: gpt-oss:120b',      key: true,  base: false, web: true },
   { v: 'custom',       t: '커스텀 (OpenAI 호환)',         mh: '모델명 입력',            key: true,  base: true, baseHint: '예: https://내서버/v1', web: true },
+  { v: 'copilot',      t: 'GitHub Copilot (데스크탑)',     mh: '예: gpt-4o',            key: true,  base: false, web: false },   // 데스크탑 전용(토큰 교환·CORS)
+  { v: 'vertex',       t: 'Vertex AI (데스크탑)',          mh: '예: gemini-2.5-flash, gemini-2.5-pro', key: true, base: false, web: false },   // 데스크탑 전용(JWT 서명·CORS)
 ];
 
 // 생성 파라미터 입력 정의(전 provider 공통, 사용자 조절). top_k는 Anthropic 전용.
@@ -234,6 +236,11 @@ export async function openTranslateSettings(setStatus: (m: string) => void): Pro
     card.appendChild(sw);
   }
 
+  // ── Vertex AI 전용(데스크탑) — Project/Region/서비스계정 이메일. 키 칸엔 PEM 개인키(또는 액세스 토큰). gemini·custom과 별개. ──
+  const vxProject = document.createElement('input'); vxProject.type = 'text'; vxProject.value = (cfg as any).vertexProject || ''; const vxProjectRow = row('Vertex Project ID', vxProject);
+  const vxRegion = document.createElement('input'); vxRegion.type = 'text'; vxRegion.value = (cfg as any).vertexRegion || 'global'; vxRegion.placeholder = 'global 또는 us-central1 등'; const vxRegionRow = row('Vertex Region', vxRegion);
+  const vxEmail = document.createElement('input'); vxEmail.type = 'text'; vxEmail.value = (cfg as any).vertexEmail || ''; vxEmail.placeholder = 'xxx@xxx.iam.gserviceaccount.com'; const vxEmailRow = row('Vertex 서비스계정 이메일', vxEmail);
+
   // ── 생성 파라미터(전 provider 공통, 로컬 저장) ──
   card.appendChild(Object.assign(document.createElement('div'), { className: 'import-info', textContent: '생성 파라미터 (기본값 권장 — 필요할 때만 조절)' }));
   const pgrid = document.createElement('div'); pgrid.className = 'tr-param-grid'; card.appendChild(pgrid);
@@ -296,8 +303,12 @@ export async function openTranslateSettings(setStatus: (m: string) => void): Pro
     baseRow.style.display = def.base ? '' : 'none';
     base.placeholder = def.baseHint || '비우면 기본값';
     key.placeholder = cfg.hasKey ? '저장됨 — 바꿀 때만 입력' : 'API 키 입력';
+    if (!cfg.hasKey && prov.value === 'copilot') key.placeholder = 'GitHub 토큰 (Copilot 구독 계정)';
+    else if (!cfg.hasKey && prov.value === 'vertex') key.placeholder = 'PEM 개인키(-----BEGIN PRIVATE KEY-----) 또는 액세스 토큰';
     for (const f of PARAM_FIELDS) if (f.only) paramRows[f.k].style.display = (prov.value === f.only) ? '' : 'none';   // top_k는 Anthropic만
-    thinkRow.style.display = (prov.value === 'gemini') ? '' : 'none';   // 추론 강도는 Gemini만
+    thinkRow.style.display = (prov.value === 'gemini' || prov.value === 'vertex') ? '' : 'none';   // 추론 강도는 Gemini·Vertex
+    const isVx = prov.value === 'vertex';
+    vxProjectRow.style.display = isVx ? '' : 'none'; vxRegionRow.style.display = isVx ? '' : 'none'; vxEmailRow.style.display = isVx ? '' : 'none';
   };
   prov.onchange = syncByProvider; syncByProvider();
 
@@ -311,7 +322,7 @@ export async function openTranslateSettings(setStatus: (m: string) => void): Pro
   save.onclick = async () => {
     const params: any = {};
     for (const f of PARAM_FIELDS) { const v = paramInputs[f.k].value.trim(); if (v !== '') params[f.k] = Number(v); }
-    const payload: any = { provider: prov.value, model: model.value.trim(), baseUrl: base.value.trim(), params, thinking: thinkSel.value };
+    const payload: any = { provider: prov.value, model: model.value.trim(), baseUrl: base.value.trim(), params, thinking: thinkSel.value, vertexProject: vxProject.value.trim(), vertexRegion: vxRegion.value.trim(), vertexEmail: vxEmail.value.trim() };
     if (key.value) payload.apiKey = key.value;   // 입력했을 때만 키 교체(빈 칸이면 기존 유지)
     if (sessionCb) payload.sessionOnly = sessionCb.checked;   // 웹: 세션-only 저장
     writeTaToActive(); savePresets(presetState);   // 선택 프리셋에 프롬프트 저장(로컬, 동기화 안 함)

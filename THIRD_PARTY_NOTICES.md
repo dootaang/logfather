@@ -13,6 +13,12 @@ LogPapa는 **GNU General Public License v3.0 이상(GPL-3.0-or-later)** 으로 �
   `.risup` 프리셋 해독(RisuAI 프리셋 포맷, `core/card/sourceRegex.js`)·카드 포맷 인코더(`core/card/cardEncode.js`).
   우리 코드베이스에 맞게 재구현했으며, **이 때문에 LogPapa 전체를 GPL-3.0로 공개**합니다.
 
+## GigaTrans Relay (gigatrans-relay) — RisuAI 번역 플러그인 (출처 표기)
+- 출처: GigaTrans Relay 플러그인(`gigatrans-relay`).
+- 참고한 것: 번역 요청 **스마트 재시도**(일시 오류만 재시도·치명은 즉시 명확화), **Gemini 추론 강도(thinking)** 매핑,
+  **Vertex AI**(서비스계정 JWT→OAuth2 토큰 교환→generateContent)·**GitHub Copilot**(GitHub 토큰→Copilot 토큰 교환) 연동 흐름.
+  우리 코드(`core/translate/providers.js`·`electron/llm.js`)에 맞게 재구현했습니다.
+
 ## @risuai/ccardlib — MIT  ✅ (GPL 호환)
 - 출처: npm 패키지 `@risuai/ccardlib` (저자: kwaroran)
 - 라이선스: MIT.
