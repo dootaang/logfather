@@ -6,7 +6,7 @@
 // 실제 호출만 브라우저 fetch로 한다(provider별 CORS는 그 fetch에서 드러남 — 막히면 친절 안내).
 // ★키는 이 브라우저에만 저장(localStorage 또는 세션-only sessionStorage) — Firebase 동기화 안 함.
 // @ts-nocheck
-import { providerDef, normParams, validate, buildRequest, parseResponse } from '../../core/translate/providers.js';
+import { providerDef, normParams, validate, buildRequest, parseResponse, requestWithRetry } from '../../core/translate/providers.js';
 
 const WEB_KEY = 'pro2-translate-config-web';   // backend 미경유 일반 storage = 동기화 안 함
 
@@ -46,16 +46,15 @@ export async function webTranslate(payload: any): Promise<string> {
   if (!text.trim()) return text;
   validate(cfg);
   const req = buildRequest(cfg, { text, targetLang: (payload && payload.targetLang) || '한국어', stylePrompt: payload && payload.stylePrompt, task: payload && payload.task, combine: payload && payload.combine, maxResponse: payload && payload.maxResponse });
-  let res: Response;
-  try {
-    res = await fetch(req.url, { method: req.method, headers: req.headers, body: req.body });
-  } catch (_) {
-    // 브라우저 fetch가 throw = 대개 CORS/네트워크 차단(예: OpenAI는 브라우저 직접호출 차단).
-    throw new Error('브라우저에서 이 서비스에 직접 연결하지 못했어요(CORS일 수 있음). Gemini·Anthropic을 쓰거나 데스크탑 앱을 이용하세요.');
-  }
-  const body = await res.text();
+  // ★스마트 재시도(공유): 429·5xx·타임아웃만 재시도, 치명(키·권한·모델없음·결제)은 즉시 명확 에러.
+  //   웹은 fetch throw=대개 CORS(재시도 무의미) → retryNetwork:false로 즉시 안내.
+  const body = await requestWithRetry(req, async (rq: any) => {
+    let res: Response;
+    try { res = await fetch(rq.url, { method: rq.method, headers: rq.headers, body: rq.body }); }
+    catch (_) { throw new Error('브라우저에서 이 서비스에 직접 연결하지 못했어요(CORS일 수 있음). Gemini·Anthropic을 쓰거나 데스크탑 앱을 이용하세요.'); }
+    return { status: res.status, bodyText: await res.text() };
+  }, { retries: 2, retryNetwork: false });
   let json: any = null; try { json = JSON.parse(body); } catch (_) {}
-  if (!res.ok) { const m = json && json.error && (json.error.message || json.error); throw new Error(typeof m === 'string' ? m : ('HTTP ' + res.status)); }
   if (!json) throw new Error('응답 파싱 실패');
   return parseResponse(req.kind, json);
 }

@@ -3,7 +3,7 @@
 // core/translate/providers.test.js — 공유 provider 요청 빌더 검증(웹·데스크탑 1벌 공유).
 // 실행: node core/translate/providers.test.js
 'use strict';
-const { PROVIDERS, providerDef, normParams, buildRequest, parseResponse, validate, sysPrompt, cleanSysPrompt } = require('./providers.js');
+const { PROVIDERS, providerDef, normParams, buildRequest, parseResponse, validate, sysPrompt, cleanSysPrompt, requestWithRetry, isTransientStatus, errorText } = require('./providers.js');
 
 let failed = 0;
 const check = (cond, msg) => { if (cond) console.log('  ✓ ' + msg); else { failed++; console.error('  ✗ ' + msg); } };
@@ -84,5 +84,21 @@ const check = (cond, msg) => { if (cond) console.log('  ✓ ' + msg); else { fai
   check(/Do NOT translate/i.test(cleanSysPrompt('')) , 'cleanSysPrompt 단독 동작');
 }
 
-console.log(failed === 0 ? '\nproviders: 모든 검사 통과 ✓' : `\nproviders: ${failed}개 실패 ✗`);
-process.exit(failed ? 1 : 0);
+// 9) 스마트 재시도(GigaTrans 흡수 ①) — 일시(429·5xx·타임아웃)만 재시도, 치명(4xx)은 즉시. sleep 주입으로 즉시 실행.
+async function retryTests() {
+  const nosleep = () => Promise.resolve();
+  const stub = (seq) => { let i = 0; const f = async () => { const v = seq[Math.min(i, seq.length - 1)]; i++; if (v && v.throw) throw new Error('net'); return v; }; f.count = () => i; return f; };
+  check(isTransientStatus(429) && isTransientStatus(500) && isTransientStatus(503) && isTransientStatus(408), '일시: 429·5xx·408');
+  check(!isTransientStatus(400) && !isTransientStatus(401) && !isTransientStatus(404), '치명: 400·401·404 비일시');
+  { const f = stub([{ status: 200, bodyText: 'OK' }]); const r = await requestWithRetry({ url: 'u' }, f, { sleep: nosleep }); check(r === 'OK' && f.count() === 1, '200 즉시 성공(1회)'); }
+  { const f = stub([{ status: 401, bodyText: '{"error":{"message":"bad key"}}' }]); let msg = ''; try { await requestWithRetry({ url: 'u' }, f, { sleep: nosleep }); } catch (e) { msg = e.message; } check(f.count() === 1 && /키|401/.test(msg), '401 치명=재시도 0 + 명확 에러'); }
+  { const f = stub([{ status: 429, bodyText: '' }, { status: 429, bodyText: '' }, { status: 200, bodyText: 'OK' }]); const r = await requestWithRetry({ url: 'u' }, f, { sleep: nosleep, retries: 2 }); check(r === 'OK' && f.count() === 3, '429 재시도 후 성공(3회)'); }
+  { const f = stub([{ status: 503, bodyText: '' }]); let msg = ''; try { await requestWithRetry({ url: 'u' }, f, { sleep: nosleep, retries: 2 }); } catch (e) { msg = e.message; } check(f.count() === 3 && /서버|503/.test(msg), '503 소진=3회 후 에러'); }
+  { const f = stub([{ throw: true }]); let c = 0; try { await requestWithRetry({ url: 'u' }, f, { sleep: nosleep, retryNetwork: false }); } catch (_) { c = f.count(); } check(c === 1, '네트워크 throw + retryNetwork:false = 1회(즉시)'); }
+  { const f = stub([{ throw: true }, { throw: true }, { status: 200, bodyText: 'OK' }]); const r = await requestWithRetry({ url: 'u' }, f, { sleep: nosleep, retries: 2, retryNetwork: true }); check(r === 'OK' && f.count() === 3, '네트워크 throw + retryNetwork:true = 재시도 후 성공'); }
+  check(/키|권한/.test(errorText(401, '')) && /모델|주소/.test(errorText(404, '')) && /서버/.test(errorText(500, '')), 'errorText 상태별 한국어 힌트');
+}
+retryTests().then(() => {
+  console.log(failed === 0 ? '\nproviders: 모든 검사 통과 ✓' : `\nproviders: ${failed}개 실패 ✗`);
+  process.exit(failed ? 1 : 0);
+}).catch((e) => { console.error('retryTests error', e); process.exit(1); });

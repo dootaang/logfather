@@ -127,4 +127,46 @@ function parseResponse(kind, json) {
   return out;
 }
 
-module.exports = { PROVIDERS, providerDef, DEFAULT_PARAMS, normParams, sysPrompt, cleanSysPrompt, validate, buildRequest, parseResponse };
+// ── 스마트 재시도(GigaTrans 흡수 ①) ──────────────────────────────────────────
+//   일시 오류(429 레이트·5xx 서버·408 타임아웃·일시 네트워크)만 재시도. 치명(401/403 인증·권한·404 모델/주소 없음·
+//   400/422 잘못된 요청·402 결제)은 재시도해도 무의미 → 즉시 사람이 읽을 명확한 에러. (브라우저-안전: fetch는 호출부가 주입.)
+function isTransientStatus(s) { return s === 408 || s === 429 || (s >= 500 && s <= 599); }
+// 상태/응답본문 → 사람이 읽을 에러 메시지.
+function errorText(status, bodyText) {
+  let msg = '';
+  try { const j = JSON.parse(bodyText); const m = j && j.error && (j.error.message || j.error); if (typeof m === 'string') msg = m; } catch (_) {}
+  if (!msg) msg = String(bodyText || '').replace(/\s+/g, ' ').trim();
+  msg = msg.slice(0, 300);
+  const hint = (status === 401 || status === 403) ? 'API 키·권한을 확인하세요'
+    : status === 404 ? '모델명 또는 서버 주소를 확인하세요'
+    : status === 402 ? '요금제·크레딧(결제)을 확인하세요'
+    : status === 429 ? '요청이 너무 많아요 — 잠시 후 다시'
+    : (status >= 500) ? '서버 오류 — 잠시 후 다시'
+    : (status === 400 || status === 422) ? '요청이 거부됐어요(모델·설정 확인)'
+    : '요청 실패';
+  return `${hint} (${status})` + (msg ? ': ' + msg : '');
+}
+const _retrySleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 스마트 재시도 래퍼. req=buildRequest 결과. doFetch(req)→{status:number, bodyText:string}(네트워크 실패 시 throw).
+//   opts: { retries(기본2), retryNetwork(네트워크 throw도 재시도=데스크탑 true / 웹 false=CORS 즉시), sleep(테스트 주입) }.
+//   반환 = 성공 응답 본문(text). 치명/소진 시 throw(명확 메시지).
+async function requestWithRetry(req, doFetch, opts) {
+  opts = opts || {};
+  const retries = opts.retries != null ? opts.retries : 2;
+  const retryNetwork = !!opts.retryNetwork;
+  const sleep = opts.sleep || _retrySleep;
+  for (let attempt = 0; ; attempt++) {
+    let r;
+    try { r = await doFetch(req); }
+    catch (e) {
+      if (retryNetwork && attempt < retries) { await sleep(600 * Math.pow(2, attempt)); continue; }
+      throw (e instanceof Error ? e : new Error(String(e || '네트워크 오류')));
+    }
+    const status = (r && typeof r.status === 'number') ? r.status : 0;
+    if (status >= 200 && status < 300) return r.bodyText;
+    if (isTransientStatus(status) && attempt < retries) { await sleep(600 * Math.pow(2, attempt)); continue; }
+    throw new Error(errorText(status, r && r.bodyText));
+  }
+}
+
+module.exports = { PROVIDERS, providerDef, DEFAULT_PARAMS, normParams, sysPrompt, cleanSysPrompt, validate, buildRequest, parseResponse, isTransientStatus, errorText, requestWithRetry };

@@ -52,22 +52,15 @@ function saveConfig(cfg) {
 
 function clearConfig() { try { fs.unlinkSync(configPath()); } catch (_) {} return publicConfig(); }
 
-// net.fetch로 요청 보내고 JSON 반환(60초 타임아웃). 요청 빌드/응답 파싱은 공유 모듈이 담당.
-async function fetchJson(req) {
+// net.fetch 1회(60초 타임아웃). 상태+본문만 돌려준다 — 오류 분류·재시도는 공유 requestWithRetry가 담당.
+async function fetchOnce(req) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60000);
   try {
     const res = await net.fetch(req.url, { method: req.method, headers: req.headers, body: req.body, signal: ctrl.signal });
-    const body = await res.text();
-    let json = null; try { json = JSON.parse(body); } catch (_) {}
-    if (!res.ok) {
-      const m = json && json.error && (json.error.message || json.error);
-      throw new Error(typeof m === 'string' ? m : ('HTTP ' + res.status));
-    }
-    if (!json) throw new Error('응답 파싱 실패');
-    return json;
+    return { status: res.status, bodyText: await res.text() };
   } catch (e) {
-    if (ctrl.signal.aborted) throw new Error('시간 초과(60초)');
+    if (ctrl.signal.aborted) throw new Error('시간 초과(60초)');   // 타임아웃 = 일시 → requestWithRetry가 재시도
     throw e;
   } finally { clearTimeout(timer); }
 }
@@ -80,7 +73,11 @@ async function translate(payload) {
   if (!text.trim()) return text;
   validate(cfg);
   const req = buildRequest(cfg, { text, targetLang: (payload && payload.targetLang) || '한국어', stylePrompt: payload && payload.stylePrompt, task: payload && payload.task, combine: payload && payload.combine, maxResponse: payload && payload.maxResponse });
-  return parseResponse(req.kind, await fetchJson(req));
+  // ★스마트 재시도(공유): 429·5xx·타임아웃·일시 네트워크만 재시도, 치명(키·권한·모델없음·결제)은 즉시 명확 에러. 데스크탑은 CORS 없음 → retryNetwork:true.
+  const body = await providers.requestWithRetry(req, fetchOnce, { retries: 2, retryNetwork: true });
+  let json = null; try { json = JSON.parse(body); } catch (_) {}
+  if (!json) throw new Error('응답 파싱 실패');
+  return parseResponse(req.kind, json);
 }
 
 module.exports = { loadConfig, publicConfig, saveConfig, clearConfig, translate };
