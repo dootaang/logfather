@@ -15,7 +15,7 @@ import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, ensur
 import { cleanUnits } from './cleanup.js';
 import { defaultSettings } from '../../core/preset/bundle.js';
 import { convertText } from '../../core/convert/convertText.js';
-import { expandCardRegex } from '../../core/convert/cardRegex.js';   // 관리실 정리 규칙(표시 정규식) 적용
+import { expandCardRegex, sanitizeRegexOut } from '../../core/convert/cardRegex.js';   // 관리실 정리 규칙(표시 정규식) 적용 + 외부 규칙 out 살균
 import { processImageTags } from '../../core/convert/processImageTags.js';   // 가져온 에셋 맵 재적용(재렌더 시 증발 방지)
 import { resolveAssetCBS } from '../../core/convert/prepareBody.js';
 import { resolveAssetMarkers } from '../../core/convert/risuMarkers.js';
@@ -40,6 +40,14 @@ function applyOrig(r: any) { if (!r.orig) return; for (const k of ORIG_FIELDS) {
 const CLEANUP_KEY = 'pro2-cleanup-rules';
 function cleanupRules(): any[] {   // 전역 enabled + ★소스별 enabled(개별 활성)인 것만 평탄화. 0개·꺼짐 = [](무동작).
   try { const r = kvLoad(CLEANUP_KEY); if (!r || r.enabled === false || !Array.isArray(r.sources)) return []; const out: any[] = []; for (const s of r.sources) if (s && s.enabled !== false && Array.isArray(s.rules)) for (const x of s.rules) out.push(x); return out; } catch (_) { return []; }
+}
+// ★per-log 정리 규칙 — 가져올 때 챗에 동봉된 rec.cleanupRegex(외부 유입). ★out 살균 + 모양 정규화(표시타입·ReDoS 필터는 expandCardRegex가 보장). 관리실 글로벌과 합성·멱등.
+function perLogCleanup(rec: any): any[] {
+  const arr = rec && rec.cleanupRegex;
+  if (!Array.isArray(arr) || !arr.length) return [];
+  const out: any[] = [];
+  for (const r of arr) if (r && typeof r.in === 'string' && typeof r.out === 'string') out.push({ in: r.in, out: sanitizeRegexOut(r.out), type: r.type || 'editdisplay', flag: r.flag || r.flags || '' });
+  return out;
 }
 function cleanupChanges(rec: any, rules: any[]): boolean {   // 이 레코드 텍스트를 바꾸나?(재렌더 없이 싸게 판정 — 토글 노출 여부)
   try { const s = logTextSlots(clonej(rec)); for (const t of s.texts) if (expandCardRegex(t, rules) !== t) return true; } catch (_) {}
@@ -419,7 +427,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     const baseRec = showOrig ? origRecord(r) : r;
     const baseHtml = showOrig ? rerenderLog(origRecord(r)) : r.html;
     let displayHtml = baseHtml; let cleanSeg: HTMLElement | null = null;
-    const cRules = cleanupRules();
+    const cRules = cleanupRules().concat(perLogCleanup(r));   // 관리실 글로벌 + per-log(가져온 챗 동봉) 정리 규칙 합성
     if (cRules.length && cleanupChanges(baseRec, cRules)) {
       const on = cleanView[r.id] !== false;
       displayHtml = on ? renderCleaned(baseRec, cRules) : baseHtml;

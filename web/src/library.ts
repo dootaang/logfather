@@ -969,7 +969,7 @@ function importChatLog() {
     chatInput.addEventListener('change', async () => {
       const f = chatInput!.files && chatInput!.files[0]; chatInput!.value = ''; if (!f) return;
       let parsed: any;
-      try { const _obj = JSON.parse(await f.text()); parsed = parseRisuLog(_obj, f.name); if (_obj && _obj.assets && typeof _obj.assets === 'object' && !Array.isArray(_obj.assets)) parsed.assets = _obj.assets; }   // ★다운로드 JSON의 assets 맵(에셋 → 카드 스타일 렌더)
+      try { const _obj = JSON.parse(await f.text()); parsed = parseRisuLog(_obj, f.name); if (_obj && _obj.assets && typeof _obj.assets === 'object' && !Array.isArray(_obj.assets)) parsed.assets = _obj.assets; if (_obj && Array.isArray(_obj.cleanupRegex)) parsed.cleanupRegex = _obj.cleanupRegex; }   // ★다운로드 JSON의 assets 맵 + cleanupRegex(정리 정규식 동봉)
       catch (e: any) { setStatus('JSON 파싱 실패: ' + e.message); return; }
       const total = parsed.chats.reduce((n: number, c: any) => n + c.messages.length, 0);
       if (!total) { setStatus('메시지를 찾을 수 없습니다 (리스 채팅 export .json인지 확인하세요).'); return; }
@@ -1095,6 +1095,7 @@ async function buildAndSaveChat(parsed: any, opts: any) {
   if (!isAppend) { try { await metaSet({ char: workKey, name: opts.char, cover: '', desc: '' }); } catch (_) {} }
   // ★삽화(장면)는 본문 인라인(플러그인이 박음), 에셋(감정 스프라이트)은 assets 맵으로 와서 여기서 카드 스타일로 렌더(블록 X) = 카드 드롭과 동일 경로.
   const assetMap: any = (parsed && parsed.assets && typeof parsed.assets === 'object' && !Array.isArray(parsed.assets) && Object.keys(parsed.assets).length) ? parsed.assets : null;
+  const cleanupRegexArr: any = (parsed && Array.isArray(parsed.cleanupRegex) && parsed.cleanupRegex.length) ? parsed.cleanupRegex : null;   // ★가져온 챗에 동봉된 정리 정규식(B) — 레코드에 저장 → 리더가 비파괴 적용(살균·ReDoS는 리더서)
   const ASSET_IMG_STYLE = { size: 100, margin: 10, useBorder: false, borderColor: '#000000', useShadow: true };
   const created: any[] = [];
   for (let i = 0; i < eps.length; i++) {
@@ -1103,6 +1104,7 @@ async function buildAndSaveChat(parsed: any, opts: any) {
     const s = defaultSettings(); s.template = opts.design; s.profile.botName = opts.char;
     const input = chunk.map((m: any) => m.text).join('\n\n');
     const rec: any = { id: newChatId() + '-' + epIdx, char: workKey, title: `${epIdx + 1}화`, date: today, input, html: '', template: opts.design, order: epIdx, workName: opts.char };
+    if (cleanupRegexArr) rec.cleanupRegex = cleanupRegexArr;   // ★per-log 정리 규칙 동봉(리더 "정리/원본" 토글·재렌더 보존). 작아서 화별 저장 OK.
     // 디자인별 구조(편집기에서 그대로 복원 가능)도 함께 저장.
     if (opts.design === 'card' && opts.roleColor) {
       const cardCfg = { blocks: chunk.map((m: any) => ({ role: m.role, content: m.text, title: '', subtitle: '' })), collapseAll: false, userLabel: opts.userLabel || '나', charLabel: opts.charLabel || opts.char, numbered: !!opts.numbered };
@@ -1191,7 +1193,8 @@ function inboxParsed(it: any): { parsed: any; total: number } {
     .map((m: any) => ({ role: (m && m.role === 'user') ? 'user' : 'char', text: stripGigaTrans(String((m && m.text) || '')) }))   // GigaTrans 마커 정규화(번역문만)
     .filter((m: any) => m.text.trim());
   const assets = (it && it.assets && typeof it.assets === 'object' && !Array.isArray(it.assets)) ? it.assets : null;   // ★에셋 맵(이름→dataURL) — Firestore SDK가 mapValue를 평문으로 디코드
-  return { parsed: { char: name, fp: String((it && it.fp) || ''), assets, chats: [{ name: '리스', messages }] }, total: messages.length };
+  const cleanupRegex = (it && Array.isArray(it.cleanupRegex)) ? it.cleanupRegex : null;   // ★정리 정규식 동봉(B) — Firestore SDK가 arrayValue를 평문 배열로 디코드
+  return { parsed: { char: name, fp: String((it && it.fp) || ''), assets, cleanupRegex, chats: [{ name: '리스', messages }] }, total: messages.length };
 }
 async function inboxDelete(id: string) { try { const R = await import('./risuPush.js'); await R.deleteInbox(id); } catch (_) { setStatus('삭제 실패 — 잠시 후 다시'); } }   // 라이브 감지가 목록·배지 갱신
 
