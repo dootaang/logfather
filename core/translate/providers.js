@@ -108,6 +108,10 @@ function buildRequest(cfg, payload) {
   if (p.frequency_penalty) body.frequency_penalty = p.frequency_penalty;   // 0이면 미지원 서버 호환 위해 생략
   if (p.presence_penalty) body.presence_penalty = p.presence_penalty;
   if (maxTok > 0) body.max_tokens = maxTok;
+  // ★Gemini thinking(추론 강도, GigaTrans 흡수 ②) — 2.5 계열 사고 모델에서 reasoning_effort로 반영.
+  //   off/빈값이면 요청에 안 넣음(= 모델 기본 그대로 → 비사고 모델 gemini-2.0-flash 등에서도 안전). gemini에만 적용.
+  const think = String(cfg.thinking || '').toLowerCase();
+  if (cfg.provider === 'gemini' && (think === 'low' || think === 'medium' || think === 'high')) body.reasoning_effort = think;
   return {
     url: base + '/chat/completions', method: 'POST', kind: 'openai',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (cfg.apiKey || 'ollama') },

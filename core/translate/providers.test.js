@@ -84,6 +84,17 @@ const check = (cond, msg) => { if (cond) console.log('  ✓ ' + msg); else { fai
   check(/Do NOT translate/i.test(cleanSysPrompt('')) , 'cleanSysPrompt 단독 동작');
 }
 
+// 10) Gemini thinking(GigaTrans 흡수 ②) — reasoning_effort 반영(gemini+low/med/high), off/미설정/비-gemini는 미포함(호환).
+{
+  const g = (thinking) => JSON.parse(buildRequest({ provider: 'gemini', model: 'gemini-2.5-flash', apiKey: 'k', baseUrl: '', params: {}, thinking }, { text: 'x' }).body);
+  check(g('high').reasoning_effort === 'high', 'gemini thinking=high → reasoning_effort=high');
+  check(g('medium').reasoning_effort === 'medium', 'gemini thinking=medium → reasoning_effort');
+  check(!('reasoning_effort' in g('off')), 'thinking=off → 미포함(모델 기본)');
+  check(!('reasoning_effort' in g('')), 'thinking 미설정 → 미포함');
+  const o = JSON.parse(buildRequest({ provider: 'openai', model: 'gpt-4o-mini', apiKey: 'k', baseUrl: '', params: {}, thinking: 'high' }, { text: 'x' }).body);
+  check(!('reasoning_effort' in o), '비-gemini는 thinking 무시(호환)');
+}
+
 // 9) 스마트 재시도(GigaTrans 흡수 ①) — 일시(429·5xx·타임아웃)만 재시도, 치명(4xx)은 즉시. sleep 주입으로 즉시 실행.
 async function retryTests() {
   const nosleep = () => Promise.resolve();

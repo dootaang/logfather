@@ -19,10 +19,10 @@ function readRaw(): any {
 }
 export function getWebConfig(): any {
   const o = readRaw();
-  return { provider: o.provider || 'gemini', model: o.model || '', baseUrl: o.baseUrl || '', apiKey: o.apiKey || '', params: normParams(o.params), sessionOnly: !!o.sessionOnly };
+  return { provider: o.provider || 'gemini', model: o.model || '', baseUrl: o.baseUrl || '', apiKey: o.apiKey || '', params: normParams(o.params), thinking: o.thinking || 'off', sessionOnly: !!o.sessionOnly };
 }
 /** 키 없는 공개용(번역 바/모달 표시용). */
-export function webPublicConfig(): any { const c = getWebConfig(); return { provider: c.provider, model: c.model, baseUrl: c.baseUrl, hasKey: !!c.apiKey, params: c.params, sessionOnly: c.sessionOnly }; }
+export function webPublicConfig(): any { const c = getWebConfig(); return { provider: c.provider, model: c.model, baseUrl: c.baseUrl, hasKey: !!c.apiKey, params: c.params, thinking: c.thinking, sessionOnly: c.sessionOnly }; }
 export function setWebConfig(cfg: any): any {
   const cur = getWebConfig();
   const out = {
@@ -31,6 +31,7 @@ export function setWebConfig(cfg: any): any {
     baseUrl: cfg.baseUrl != null ? cfg.baseUrl : cur.baseUrl,
     apiKey: (cfg.apiKey != null && cfg.apiKey !== '') ? cfg.apiKey : cur.apiKey,   // 빈칸이면 기존 키 유지
     params: normParams(cfg.params != null ? cfg.params : cur.params),
+    thinking: cfg.thinking != null ? cfg.thinking : cur.thinking,   // Gemini 추론 강도(off/low/medium/high)
     sessionOnly: cfg.sessionOnly != null ? !!cfg.sessionOnly : cur.sessionOnly,
   };
   try { localStorage.removeItem(WEB_KEY); sessionStorage.removeItem(WEB_KEY); } catch (_) {}   // 중복 방지(한 곳에만)

@@ -248,6 +248,13 @@ export async function openTranslateSettings(setStatus: (m: string) => void): Pro
     r.appendChild(inp); pgrid.appendChild(r);
     paramInputs[f.k] = inp; paramRows[f.k] = r;
   }
+  // ★Gemini 추론 강도(thinking, GigaTrans 흡수 ②) — 2.5 사고 모델에서만 효과. off=모델 기본(번역은 보통 off로 충분·빠르고 저렴).
+  const thinkRow = document.createElement('label'); thinkRow.className = 'tr-param';
+  thinkRow.append(Object.assign(document.createElement('span'), { textContent: '추론 강도 (Gemini)' }));
+  const thinkSel = document.createElement('select');
+  ([['off', '끔 (기본·빠름)'], ['low', '낮음'], ['medium', '중간'], ['high', '높음']] as [string, string][]).forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; thinkSel.appendChild(o); });
+  thinkSel.value = cfg.thinking || 'off';
+  thinkRow.appendChild(thinkSel); pgrid.appendChild(thinkRow);
 
   // ── 번역 프롬프트 프리셋(문체 지시, 명명) — 작품별 프롬프트가 있으면 그쪽이 우선. ──
   card.appendChild(Object.assign(document.createElement('div'), { className: 'import-info', textContent: '번역 프롬프트 프리셋 (문체·톤 지시 — 이미지·대사 구조는 코드가 보존). 작품별 프롬프트가 있으면 그쪽이 우선합니다.' }));
@@ -290,6 +297,7 @@ export async function openTranslateSettings(setStatus: (m: string) => void): Pro
     base.placeholder = def.baseHint || '비우면 기본값';
     key.placeholder = cfg.hasKey ? '저장됨 — 바꿀 때만 입력' : 'API 키 입력';
     for (const f of PARAM_FIELDS) if (f.only) paramRows[f.k].style.display = (prov.value === f.only) ? '' : 'none';   // top_k는 Anthropic만
+    thinkRow.style.display = (prov.value === 'gemini') ? '' : 'none';   // 추론 강도는 Gemini만
   };
   prov.onchange = syncByProvider; syncByProvider();
 
@@ -303,7 +311,7 @@ export async function openTranslateSettings(setStatus: (m: string) => void): Pro
   save.onclick = async () => {
     const params: any = {};
     for (const f of PARAM_FIELDS) { const v = paramInputs[f.k].value.trim(); if (v !== '') params[f.k] = Number(v); }
-    const payload: any = { provider: prov.value, model: model.value.trim(), baseUrl: base.value.trim(), params };
+    const payload: any = { provider: prov.value, model: model.value.trim(), baseUrl: base.value.trim(), params, thinking: thinkSel.value };
     if (key.value) payload.apiKey = key.value;   // 입력했을 때만 키 교체(빈 칸이면 기존 유지)
     if (sessionCb) payload.sessionOnly = sessionCb.checked;   // 웹: 세션-only 저장
     writeTaToActive(); savePresets(presetState);   // 선택 프리셋에 프롬프트 저장(로컬, 동기화 안 함)

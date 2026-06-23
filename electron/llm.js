@@ -24,12 +24,12 @@ function loadConfig() {
     if (raw.keyEnc && safeStorage.isEncryptionAvailable()) {
       try { apiKey = safeStorage.decryptString(Buffer.from(raw.keyEnc, 'base64')); } catch (_) {}
     } else if (raw.keyPlain) { apiKey = raw.keyPlain; }   // 암호화 불가 환경 폴백
-    return { provider: raw.provider || 'openai', model: raw.model || '', baseUrl: raw.baseUrl || '', apiKey, params: normParams(raw.params) };
+    return { provider: raw.provider || 'openai', model: raw.model || '', baseUrl: raw.baseUrl || '', apiKey, params: normParams(raw.params), thinking: raw.thinking || 'off' };
   } catch (_) { return { provider: 'openai', model: '', baseUrl: '', apiKey: '', params: normParams() }; }
 }
 
 // 키 없는 공개용(renderer에 노출 — 원본 키는 절대 안 나감, 파라미터는 비밀 아니라 노출).
-function publicConfig() { const c = loadConfig(); return { provider: c.provider, model: c.model, baseUrl: c.baseUrl, hasKey: !!c.apiKey, params: c.params }; }
+function publicConfig() { const c = loadConfig(); return { provider: c.provider, model: c.model, baseUrl: c.baseUrl, hasKey: !!c.apiKey, params: c.params, thinking: c.thinking }; }
 
 function saveConfig(cfg) {
   cfg = cfg || {};
@@ -39,6 +39,7 @@ function saveConfig(cfg) {
     model: (cfg.model != null ? cfg.model : cur.model) || '',
     baseUrl: (cfg.baseUrl != null ? cfg.baseUrl : cur.baseUrl) || '',
     params: normParams(cfg.params != null ? cfg.params : cur.params),
+    thinking: (cfg.thinking != null ? cfg.thinking : cur.thinking) || 'off',
   };
   // apiKey: 빈/미지정이면 기존 키 유지(설정만 바꾸고 키는 그대로). 명시되면 교체.
   const key = (cfg.apiKey != null && cfg.apiKey !== '') ? String(cfg.apiKey) : cur.apiKey;
