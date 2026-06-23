@@ -117,6 +117,10 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any): { relayout:
     const stageW = cols * colW + (cols - 1) * GAP;
     stage.style.width = stageW + 'px'; stage.style.maxWidth = stageW + 'px';
     doc.style.columnGap = GAP + 'px'; doc.style.columnWidth = colW + 'px';
+    // ★작업 5: 큰 이미지 잘림 방지 — multicol에선 이미지 max-height:%가 무시되므로 페이지(컬럼) 높이를 px로 계산해
+    //   CSS 변수(--wn-page-h)로 doc에 준다(이미지 여백분 차감). 이미지 max-height가 이 변수를 쓰면 비율 유지하며 페이지에 통째로 들어감.
+    const pageH = stage.clientHeight || 0;
+    if (pageH > 120) doc.style.setProperty('--wn-page-h', Math.max(80, pageH - 40) + 'px'); else doc.style.removeProperty('--wn-page-h');
     const colStep = colW + GAP;
     const totalCols = Math.max(1, Math.round((doc.scrollWidth + GAP) / colStep));
     total = Math.max(1, Math.ceil(totalCols / cols));

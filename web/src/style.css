@@ -738,7 +738,8 @@ iframe#preview {
 .reader-pager-doc { height: 100%; column-fill: auto; will-change: transform; }   /* 기본=즉시(효과 없음) */
 .reader-pager-doc.anim { transition: transform .22s ease; }   /* '슬라이드' 선택 시만 */
 .reader-pager-doc .lp-webnovel > * { break-inside: avoid; }   /* 문단·이미지·강조가 페이지 경계에서 안 잘리게 */
-.reader-pager-doc img, .reader-pager-doc figure { max-width: 100%; max-height: 100%; break-inside: avoid; }
+/* 두 페이지: 이미지가 페이지(컬럼) 높이를 넘으면 잘리던 것 → relayout이 px로 준 --wn-page-h로 max-height 지정(비율 유지·통째로 들어감). %는 multicol에서 무시됨. */
+.reader-pager-doc img, .reader-pager-doc figure { max-width: 100%; max-height: var(--wn-page-h, 100%); height: auto; break-inside: avoid; }
 /* 두 페이지(pager): 본문 래퍼의 인라인 좌우 패딩(웹소설 테마 1.7em)을 제거 → 페이지 사이 간격 = 슬라이더(column-gap)만으로.
    바깥 여백은 .reader-pager의 64px 패딩이 담당. 한 페이지·세로 스크롤(.reader-col)엔 영향 없음. 위아래 패딩은 유지. */
 .reader-pager-doc .lp-webnovel { padding-left: 0 !important; padding-right: 0 !important; }
