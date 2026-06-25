@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.9.0
+//@version 1.9.1
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 삽화(생성 이미지) + 에셋(감정 이미지) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -233,7 +233,11 @@
     const { char, chat } = await getCurrentChat();
     const raw = Array.isArray(chat.message) ? chat.message : [];
     const messages = []; let hit = 0, miss = 0, imgCount = 0, imgDropped = 0, imgBytes = 0;
-    const assetByName = new Map(); for (const a of charAssetMap(char)) assetByName.set(a.name.toLowerCase(), a);   // 캐릭터 에셋(이름→경로) 1회 구축
+    const assetByName = new Map();   // 캐릭터 에셋(이름→경로) 1회 구축
+    for (const a of charAssetMap(char)) {   // ★확장자 있는 키(예: laica_curious.png)와 없는 키(laica_curious) 둘 다 색인 — 리스는 메시지에 <img src="이름">(확장자 생략)으로 렌더하므로, 한쪽만 색인하면 매칭 실패 → 에셋 유실.
+      const k = String(a.name).toLowerCase(); assetByName.set(k, a);
+      const ks = k.replace(/\.[a-z0-9]+$/i, ''); if (ks !== k && !assetByName.has(ks)) assetByName.set(ks, a);
+    }
     const assets = {};   // 쓰인 에셋 dataURL 맵(이름→dataURL) — 푸시/다운로드 본체에 동봉, 우리 import가 카드 스타일로 렌더(블록 임베드 X)
     const cleanRules = (cleanMode !== 'off') ? collectCleanupRegex(char) : [];   // editdisplay 정리 규칙(A 적용·B 동봉용) 1회 수집
     for (let i = 0; i < raw.length; i++) {
@@ -464,5 +468,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.9.0');
+  console.info('[LogPapaPush] loaded v1.9.1');
 })();
