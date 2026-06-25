@@ -34,10 +34,12 @@ export function setWebSyncMode(m: string): void { try { localStorage.setItem(WEB
 const DESKTOP_MODE_KEY = 'pro2-desktop-auto-mode';   // 'auto' | 'manual' — 데스크탑에서만 의미.
 export function getDesktopSyncMode(): string { try { return localStorage.getItem(DESKTOP_MODE_KEY) === 'auto' ? 'auto' : 'manual'; } catch (_) { return 'manual'; } }
 export function setDesktopSyncMode(m: string): void { try { localStorage.setItem(DESKTOP_MODE_KEY, m === 'auto' ? 'auto' : 'manual'); } catch (_) {} }
-// ★로컬-퍼스트(=수동) 단일 판정 = 동기화 거동 게이트(초기화·☁버튼·공유 가용성이 공유). 플랫폼별 모드를 따른다:
-//   데스크탑 = 모드가 '자동'이 아니면 로컬-퍼스트(기본 수동) · 웹 = 수동 모드일 때.
-//   (네이티브 전용 기능[번역·굳히기·공유 호스트]은 isDesktop() 등 각자 검사 → 모드와 무관, 모드로 기능이 새지 않음.)
-export function isLocalFirst(): boolean { return isDesktop() ? getDesktopSyncMode() !== 'auto' : getWebSyncMode() === 'manual'; }
+// ★로컬-퍼스트 단일 판정 = 동기화 거동 게이트(초기화·☁버튼·공유 가용성이 공유). 플랫폼별:
+//   웹 = ★항상 로컬-퍼스트(백엔드는 항상 로컬·UI 즉시·오프라인). 'auto'/'manual'은 클라우드 교환 방식 차이일 뿐:
+//        auto=백그라운드 자동 일괄(sync.ts), manual=☁버튼식. (실시간 Firebase 백엔드 모드는 폐지 — 병목 제거.)
+//   데스크탑 = 모드가 '자동'이 아니면 로컬-퍼스트(기본 수동). 데스크탑 'auto'만 실시간 Firebase 백엔드 유지.
+//   (네이티브 전용 기능[번역·굳히기·공유 호스트]은 isDesktop() 등 각자 검사 → 모드와 무관.)
+export function isLocalFirst(): boolean { return isDesktop() ? getDesktopSyncMode() !== 'auto' : true; }
 
 // 현재 로그인 사용자로 firebase 백엔드 확보(없으면 null). 무거운 SDK·hydrate는 여기서만. uid별 1회 캐시.
 let _fbCache: { uid: string; fb: any } | null = null;

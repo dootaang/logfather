@@ -314,18 +314,22 @@ function openAdvancedSettings(setStatus: (m: string) => void, getUser: () => any
     section('동기화 방식' + (dt ? ' (데스크탑)' : ' (웹)'));
     const sr = document.createElement('div'); sr.className = 'adv-row';
     const sel = document.createElement('select');
-    [['auto', '자동 (실시간)'], ['manual', '수동 (버튼식)']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); });
+    // 웹 자동 = 로컬-퍼스트 + 백그라운드 자동 일괄(즉시 UI, 잠시 후 한 번에 동기화). 데스크탑 자동 = 실시간 Firebase.
+    [['auto', dt ? '자동 (실시간)' : '자동 (백그라운드 동기화)'], ['manual', '수동 (버튼식)']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); });
     sel.value = getMode();
     sel.onchange = async () => {
       const m = sel.value === 'manual' ? 'manual' : 'auto';
       if (m === getMode()) return;
+      const autoMsg = dt
+        ? '자동(실시간) 모드로 바꿀까요?\n변경이 자동으로 클라우드에 동기화됩니다(여러 기기 실시간 반영). 적용하려면 새로고침합니다.'
+        : '자동(백그라운드) 모드로 바꿀까요?\n로컬에 먼저 저장해 UI는 즉시 반응하고, 잠시 후·창 전환 때 클라우드와 자동으로 한 번에 동기화합니다. 적용하려면 새로고침합니다.';
       const ok = await confirmModal(m === 'manual'
-        ? '수동 모드로 바꿀까요?\n로컬에 먼저 저장하고, 클라우드와는 ‘동기화’ 버튼(불러오기/저장)을 누를 때만 주고받습니다(실시간 끔). 적용하려면 새로고침합니다.'
-        : '자동(실시간) 모드로 바꿀까요?\n변경이 자동으로 클라우드에 동기화됩니다(여러 기기 실시간 반영). 적용하려면 새로고침합니다.', { okText: '바꾸고 새로고침' });
+        ? '수동 모드로 바꿀까요?\n로컬에 먼저 저장하고, 클라우드와는 ‘동기화’ 버튼(불러오기/저장)을 누를 때만 주고받습니다. 적용하려면 새로고침합니다.'
+        : autoMsg, { okText: '바꾸고 새로고침' });
       if (!ok) { sel.value = getMode(); return; }
       setMode(m); location.reload();
     };
-    sr.append(sel, Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '자동 = 변경 즉시 동기화·여러 기기 실시간 반영. 수동 = 로컬-퍼스트(‘동기화’ 버튼으로만 클라우드와 주고받기, 실시간 끔).' + (dt ? ' 데스크탑 기본은 수동.' : '') }));
+    sr.append(sel, Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: (dt ? '자동 = 변경 즉시 동기화·여러 기기 실시간 반영. ' : '자동 = 로컬에 먼저 저장(즉시·오프라인) 후 백그라운드로 자동 일괄 동기화. ') + '수동 = ‘동기화’ 버튼으로만 클라우드와 주고받기.' + (dt ? ' 데스크탑 기본은 수동.' : '') }));
     card.appendChild(sr);
     card.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '주의 — 수동 모드에선 ‘저장’을 누르기 전까지 클라우드에 안 올라갑니다.' + (dt ? '' : ' 브라우저 정리 시 유실될 수 있어요.') }));
   }

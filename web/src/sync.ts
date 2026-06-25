@@ -11,8 +11,8 @@
 //   첫 로그인(클라우드 비었음)=로컬 전부 업로드. 재로그인=클라우드 채택 + 로컬 단독분만 보충.
 // @ts-nocheck
 import { watchAuth } from './auth.js';
-import { setBackend, LocalBackend, READ_KEY, RDR_KEY, PRESET_LIB_KEY, AUTOSAVE_KEY, logContentKey } from './store.js';
-import { isLocalFirst } from './desktopSync.js';   // 로컬-퍼스트(데스크탑 OR 웹-수동)는 자동 동기화 안 함(수동 버튼식)
+import { setBackend, LocalBackend, READ_KEY, RDR_KEY, PRESET_LIB_KEY, AUTOSAVE_KEY, logContentKey, hasUnpushed } from './store.js';
+import { isLocalFirst, isDesktop, getWebSyncMode, getSyncMode, pullFromCloud, pushToCloud } from './desktopSync.js';   // 로컬-퍼스트 게이트 + 웹 자동 일괄 동기화용 pull/push
 // firebaseBackend(=firestore+storage, 무거움)는 "로그인된 순간"에만 동적 import → 로그아웃 사용자는 안 받음.
 
 const KV_KEYS = [AUTOSAVE_KEY, PRESET_LIB_KEY, READ_KEY, RDR_KEY];
@@ -80,13 +80,56 @@ async function mirrorCloudToLocal(fb: any, force?: boolean) {
   finally { mirroring = false; }
 }
 
+// ── 웹 자동 백그라운드 일괄 동기화(B) — 로컬-퍼스트 백엔드 + 변경 디바운스 push + 포커스/접속복구/주기 pull. ──
+//   실시간 Firestore 백엔드를 안 쓰므로 UI는 항상 로컬(즉시·오프라인)이고, 클라우드 교환만 백그라운드로 한 번에 몰아 한다.
+//   manual/off 모드·데스크탑은 자동 안 함(기존 ☁버튼식 유지). pull/push는 검증된 안전 병합(증분·중복방지·최신우선)을 그대로 재사용.
+let stopAutoBatch: (() => void) | null = null;
+function startAutoBatch(user: any, onDataChange?: () => void): void {
+  if (stopAutoBatch) { try { stopAutoBatch(); } catch (_) {} stopAutoBatch = null; }
+  // 자동 일괄은 ★웹 + 'auto' 모드 + 로그인 + 연동허용(off 아님)일 때만.
+  if (!user || isDesktop() || getWebSyncMode() !== 'auto' || getSyncMode() === 'off') return;
+  let pushT: any = null, pulling = false, pushing = false, disposed = false;
+  const PUSH_DEBOUNCE = 8000, PULL_PERIOD = 90000;
+  const doPush = async () => {
+    if (disposed || pushing || !hasUnpushed()) return;
+    pushing = true;
+    try { await pushToCloud(); } catch (_) {} finally { pushing = false; }
+  };
+  const schedulePush = () => { clearTimeout(pushT); pushT = setTimeout(doPush, PUSH_DEBOUNCE); };
+  const doPull = async () => {
+    if (disposed || pulling) return;
+    pulling = true;
+    try { const r = await pullFromCloud(); if (r && (r.added + r.updated + r.metas) > 0 && onDataChange) { try { onDataChange(); } catch (_) {} } }
+    catch (_) {} finally { pulling = false; }
+  };
+  const onUnpushed = () => schedulePush();
+  const onFocus = () => { doPull(); doPush(); };
+  const onHide = () => { if (typeof document !== 'undefined' && document.visibilityState === 'hidden') doPush(); };
+  try { window.addEventListener('pro2-unpushed', onUnpushed); } catch (_) {}
+  try { window.addEventListener('focus', onFocus); } catch (_) {}
+  try { window.addEventListener('online', onFocus); } catch (_) {}
+  try { document.addEventListener('visibilitychange', onHide); } catch (_) {}
+  const periodic = setInterval(() => { if (typeof document === 'undefined' || document.visibilityState === 'visible') doPull(); }, PULL_PERIOD);
+  doPull().then(doPush);   // 진입 1회: 다른 기기 변경 받고(pull) → 그동안 쌓인 로컬 변경 올림(push).
+  stopAutoBatch = () => {
+    disposed = true; clearTimeout(pushT); clearInterval(periodic);
+    try { window.removeEventListener('pro2-unpushed', onUnpushed); } catch (_) {}
+    try { window.removeEventListener('focus', onFocus); } catch (_) {}
+    try { window.removeEventListener('online', onFocus); } catch (_) {}
+    try { document.removeEventListener('visibilitychange', onHide); } catch (_) {}
+  };
+}
+
 // onBackendChange(kind,user): 백엔드 교체 시(로그인/로그아웃) 전체 다시 그림.
-// onDataChange(): 클라우드 로그가 실시간으로 바뀌면(다른 기기 포함) 가벼운 새로고침(C단계).
+// onDataChange(): 클라우드 로그가 바뀌면(다른 기기 포함) 가벼운 새로고침.
 export function initSync(onBackendChange: (kind: string, user: any) => void, onDataChange?: () => void): void {
-  // ★로컬-퍼스트(데스크탑 OR 웹-수동 모드): 자동 동기화 안 함. 백엔드는 항상 로컬(UI 즉시·오프라인), 클라우드
-  //   교환은 사용자가 ☁ 버튼을 눌렀을 때만. 여기선 로그인 상태에 따른 housekeeping만(백엔드 교체 X).
+  // ★로컬-퍼스트(웹 항상 · 데스크탑 수동): 백엔드는 항상 로컬(UI 즉시·오프라인).
+  //   웹 'auto' = 백그라운드 자동 일괄 동기화(startAutoBatch). 웹 'manual'·데스크탑 = ☁버튼식(자동 X).
   if (isLocalFirst()) {
-    watchAuth((user: any) => { try { onBackendChange('local', user); } catch (_) {} });
+    watchAuth((user: any) => {
+      try { onBackendChange('local', user); } catch (_) {}
+      startAutoBatch(user, onDataChange);   // 로그인 시 자동 일괄 시작 / 로그아웃 시 정리(내부에서 게이트)
+    });
     return;
   }
   let cur = 'local';
