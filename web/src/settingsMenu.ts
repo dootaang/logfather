@@ -175,9 +175,20 @@ async function openRisuConnect(getUser: () => any) {
   const card = document.createElement('div'); card.className = 'import-card adv-card';
   const close = () => ov.remove();
   card.appendChild(Object.assign(document.createElement('div'), { className: 'import-title', textContent: '리스 연결' }));
+  // 플러그인 받기 + 설치 안내 — ★로그인 무관(파일 다운로드일 뿐). 로그아웃 상태에서도 미리 받아 설치 가능.
+  const appendPluginDownload = () => {
+    card.appendChild(Object.assign(document.createElement('div'), { className: 'menu-label', textContent: '리스 플러그인 설치' }));
+    card.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '① 아래 “플러그인 받기”로 파일 저장 → ② 리스 설정 → 플러그인에서 이 파일을 추가·활성화 → ③ 챗 화면에 생기는 “로그파파로 보내기” 버튼에 연결 키를 붙여넣고 “이 세션 보내기”. 그러면 이 서재에 번역본으로 들어와요.' }));
+    const dlRow = document.createElement('div'); dlRow.className = 'import-btns'; dlRow.style.justifyContent = 'flex-start';
+    const dlB = Object.assign(document.createElement('button'), { textContent: '플러그인 받기 (.js)' }) as HTMLButtonElement;
+    dlB.onclick = () => { try { const a = document.createElement('a'); a.href = new URL('risu-plugin/logpapa-push.js', location.href).href; a.download = 'logpapa-push.js'; document.body.appendChild(a); a.click(); a.remove(); flash(dlB, '받는 중…'); } catch (_) {} };
+    dlRow.appendChild(dlB); card.appendChild(dlRow);
+  };
   const user = getUser();
   if (!user) {
-    card.appendChild(Object.assign(document.createElement('div'), { className: 'import-info', textContent: '리스에서 보던 챗을 이 서재로 받으려면 먼저 로그인하세요(위쪽 “로그인”).' }));
+    // ★로그아웃이어도 플러그인은 받을 수 있게 — 연결 키만 로그인 후 이 창에서 발급/복사하면 됨.
+    card.appendChild(Object.assign(document.createElement('div'), { className: 'import-info', textContent: '플러그인은 지금 바로 받아 리스에 설치해둘 수 있어요. “연결 키”만 로그인 후 이 창에서 복사하면 됩니다(위쪽 “로그인”). 키 없이도 설치까지 미리 끝내두세요.' }));
+    appendPluginDownload();
     const b = Object.assign(document.createElement('button'), { textContent: '닫기' }); b.onclick = close;
     const btns = document.createElement('div'); btns.className = 'import-btns'; btns.append(b); card.appendChild(btns);
     ov.appendChild(card); document.body.appendChild(ov); ov.addEventListener('click', (e) => { if (e.target === ov) close(); }); return;
@@ -190,13 +201,7 @@ async function openRisuConnect(getUser: () => any) {
   const copyB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '복사' }) as HTMLButtonElement;
   keyRow.append(keyIn, copyB); keyWrap.appendChild(keyRow); card.appendChild(keyWrap);
   card.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '이 키는 비밀번호가 아닙니다 — 챗을 “넣기”만 가능하고 다른 데이터엔 접근 못 해요. 새어 나간 것 같으면 “키 재발급”으로 무효화하세요.' }));
-  // 플러그인 받기 + 설치 안내
-  card.appendChild(Object.assign(document.createElement('div'), { className: 'menu-label', textContent: '리스 플러그인 설치' }));
-  card.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '① 아래 “플러그인 받기”로 파일 저장 → ② 리스 설정 → 플러그인에서 이 파일을 추가·활성화 → ③ 챗 화면에 생기는 “로그파파로 보내기” 버튼에 위 연결 키를 붙여넣고 “이 세션 보내기”. 그러면 이 서재에 번역본으로 들어와요.' }));
-  const dlRow = document.createElement('div'); dlRow.className = 'import-btns'; dlRow.style.justifyContent = 'flex-start';
-  const dlB = Object.assign(document.createElement('button'), { textContent: '플러그인 받기 (.js)' }) as HTMLButtonElement;
-  dlB.onclick = () => { try { const a = document.createElement('a'); a.href = new URL('risu-plugin/logpapa-push.js', location.href).href; a.download = 'logpapa-push.js'; document.body.appendChild(a); a.click(); a.remove(); flash(dlB, '받는 중…'); } catch (_) {} };
-  dlRow.appendChild(dlB); card.appendChild(dlRow);
+  appendPluginDownload();   // 플러그인 받기 + 설치 안내(로그인/로그아웃 공용)
   const actions = document.createElement('div'); actions.className = 'import-btns';
   const rotateB = Object.assign(document.createElement('button'), { textContent: '키 재발급' }) as HTMLButtonElement;
   const offB = Object.assign(document.createElement('button'), { className: 'series-del', textContent: '연결 해제' }) as HTMLButtonElement;
