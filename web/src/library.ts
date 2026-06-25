@@ -994,6 +994,14 @@ function showChatImportModal(parsed: any, total: number, onDone?: () => Promise<
   for (const id of TEMPLATE_ORDER) { const o = document.createElement('option'); o.value = id; o.textContent = TEMPLATE_DEFS[id].label; design.appendChild(o); }
   design.value = 'webnovel'; row('어떤 디자인으로 저장', design);
 
+  // ★이미지 처리 — '이미지로 가져오기'(동봉된 그림 있으면 바로 표시)/'태그만 남기기'(나중에 charx로 '에셋 입히기'). 둘 다 태그는 보존(charx로 채움). 마지막 선택 기억.
+  const imgMode = document.createElement('select');
+  [['embed', '이미지로 가져오기 (동봉된 그림은 바로 표시)'], ['keep', '이미지태그만 남기기 (나중에 charx로 채우기)']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; imgMode.appendChild(o); });
+  try { imgMode.value = localStorage.getItem(IMPORT_IMGMODE_KEY) === 'keep' ? 'keep' : 'embed'; } catch (_) {}
+  imgMode.onchange = () => { try { localStorage.setItem(IMPORT_IMGMODE_KEY, imgMode.value); } catch (_) {} };
+  row('이미지 처리', imgMode);
+  card.appendChild(Object.assign(document.createElement('div'), { className: 'import-info', textContent: '그림이 안 보이면 작품 화면의 “에셋 입히기”로 그 봇의 .charx 파일을 넣으면 채워집니다 (태그는 어느 쪽이든 보존돼요).' }));
+
   const mode = document.createElement('select');
   [['count', '메시지 N개씩'], ['total', '총 N화로 균등']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; mode.appendChild(o); });
   row('화 나누기', mode);
@@ -1039,7 +1047,7 @@ function showChatImportModal(parsed: any, total: number, onDone?: () => Promise<
   go.onclick = async () => {
     go.disabled = true; go.textContent = '가져오는 중…';
     try {
-      await buildAndSaveChat(parsed, { char: (nameIn.value.trim() || parsed.char), fp: parsed.fp, design: design.value, mode: mode.value, n: Math.max(1, +num.value || 1), roleColor: roleCb.checked, userLabel: userLbl.value.trim() || '나', charLabel: charLbl.value.trim() || (nameIn.value.trim() || parsed.char), numbered: numCb.checked, clean: cleanCb.checked, hideUser: hideUserCb.checked });
+      await buildAndSaveChat(parsed, { char: (nameIn.value.trim() || parsed.char), fp: parsed.fp, design: design.value, mode: mode.value, n: Math.max(1, +num.value || 1), roleColor: roleCb.checked, userLabel: userLbl.value.trim() || '나', charLabel: charLbl.value.trim() || (nameIn.value.trim() || parsed.char), numbered: numCb.checked, clean: cleanCb.checked, hideUser: hideUserCb.checked, keepImgTags: imgMode.value === 'keep' });
       ov.remove();
       if (onDone) { try { await onDone(); } catch (_) {} }   // 우체통 보관: 성공 후 그 inbox 항목 삭제(배지 −1)
     } catch (e: any) { setStatus('가져오기 실패: ' + e.message); go.disabled = false; go.textContent = '가져오기'; }
@@ -1054,6 +1062,7 @@ const newChatId = () => Date.now().toString(36) + Math.random().toString(36).sli
 // ── 챗 지문(fp) 이어붙이기 — 같은 챗 재유입 시 새 작품 대신 델타(새 메시지)만 잇는다(동기화 KV). ──
 const IMPORTS_KEY = 'pro2-chat-imports';   // { [fp]: { workKey, count, sig } } — count=보관한 메시지 수, sig=그 앞부분 해시
 const IMPORT_HIDEU_KEY = 'pro2-import-hideuser';   // 가져오기 "내 입력 빼기(캐릭터 응답만)" 마지막 선택 기억
+const IMPORT_IMGMODE_KEY = 'pro2-import-imgmode';   // 가져오기 "이미지 처리"(embed/keep) 마지막 선택 기억
 function loadImports(): Record<string, any> { const o = kvLoad(IMPORTS_KEY); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; }
 function saveImports(o: any) { kvSave(IMPORTS_KEY, o); }
 // 메시지 시퀀스 안정 해시(FNV-1a) — "앞부분 그대로(이어짐) vs 바뀜(수정·리롤)" 판정용.
@@ -1129,7 +1138,7 @@ async function buildAndSaveChat(parsed: any, opts: any) {
     }
     // ★에셋(감정 스프라이트) 박제: assets 맵이 있으면 마커({{img::이름}}·CBS 등)를 카드 드롭과 동일 크기·스타일로 렌더(블록 임베드 X).
     //   ★이 화가 실제 쓴 에셋만 rec.assets에 동반 저장 → 재렌더(정리·번역·토글·편집)에서 rerenderLog가 재적용(증발 방지). 용량은 화별로 바운드.
-    if (assetMap) {
+    if (assetMap && !opts.keepImgTags) {   // '이미지태그만 남기기'면 동봉 그림도 임베드 안 함 — 태그 보존(charx '에셋 입히기'로 채움)
       const refs = new Set<string>(); for (const mm of chunk) collectAssetRefs(String((mm as any).text || ''), refs);
       const sub: any = {};
       for (const k of Object.keys(assetMap)) { const kl = k.toLowerCase(), ks = kl.replace(/\.[a-z0-9]+$/i, ''); for (const ref of refs) { const rl = String(ref).toLowerCase(); if (rl === kl || rl === ks || rl.replace(/\.[a-z0-9]+$/i, '') === ks) { sub[k] = assetMap[k]; break; } } }
