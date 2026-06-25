@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.9.1
+//@version 1.9.2
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 삽화(생성 이미지) + 에셋(감정 이미지) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -240,6 +240,49 @@
     }
     const assets = {};   // 쓰인 에셋 dataURL 맵(이름→dataURL) — 푸시/다운로드 본체에 동봉, 우리 import가 카드 스타일로 렌더(블록 임베드 X)
     const cleanRules = (cleanMode !== 'off') ? collectCleanupRegex(char) : [];   // editdisplay 정리 규칙(A 적용·B 동봉용) 1회 수집
+
+    // ★이미지 제자리 심기 — 원래 위치 보존(끝에 몰지 않음). 삽화=인라인 <img src="dataURL">, 에셋→{{img::이름}}(dataURL은 assets 맵).
+    //   번역본(body) 안의 마커를 그 자리에서 치환. 번역이 마커를 떼어내 본문에 없으면 끝에 보충(유실 0). 예산(imgBytes)은 삽화+에셋 공유 — 클로저로 누적.
+    async function embedImagesInPlace(body, original) {
+      let out = String(body || '');
+      // ── 삽화(inlay): id→dataURL 선해석(예산 한도) ──
+      const inlayUrl = {};   // id -> dataURL ('' = 실패/예산초과)
+      const wantIds = new Set([...extractInlayIds(out), ...extractInlayIds(original)]);
+      for (const id of wantIds) {
+        if (imgBytes >= budget) { imgDropped++; inlayUrl[id] = ''; continue; }
+        const du = await inlayDataUrl(id);
+        if (!du) { inlayUrl[id] = ''; continue; }
+        if (imgBytes + du.length > budget) { imgDropped++; inlayUrl[id] = ''; continue; }
+        imgBytes += du.length; imgCount++; inlayUrl[id] = du;
+      }
+      const placedInlay = new Set();
+      out = out.replace(/\{\{inlay(?:ed)?::\s*([^}|]+?)\s*\}\}/gi, (mm, id) => { const du = inlayUrl[String(id).trim()]; if (du) { placedInlay.add(du); return '\n\n<img src="' + du + '">\n\n'; } return ''; });
+      out = out.replace(/<lb-(?:xnai|lazy)\b[^>]*>([\s\S]*?)<\/lb-(?:xnai|lazy)>/gi, (mm, inner) => { for (const id of extractInlayIds(inner)) { const du = inlayUrl[id]; if (du) { placedInlay.add(du); return '\n\n<img src="' + du + '">\n\n'; } } return ''; });
+      out = out.replace(/<lb-(?:xnai|lazy)\b[^>]*\/>/gi, '');   // 자가닫는 모듈 태그(내부 id 없음) → 제거
+
+      // ── 에셋(감정 스프라이트): 참조→{{img::표준이름}} 제자리. dataURL은 assets 맵에 1회만 ──
+      for (const a of usedAssets(out + '\n' + original, assetByName)) {
+        if (assets[a.name]) continue;
+        if (imgBytes >= budget) { imgDropped++; continue; }
+        const du = await assetDataUrl(a.path);
+        if (!du) continue;
+        if (imgBytes + du.length > budget) { imgDropped++; continue; }
+        assets[a.name] = du; imgBytes += du.length; imgCount++;
+      }
+      const canon = (ref) => { const n = String(ref || '').trim().replace(/^['"″]|['"″]$/g, ''); const hit = assetByName.get(n.toLowerCase()) || assetByName.get(n.toLowerCase().replace(/\.[a-z0-9]+$/i, '')); return (hit && assets[hit.name]) ? hit.name : null; };
+      const placedAsset = new Set();
+      const sub = (ref) => { const c = canon(ref); if (c) { placedAsset.add(c); return '{{img::' + c + '}}'; } return null; };
+      out = out.replace(/\{\{(?:img|image|raw|asset|source|emotion|image_asset)(?:::|=)\s*([^}|]+?)\s*\}\}/gi, (mm, name) => { const r = sub(name); return r == null ? mm : r; });
+      out = out.replace(/\[[^\]\n|]*\|\s*([^\]\n]+?)\s*\]/g, (mm, name) => { const r = sub(name); return r == null ? mm : r; });
+      out = out.replace(/<(?:img|image)\s+src=\s*(['"″]?)([^'"″>\s]+)\1[^>]*>/gi, (mm, q, name) => { if (/^(?:data:|https?:|\/\/)/i.test(name)) return mm; const r = sub(name); return r == null ? '' : r; });   // 외부/임베드(data:·http)는 보존, 매칭 안 된 맨이름 태그는 제거(깨진 아이콘 방지)
+
+      // ── 폴백: 번역이 떼어내 본문에 못 들어간 이미지 → 끝에 보충(유실 0) ──
+      for (const id of wantIds) { const du = inlayUrl[id]; if (du && !placedInlay.has(du)) { placedInlay.add(du); out += '\n\n<img src="' + du + '">'; } }
+      for (const a of usedAssets(original, assetByName)) { if (assets[a.name] && !placedAsset.has(a.name)) { placedAsset.add(a.name); out += '\n\n{{img::' + a.name + '}}'; } }
+
+      return out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    }
+
     for (let i = 0; i < raw.length; i++) {
       onProgress?.(i + 1, raw.length);
       const m = raw[i];
@@ -250,30 +293,11 @@
       const original = (sid >= 0 && m.swipes[sid] !== undefined) ? m.swipes[sid] : m.data;
       const tr = await translateViaCache(original);   // ★캐시 부분검색 매칭(원문/문단 정확조회는 키가 어긋나 미스)
       if (tr.hit) hit++; else miss++;
-      // 원본 이미지 마커를 먼저 싹 정리(HIT=깨끗 no-op, MISS=군더더기 제거) → 아래서 깨끗하게 재구성. ★1MB 예산은 삽화+에셋 공유.
-      let body = stripImageMarkers(String(tr.text || ''));
-      if (cleanMode === 'A') body = cleanApply(body, cleanRules);   // ★(A) 미리 정리 — ★이미지 첨부 전에 적용해 삽화 <img>·에셋 {{img::}} 마커를 안 건드림(충돌 0)
-      if (hasReadImage && !noImages) {
-        // ① 삽화(inlay) = 장면 = 큰 블록 → 본문에 인라인 <img>(800px JPEG)로 박음.
-        for (const id of extractInlayIds(original)) {
-          if (imgBytes >= budget) { imgDropped++; continue; }
-          const du = await inlayDataUrl(id);
-          if (!du) continue;
-          if (imgBytes + du.length > budget) { imgDropped++; continue; }
-          imgBytes += du.length; imgCount++; body += '\n\n<img src="' + du + '">';
-        }
-        // ② 에셋(감정 스프라이트) = 작게 → assets 맵에 1회만 담고, 본문엔 {{img::이름}} 마커만 → 우리 import가 카드 크기·스타일로 렌더(블록 X).
-        for (const a of usedAssets(original, assetByName)) {
-          if (!assets[a.name]) {
-            if (imgBytes >= budget) { imgDropped++; continue; }
-            const du = await assetDataUrl(a.path);
-            if (!du) continue;
-            if (imgBytes + du.length > budget) { imgDropped++; continue; }
-            assets[a.name] = du; imgBytes += du.length; imgCount++;
-          }
-          if (assets[a.name]) body += '\n\n{{img::' + a.name + '}}';
-        }
-      }
+      // 번역본 기준으로 본문 구성. 이미지는 ★제자리 치환(원래 위치 보존) — 삽화=인라인 <img>, 에셋={{img::이름}}. ★1MB 예산은 삽화+에셋 공유.
+      let body = String(tr.text || '');
+      if (cleanMode === 'A') body = cleanApply(body, cleanRules);   // ★(A) 미리 정리 — 이미지 심기 전에 적용(새 dataURL·마커는 그 뒤에 들어가 안 건드림)
+      if (hasReadImage && !noImages) body = await embedImagesInPlace(body, original);
+      else body = stripImageMarkers(body);   // 텍스트만(noImages): 이미지 마커 제거(기존 거동)
       if (!body.trim()) continue;   // 텍스트·이미지 둘 다 없으면 건너뜀(이미지만 있으면 보냄)
       messages.push({ role: m.role === 'user' ? 'user' : 'char', text: body });
     }
@@ -468,5 +492,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.9.1');
+  console.info('[LogPapaPush] loaded v1.9.2');
 })();
