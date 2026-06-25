@@ -14,6 +14,7 @@
 // kvLoad/kvSave는 작은 블롭이라 Firestore kv 문서. 동기 getter 유지를 위해 로그인 시
 // 작은 KV 블롭을 메모리에 미리 적재(hydrate)하고 write-through 한다 → 호출부 시그니처 불변.
 // @ts-nocheck
+import { parseDataUrlImg, buildAssetDataUrl } from '../../core/card/assetRefs.js';
 export const IDB_NAME = 'pro2', IDB_STORE = 'cards', IDB_KEY = 'last', IDB_LOGS = 'logs', IDB_META = 'meta', IDB_FONTS = 'fonts', IDB_BLOBS = 'blobs', IDB_SRC = 'srcCatalog', IDB_SRCFILE = 'srcFiles', IDB_TRCACHE = 'trcache';
 
 // 동기화 대상 KV 키(한 곳에서 관리 → Firebase 마이그레이션/문서모델이 참조).
@@ -120,6 +121,102 @@ function collectBlobRefs(html: string, into: Set<string>) {
   while ((m = BLOB_REF_RE.exec(html)) !== null) into.add(m[1]);
 }
 
+// ── 공유 에셋 저장(가져온 챗의 이미지를 화마다 굽지 않고 한 벌만) ──────────────
+// 챗 가져오기는 같은 스프라이트를 여러 화에 반복 임베드해 용량·메모리가 폭발했다(146MB → 1GB+).
+// 대신 이미지 바이트를 IDB_BLOBS(콘텐츠해시 dedup, 굳히기와 같은 스토어)에 한 벌만 두고,
+// 각 화는 rec.assetRefs(이름→해시, 작음)만 들고, 렌더(리더)는 그 화에 필요한 이미지만 지연 복원한다.
+//   ★html dehydrate가 만드는 해시와 자연 dedup(같은 바이트=같은 해시=한 벌).
+// 에셋 맵(name→dataURL) → IDB_BLOBS에 바이트 한 벌씩 저장하고 name→hash(sha256hex) 반환. 비-이미지/파싱불가는 건너뜀(그 이름은 결과에서 빠짐 = 마커 유지).
+export async function blobsPutAssetMap(assets: Record<string, string>): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  if (!assets || typeof assets !== 'object') return out;
+  const seen = new Set<string>(); const toPut: any[] = []; const jobs: Array<Promise<void>> = [];
+  for (const name of Object.keys(assets)) {
+    const p = parseDataUrlImg(assets[name]); if (!p) continue;
+    jobs.push(sha256Hex(b64Bytes(p.b64)).then((h) => { out[name] = h; if (!seen.has(h)) { seen.add(h); toPut.push({ h, mime: p.mime, b64: p.b64 }); } }));
+  }
+  await Promise.all(jobs);
+  if (toPut.length) {
+    const db = await idbOpen();
+    await new Promise<void>((res, rej) => { const tx = db.transaction(IDB_BLOBS, 'readwrite'); const bs = tx.objectStore(IDB_BLOBS); for (const b of toPut) bs.put(b); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });   // put=한 벌(dedup)
+    db.close();
+  }
+  return out;
+}
+// 해시 집합 → Map<hash,{mime,b64}> (필요한 것만 1회 읽기).
+export async function blobsGet(hashes: Iterable<string>): Promise<Map<string, { mime: string; b64: string }>> {
+  const need = Array.from(new Set(Array.from(hashes).filter(Boolean) as string[]));
+  const map = new Map<string, any>();
+  if (!need.length) return map;
+  const db = await idbOpen();
+  await new Promise<void>((res) => { const tx = db.transaction(IDB_BLOBS, 'readonly'); const bs = tx.objectStore(IDB_BLOBS); let left = need.length; need.forEach((h) => { const g = bs.get(h); g.onsuccess = () => { if (g.result) map.set(h, g.result); if (--left === 0) res(); }; g.onerror = () => { if (--left === 0) res(); }; }); });
+  db.close(); return map;
+}
+// 로컬에 없는 블롭을 클라우드에서 받아 IDB_BLOBS에 채우는 훅(로그인 시 firebaseBackend가 등록). 비로그인=null.
+//   ★온디맨드: 리더가 그 화를 표시할 때, 그 화에 필요한데 로컬에 없는 해시만 받는다(다기기 이미지 보존 + 메모리 바운드).
+let _blobCloudFetch: ((hashes: string[]) => Promise<void>) | null = null;
+export function setBlobCloudFetcher(fn: ((hashes: string[]) => Promise<void>) | null) { _blobCloudFetch = fn; }
+// 외부(클라우드 다운로드)에서 받은 블롭을 IDB_BLOBS에 한 벌 저장.
+export async function blobsPutRaw(items: Array<{ h: string; mime: string; b64: string }>): Promise<void> {
+  const list = (items || []).filter((b) => b && b.h && b.b64);
+  if (!list.length) return;
+  const db = await idbOpen();
+  await new Promise<void>((res, rej) => { const tx = db.transaction(IDB_BLOBS, 'readwrite'); const bs = tx.objectStore(IDB_BLOBS); for (const b of list) bs.put({ h: b.h, mime: b.mime, b64: b.b64 }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+  db.close();
+}
+// assetRefs(name→hash) → name→dataURL 맵(그 화에 필요한 것만 복원). 렌더 직전 호출 → 한 화 분량만 메모리에.
+//   로컬에 없는 해시는 (로그인 시) 클라우드에서 받아 채운 뒤 다시 읽는다 → 다른 기기에서도 이미지 보존.
+export async function resolveAssetRefs(refs: Record<string, string>): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  if (!refs || typeof refs !== 'object') return out;
+  const hashes = Object.values(refs).filter(Boolean) as string[];
+  let map = await blobsGet(hashes);
+  const missing = hashes.filter((h) => !map.has(h));
+  if (missing.length && _blobCloudFetch) { try { await _blobCloudFetch(missing); map = await blobsGet(hashes); } catch (_) {} }   // 온디맨드 클라우드 보충
+  for (const name of Object.keys(refs)) { const b = map.get(refs[name]); if (b) out[name] = buildAssetDataUrl(b.mime, b.b64); }
+  return out;
+}
+
+// ── 비상 복구 — ★크기 기준 자동 삭제는 절대 안 한다(정상적으로 큰 작품의 로그가 날아갈 위험). ──
+// 거대 챗(에셋 146MB)을 옛 경로로 가져오다 크래시하면 무거운 화가 IDB_LOGS에 남아, 다음 로딩(logsAll의 getAll)에서 또 터진다.
+//   해법: (1) scanWorkSizes()로 작품별 용량만 가볍게 재서(커서, 한 건씩 = 메모리 안전·getAll 금지) 목록을 보여주고,
+//        (2) 사용자가 거대한 작품을 직접 골라 deleteWorkLogs(char)로 그 작품만 지운다. 자동 판단·자동 삭제 없음.
+const _recKeyOf = (v: any) => String((v && v.char) || '');
+const _recBytes = (v: any) => { let n = 0; if (v && typeof v.html === 'string') n += v.html.length; if (v && v.assets) { try { n += JSON.stringify(v.assets).length; } catch (_) { n += 64 * 1024 * 1024; } } return n; };
+// 작품별 용량·화수 집계(커서 1건씩, 메모리 안전). 용량 큰 순으로 정렬해 반환 — 복구 화면 picker용.
+export async function scanWorkSizes(): Promise<Array<{ key: string; name: string; bytes: number; count: number }>> {
+  const db = await idbOpen();
+  const tally = new Map<string, { name: string; bytes: number; count: number }>();
+  await new Promise<void>((res) => {
+    const tx = db.transaction(IDB_LOGS, 'readonly');
+    const req = tx.objectStore(IDB_LOGS).openCursor();
+    req.onsuccess = () => {
+      const c = req.result; if (!c) return;
+      const v = c.value; const k = _recKeyOf(v);
+      const e = tally.get(k) || { name: String((v && (v.workName || v.char)) || '(이름 없음)'), bytes: 0, count: 0 };
+      e.bytes += _recBytes(v); e.count += 1; if (v && v.workName) e.name = String(v.workName);
+      tally.set(k, e); c.continue();
+    };
+    tx.oncomplete = () => res(); tx.onerror = () => res();
+  });
+  db.close();
+  return Array.from(tally, ([key, e]) => ({ key, name: e.name, bytes: e.bytes, count: e.count })).sort((a, b) => b.bytes - a.bytes);
+}
+// 지정한 작품(char 키)의 화만 삭제(커서 1건씩). ★이 함수만으로는 어떤 작품도 자동 삭제되지 않음 — 호출부가 명시한 작품만.
+export async function deleteWorkLogs(charKey: string): Promise<{ deleted: number }> {
+  const key = String(charKey || ''); if (!key) return { deleted: 0 };
+  const db = await idbOpen();
+  let deleted = 0;
+  await new Promise<void>((res) => {
+    const tx = db.transaction(IDB_LOGS, 'readwrite');
+    const req = tx.objectStore(IDB_LOGS).openCursor();
+    req.onsuccess = () => { const c = req.result; if (!c) return; if (_recKeyOf(c.value) === key) { try { c.delete(); deleted++; } catch (_) {} } c.continue(); };
+    tx.oncomplete = () => res(); tx.onerror = () => res();
+  });
+  db.close();
+  return { deleted };
+}
+
 // ── 로컬 백엔드(현재 구현) ──────────────────────────────────────────
 // IndexedDB(logs/meta) + localStorage(KV). FirebaseBackend가 이 모양을 그대로 구현하면 교체 가능.
 const LocalBackend = {
@@ -185,7 +282,7 @@ let backendKind = 'local';
 /** 현재 백엔드 종류('local' | 'firebase' …). */
 export function getBackendKind(): string { return backendKind; }
 /** 로그인/로그아웃 시 백엔드 교체. FirebaseBackend는 LocalBackend와 같은 메서드 모양을 구현한다. */
-export function setBackend(b: any, kind: string) { backend = b || LocalBackend; backendKind = b ? (kind || 'custom') : 'local'; }
+export function setBackend(b: any, kind: string) { backend = b || LocalBackend; backendKind = b ? (kind || 'custom') : 'local'; if (backendKind !== 'firebase') _blobCloudFetch = null; }   // 로컬 복귀(로그아웃)면 클라우드 블롭 패처 해제
 /** 새 백엔드(예: FirebaseBackend) 구현 시 기준으로 삼을 로컬 구현 노출. */
 export { LocalBackend };
 

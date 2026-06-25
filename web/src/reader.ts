@@ -93,9 +93,12 @@ async function route() {
 }
 
 window.addEventListener('hashchange', route);
+
 // ★초기 라우팅 일원화: 로그를 먼저 로드한 뒤 route() — 폰트가 빈 allLogs로 route()를 앞질러 부르면
 //   #/log가 빈 데이터로 #/series로 튕겼다(데스크탑 진입 실패). 폰트는 그 다음에 로드하고 route() 재호출(반영).
 (async () => {
+  // ★비상 복구는 서재(library) 화면이 소유 — 리더에서 들어와도 무거운 로딩(getAll) 전에 그쪽으로 넘긴다(작품별 picker, 자동 삭제 없음).
+  if ((location.hash || '') === '#/recover') { location.replace('library.html#/recover'); return; }
   await reloadLogs();
   route();
   // 첫 로드가 비었으면(막힌 v7 승급·지연 등) 잠깐씩 재시도하며 풀리는 즉시 재렌더 — "불러오는 중"에 안 갇히게.

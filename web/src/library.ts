@@ -4,13 +4,13 @@
 // 해시 라우팅: #/(서가) · #/read/:char(뷰어). 데이터는 store.ts(IndexedDB/localStorage)로 에디터와 공유.
 // 화 HTML은 살균 후 본문 DOM에 직접 렌더(연속 스크롤·테마·줌). 본인 로그 + 살균이라 안전.
 // @ts-nocheck
-import { logsAll, logsAdd, logsDelete, loadRead, saveRead, loadReaderCfg, saveReaderCfg, metaGet, metaSet, metaDelete, metaAll, newWorkKey, idbDeleteWorkCard, getBackendKind, kvLoad, kvSave, isSessionSynced, markSessionSynced, OPEN_LOG_KEY, dedupeLogList, dedupeLogsInStore } from './store.js';
+import { logsAll, logsAdd, logsDelete, loadRead, saveRead, loadReaderCfg, saveReaderCfg, metaGet, metaSet, metaDelete, metaAll, newWorkKey, idbDeleteWorkCard, getBackendKind, kvLoad, kvSave, isSessionSynced, markSessionSynced, OPEN_LOG_KEY, dedupeLogList, dedupeLogsInStore, blobsPutAssetMap, scanWorkSizes, deleteWorkLogs } from './store.js';
 import { mountAccountUI } from './accountUI.js';   // 계정 UI(가벼움) — 에디터와 공용
 import { richCopy } from './clipboard.js';         // 리치 복사(아카 붙여넣기) — 에디터와 공용
 import { desktopAvailable, externalCount, bakeLogs } from './bake.js';   // 이미지 굳히기(데스크탑 전용)
 import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, openTranslateSettings, ensureTranslateReady } from './translate.js';   // 로그 번역(웹·데스크탑)
 import { cleanUnits, getCleanPrompt, setCleanPrompt, makeCleanFn, ensureCleanReady } from './cleanup.js';   // 가져온 로그 군더더기 정리(1차 결정론 + 2차 LLM·작품별 프롬프트)
-import { createReaderLog, filteredShareHtml } from './readerLog.js';   // 번역/정리 흐름 + 공유 필터(내 입력 가리기) 공용
+import { createReaderLog, fattenShareHtml } from './readerLog.js';   // 번역/정리 흐름 + 공유 fatten(이미지 임베드+내 입력 가리기) 공용
 import { popAutoClose } from './readerView.js';   // 공유 팝오버 바깥 탭=닫힘(리더 단일화 공유와 거동 통일)
 import { isLocalFirst, getSyncMode, shareBaseUrl, isDesktop } from './desktopSync.js';   // 로컬-퍼스트(데스크탑 OR 웹-수동) + 수동 동기화 상태 + 플랫폼
 import { mountUpdateBanner } from './updateBanner.js';   // 자동 업데이트 배너(데스크탑 전용)
@@ -472,7 +472,7 @@ async function doShareSeries(s: any, pop: HTMLElement, redraw: () => void, makeB
   if (makeBtn) { makeBtn.disabled = true; makeBtn.textContent = '만드는 중…'; }
   try {
     const S = await loadShare();
-    const episodes = s.eps.map((e: any) => ({ char: s.char, title: e.title, date: e.date, html: hideUser ? filteredShareHtml(e) : e.html, hideUser: !!hideUser }));   // ★내 입력 가리기: 공유본만 필터(원본 불변)
+    const episodes = await Promise.all(s.eps.map(async (e: any) => ({ char: s.char, title: e.title, date: e.date, html: await fattenShareHtml(e, !!hideUser), hideUser: !!hideUser })));   // ★공유본: 이미지 임베드(마른 레코드 복원) + 내 입력 가리기(원본 불변)
     // 표지·소개도 함께 공유 → 공유 열람 화면이 작품 페이지처럼 보임.
     let cm: any = {}; try { cm = (await metaGet(s.char)) || {}; } catch (_) {}
     let cover = cm.cover || s.cover || '';
@@ -1103,9 +1103,8 @@ async function buildAndSaveChat(parsed: any, opts: any) {
   // 새 작품일 때만 표시이름 메타 등록(이어붙이기는 기존 작품 이름·표지 유지).
   if (!isAppend) { try { await metaSet({ char: workKey, name: opts.char, cover: '', desc: '' }); } catch (_) {} }
   // ★삽화(장면)는 본문 인라인(플러그인이 박음), 에셋(감정 스프라이트)은 assets 맵으로 와서 여기서 카드 스타일로 렌더(블록 X) = 카드 드롭과 동일 경로.
-  const assetMap: any = (parsed && parsed.assets && typeof parsed.assets === 'object' && !Array.isArray(parsed.assets) && Object.keys(parsed.assets).length) ? parsed.assets : null;
+  let assetMap: any = (parsed && parsed.assets && typeof parsed.assets === 'object' && !Array.isArray(parsed.assets) && Object.keys(parsed.assets).length) ? parsed.assets : null;
   const cleanupRegexArr: any = (parsed && Array.isArray(parsed.cleanupRegex) && parsed.cleanupRegex.length) ? parsed.cleanupRegex : null;   // ★가져온 챗에 동봉된 정리 정규식(B) — 레코드에 저장 → 리더가 비파괴 적용(살균·ReDoS는 리더서)
-  const ASSET_IMG_STYLE = { size: 100, margin: 10, useBorder: false, borderColor: '#000000', useShadow: true };
   const created: any[] = [];
   for (let i = 0; i < eps.length; i++) {
     const chunk = eps[i];
@@ -1136,19 +1135,20 @@ async function buildAndSaveChat(parsed: any, opts: any) {
       rec.html = convertText(input, s);
       if (opts.design === 'custom-css') rec.userCardCss = '';
     }
-    // ★에셋(감정 스프라이트) 박제: assets 맵이 있으면 마커({{img::이름}}·CBS 등)를 카드 드롭과 동일 크기·스타일로 렌더(블록 임베드 X).
-    //   ★이 화가 실제 쓴 에셋만 rec.assets에 동반 저장 → 재렌더(정리·번역·토글·편집)에서 rerenderLog가 재적용(증발 방지). 용량은 화별로 바운드.
-    if (assetMap && !opts.keepImgTags) {   // '이미지태그만 남기기'면 동봉 그림도 임베드 안 함 — 태그 보존(charx '에셋 입히기'로 채움)
+    // ★에셋(감정 스프라이트) 공유 저장: 이미지를 화마다 base64로 굽지 않는다(같은 스프라이트 ×화수 복제 = OOM 원인).
+    //   대신 rec.html엔 마커({{img::이름}}·<img src=이름>·CBS)를 그대로 두고, 바이트는 작품당 한 벌만 IDB_BLOBS에 저장(blobsPutAssetMap, 콘텐츠해시 dedup).
+    //   rec.assetRefs(이름→해시, 작음)만 화에 동반 → 리더가 그 화에 필요한 것만 지연 복원(rerenderLog/applyAssetMap, readerLog.ts).
+    if (assetMap && !opts.keepImgTags) {   // '이미지태그만 남기기'면 동봉 그림도 안 박음 — 태그 보존(charx '에셋 입히기'로 채움)
       const refs = new Set<string>(); for (const mm of chunk) collectAssetRefs(String((mm as any).text || ''), refs);
       const sub: any = {};
       for (const k of Object.keys(assetMap)) { const kl = k.toLowerCase(), ks = kl.replace(/\.[a-z0-9]+$/i, ''); for (const ref of refs) { const rl = String(ref).toLowerCase(); if (rl === kl || rl === ks || rl.replace(/\.[a-z0-9]+$/i, '') === ks) { sub[k] = assetMap[k]; break; } } }
       if (Object.keys(sub).length) {
-        let h = String(rec.html || ''); h = resolveAssetCBS(h, sub); h = processImageTags(h, sub, ASSET_IMG_STYLE); h = resolveAssetMarkers(h, sub, ASSET_IMG_STYLE); rec.html = h;
-        rec.assets = sub;
+        try { const refsHashes = await blobsPutAssetMap(sub); if (Object.keys(refsHashes).length) rec.assetRefs = refsHashes; } catch (_) {}   // 바이트는 한 벌(dedup)·메모리 화별 바운드
       }
     }
     await logsAdd(rec); created.push(rec);
   }
+  assetMap = null; try { if (parsed) { parsed.assets = null; } } catch (_) {}   // ★거대 에셋 맵(수백MB) 즉시 해제 — 바이트는 IDB_BLOBS에 들어갔고 created/정리엔 불필요(메모리 회수)
   // fp 기록 갱신 — 다음 재유입 때 이 시점까지를 "이미 보관한 앞부분"으로 보고 델타만 잇는다.
   if (fp) { imports[fp] = { workKey, count: allMsgs.length, sig: msgsSig(allMsgs) }; saveImports(imports); }
   const verb = isAppend ? '이어받음' : '가져옴';
@@ -1364,8 +1364,49 @@ function hideLibLoading() {
   if (libLoadingEl) { libLoadingEl.classList.add('hide'); setTimeout(() => { try { libLoadingEl.remove(); } catch (_) {} }, 400); }
 }
 
+// ★비상 복구 — 거대 챗을 옛 경로로 가져오다 크래시해 무거운 화가 남으면, 다음 로딩(logsAll의 getAll)에서 또 OOM.
+//   이 라우트는 무거운 로딩을 타기 전에 가로채, 작품별 용량만 가볍게 재서(커서) 목록을 보여준다.
+//   ★자동 삭제 없음 — 사용자가 거대한 작품(용량으로 한눈에 보임)을 직접 골라 그 작품만 지운다(다른 작품·읽기기록·프리셋 보존).
+async function runRecovery() {
+  try { const el = document.getElementById('lib-loading'); if (el) el.remove(); } catch (_) {}
+  const app = document.getElementById('app') || document.body;
+  app.innerHTML = '';
+  const box = document.createElement('div'); box.style.cssText = 'max-width:640px;margin:48px auto;padding:24px;font:15px/1.7 system-ui,sans-serif;';
+  const h = document.createElement('div'); h.style.cssText = 'font-size:20px;font-weight:700;margin-bottom:6px;'; h.textContent = '비상 복구';
+  const p = document.createElement('div'); p.style.marginBottom = '6px'; p.textContent = '서재가 메모리 부족으로 안 열릴 때 쓰는 화면입니다. 용량이 비정상적으로 큰 작품을 직접 골라 지우세요. (다른 작품·읽기기록·프리셋은 그대로)';
+  const status = document.createElement('div'); status.style.cssText = 'color:#a98;margin:8px 0;'; status.textContent = '작품 용량 확인 중…';
+  const list = document.createElement('div'); list.style.cssText = 'margin-top:8px;';
+  const goBtn = document.createElement('button'); goBtn.textContent = '서재로 가기'; goBtn.style.cssText = 'margin-top:18px;padding:8px 16px;cursor:pointer;';
+  goBtn.onclick = () => { location.replace('library.html#/'); };
+  box.append(h, p, status, list, goBtn); app.appendChild(box);
+  const mb = (n: number) => (n / 1048576).toFixed(1) + 'MB';
+  const render = (works: Array<{ key: string; name: string; bytes: number; count: number }>) => {
+    list.innerHTML = '';
+    if (!works.length) { status.textContent = '저장된 작품이 없습니다.'; return; }
+    status.textContent = `작품 ${works.length}개 — 용량 큰 순. 거대한 것(보통 100MB+)이 문제의 작품입니다.`;
+    for (const w of works) {
+      const row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid #5a4636;border-radius:8px;margin-bottom:8px;';
+      const huge = w.bytes > 60 * 1048576;
+      const info = document.createElement('div'); info.style.flex = '1';
+      info.innerHTML = `<div style="font-weight:600">${(w.name || '(이름 없음)').replace(/</g, '&lt;')}</div><div style="color:#a98;font-size:13px">${mb(w.bytes)} · ${w.count}화${huge ? ' · ⚠ 비정상적으로 큼' : ''}</div>`;
+      const del = document.createElement('button'); del.textContent = '이 작품 삭제'; del.style.cssText = 'padding:7px 12px;cursor:pointer;' + (huge ? 'background:#c0392b;color:#fff;border:none;border-radius:6px;' : '');
+      del.onclick = async () => {
+        if (!confirm(`“${w.name}” (${mb(w.bytes)}, ${w.count}화)를 삭제할까요? 되돌릴 수 없습니다.\n(다른 작품은 그대로 유지됩니다.)`)) return;
+        del.disabled = true; del.textContent = '삭제 중…';
+        try { const r = await deleteWorkLogs(w.key); status.textContent = `“${w.name}” ${r.deleted}화 삭제 완료. 서재로 가서 정상 동작을 확인하세요.`; }
+        catch (e: any) { status.textContent = '삭제 오류: ' + ((e && e.message) || e); del.disabled = false; del.textContent = '이 작품 삭제'; return; }
+        row.remove();
+      };
+      row.append(info, del); list.appendChild(row);
+    }
+  };
+  try { render(await scanWorkSizes()); }
+  catch (e: any) { status.textContent = '용량 확인 오류: ' + ((e && e.message) || e) + ' — 새로고침 후 다시 시도하세요.'; }
+}
+
 (function init() {
   applyShellChrome();
+  if ((location.hash || '') === '#/recover') { runRecovery(); return; }   // ★무거운 로딩 전에 가로채 OOM 회피
   { const b = document.getElementById('brand'); if (b) b.onclick = () => { if ((location.hash || '#/') !== '#/') location.hash = '#/'; else route(); }; }   // 로고 = 서재 홈
   // 관리실 진입 — ★웹·데스크탑 둘 다. 웹=정리 규칙만 / 데스크탑=정리+에셋추출+풀보관(management.ts가 isDesktop 게이팅).
   { const mb = document.getElementById('btn-mgmt') as HTMLElement | null; if (mb) { mb.hidden = false; (mb as HTMLButtonElement).onclick = () => { location.href = 'management.html'; }; } }

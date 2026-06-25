@@ -13,7 +13,7 @@
 // app:// 는 registerSchemesAsPrivileged로 standard(고정 origin)+secure(보안 컨텍스트)로
 // 등록한다 → navigator.clipboard.write(리치 복사)·crypto.subtle·IndexedDB가 정상 동작.
 
-const { app, BrowserWindow, protocol, net, session, shell, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, protocol, net, session, shell, ipcMain, screen, Menu } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fss = require('node:fs');   // 동기(창 상태는 닫힐 때 동기 저장 — quit 전에 확실히 기록)
@@ -194,6 +194,19 @@ function createWindow() {
   // 앱 자체 origin 밖으로의 메인 프레임 네비게이션 차단(번들 안에서만 이동).
   win.webContents.on('will-navigate', (e, url) => {
     if (!url.startsWith(ORIGIN + '/')) e.preventDefault();
+  });
+
+  // ★렌더러 OOM 자동 복구 — 거대 챗을 옛 경로로 가져오다 무거운 화가 남으면 로딩 중 렌더러가 메모리부족으로 죽어(검은 화면)
+  //   다시 켜도 또 죽는다. 메인 프로세스가 그 죽음을 감지해, 무거운 로딩을 건너뛰는 #/recover로 자동 재진입(커서로 무거운 화만 정리).
+  //   #/recover는 getAll을 안 타 다시 죽지 않음 → 정리 후 서재로. 무한루프 방지로 2회 한도.
+  let recoverTries = 0;
+  win.webContents.on('render-process-gone', (_e, details) => {
+    const reason = details && details.reason;
+    if (recoverTries >= 2) return;
+    if (reason === 'oom' || reason === 'crashed' || reason === 'launch-failed') {
+      recoverTries++;
+      try { win.loadURL(`${ORIGIN}/library.html#/recover`); } catch (_) {}
+    }
   });
 
   // 기본 진입 = 서재 스튜디오 홈(library.html). 편집기(index.html)는 "빠른 제작"·"새 화 쓰기"로 연다.
@@ -557,11 +570,28 @@ function mimeFromUrl(url) {
   return t || 'image/png';
 }
 
+// ── 앱 메뉴(자동 숨김 — Alt로 표시) — 표준 편집 역할 + 도구(비상 복구·새로고침). ──
+//   비상 복구 = library.html#/recover 로드(무거운 로딩 없이 커서로 큰 화만 정리). 검은 화면이어도 Alt→도구로 접근.
+function buildAppMenu(getWin) {
+  const tools = {
+    label: '도구',
+    submenu: [
+      { label: '비상 복구 (용량 큰 화 정리)', click: () => { const w = getWin(); if (w && !w.isDestroyed()) w.loadURL(`${ORIGIN}/library.html#/recover`); } },
+      { type: 'separator' },
+      { label: '서재로', click: () => { const w = getWin(); if (w && !w.isDestroyed()) w.loadURL(`${ORIGIN}/library.html`); } },
+      { role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' },
+    ],
+  };
+  const edit = { label: '편집', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] };
+  Menu.setApplicationMenu(Menu.buildFromTemplate([edit, tools]));
+}
+
 app.whenReady().then(() => {
   registerAppProtocol();
   lockDownPermissions();
   registerIpc();
   const win = createWindow();
+  buildAppMenu(() => win);   // Alt→도구→비상 복구 (검은 화면 수동 탈출구) + render-process-gone 자동 복구가 1차
   setupAutoUpdate(win);   // 패키징본이면 백그라운드 업데이트 확인
 
   app.on('activate', () => {

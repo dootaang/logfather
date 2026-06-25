@@ -9,7 +9,7 @@ import { mountReaderBody, rdCfg, isWebnovel, popAutoClose, mk } from './readerVi
 import { icon } from './icons.js';
 import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
-import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad } from './store.js';
+import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad, resolveAssetRefs } from './store.js';
 import { isLocalFirst, getSyncMode } from './desktopSync.js';
 import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, ensureTranslateReady, openTranslateSettings } from './translate.js';
 import { cleanUnits } from './cleanup.js';
@@ -26,7 +26,7 @@ function sortEps(eps: any[]): any[] { return eps.slice().sort((a, b) => (epOrder
 const clonej = (x: any) => (x == null ? x : JSON.parse(JSON.stringify(x)));
 // 비파괴 번역: 원문 스냅샷(r.orig, 구조화 텍스트) ↔ 표시 레코드 사이 헬퍼.
 const ORIG_FIELDS = ['input', 'chat', 'diary', 'webnovel', 'cardCfg', 'userCardCss'];
-const origRecord = (r: any) => Object.assign({ template: r.template, char: r.char, assets: r.assets }, r.orig || {});   // 원문 → rerenderLog용 임시 레코드(에셋 맵도 동반 → 원문/번역 토글에서도 에셋 보존)
+const origRecord = (r: any) => Object.assign({ template: r.template, char: r.char, assets: r.assets, assetRefs: r.assetRefs }, r.orig || {});   // 원문 → rerenderLog용 임시 레코드(에셋 맵·참조 동반 → 원문/번역 토글에서도 에셋 보존)
 // ★가져온 에셋(마커 방식)을 모든 재렌더(정리·번역·토글·편집) 끝에 rec.assets로 되살림 — 마커 {{img::이름}}·CBS를 카드 스타일 <img>로(증발 방지).
 const ASSET_IMG_STYLE = { size: 100, margin: 10, useBorder: false, borderColor: '#000000', useShadow: true };
 function applyAssetMap(html: string, assets: any): string {
@@ -53,10 +53,10 @@ function cleanupChanges(rec: any, rules: any[]): boolean {   // 이 레코드 �
   try { const s = logTextSlots(clonej(rec)); for (const t of s.texts) if (expandCardRegex(t, rules) !== t) return true; } catch (_) {}
   return false;
 }
-function renderCleaned(rec: any, rules: any[]): string {   // 비파괴 정리: 복제 → 텍스트 슬롯에 expandCardRegex → 재렌더
+function renderCleaned(rec: any, rules: any[], displayAssets?: Record<string, string>): string {   // 비파괴 정리: 복제 → 텍스트 슬롯에 expandCardRegex → 재렌더(표시용 에셋 적용)
   const c = clonej(rec); const s = logTextSlots(c);
   for (let i = 0; i < s.texts.length; i++) s.set(i, expandCardRegex(s.texts[i], rules));
-  return rerenderLog(c);
+  return rerenderLog(c, displayAssets);
 }
 
 // 한 로그의 번역/정리 대상 텍스트 슬롯(구조화 원본). role 있는 단위(채팅/카드블록)는 역할 제외에 쓰임.
@@ -78,7 +78,9 @@ export function logTextSlots(rec: any): { texts: string[]; roles: (string | null
   return { texts, roles, set: (i, v) => setters[i](v) };
 }
 // 구조화 원본으로 html 재렌더(채팅 가져오기 buildAndSaveChat와 동일 = defaults 기준).
-export function rerenderLog(rec: any): string {
+//   displayAssets(이름→dataURL)를 주면 표시용(이미지 임베드). 안 주면 저장용 = 마른 형태(마커 유지) + 옛 레코드는 rec.assets(base64)로 하위호환 임베드.
+//   ★새 가져오기는 rec.html에 이미지를 안 굽는다(마커 + rec.assetRefs[이름→해시], 바이트는 IDB_BLOBS 한 벌). 표시 직전 resolveAssetRefs로 그 화만 복원해 displayAssets로 넘긴다.
+export function rerenderLog(rec: any, displayAssets?: Record<string, string>): string {
   const s = defaultSettings();
   s.template = rec.template || 'card';
   s.profile = s.profile || {}; if (rec.char) s.profile.botName = rec.char;
@@ -91,7 +93,8 @@ export function rerenderLog(rec: any): string {
   else if (t === 'card' && rec.cardCfg && Array.isArray(rec.cardCfg.blocks) && rec.cardCfg.blocks.length) s.templateSettings.card = rec.cardCfg;
   else if (t === 'custom-css') { s.userCardCss = String(rec.userCardCss || ''); input = String(rec.input || ''); }
   else input = String(rec.input || '');
-  return applyAssetMap(convertText(input, s), rec.assets);   // ★재렌더 끝에 에셋 맵 재적용 → 정리·번역·토글·편집 어디서도 에셋 이미지 보존
+  const assets = displayAssets !== undefined ? displayAssets : rec.assets;   // 표시=resolve된 맵 / 저장=undefined(마른 마커) / 옛 레코드=rec.assets(base64)
+  return applyAssetMap(convertText(input, s), assets);   // ★표시 시에만 에셋 임베드 → 저장 html은 마름(용량·메모리 절약). 옛 레코드는 그대로 보존.
 }
 // 공유용 html — 내 입력(user 역할) 항목을 구조에서 빼고 재렌더(★rec.assets 재적용 = 에셋 보존). ★비파괴(복제만, 원본 r 불변).
 //   역할 구조가 있는 디자인(chat/card/webnovel)만 필터 가능 — 없으면(단일 input·custom-css) 원본 html 그대로 반환(안전).
@@ -105,6 +108,24 @@ export function filteredShareHtml(r: any): string {
   if (c.cardCfg && Array.isArray(c.cardCfg.blocks)) c.cardCfg.blocks = c.cardCfg.blocks.filter((b: any) => b && b.role !== 'user');
   if (c.webnovel && Array.isArray(c.webnovel.blocks)) c.webnovel.blocks = c.webnovel.blocks.filter((b: any) => b && b.role !== 'user');
   return rerenderLog(c);
+}
+// 공유용 "살찐(이미지 임베드)" html — 공유 받는 사람은 로컬 블롭이 없으므로 이미지를 본문에 박아 올린다.
+//   마른 레코드(rec.assetRefs): 그 화 이미지를 IDB_BLOBS(필요시 클라우드)에서 복원해 마커에 임베드.
+//   옛 레코드(rec.assets/임베드된 r.html): amap=undefined → 그대로(이미 임베드). hideUser면 user 메시지 빼고 재렌더.
+export async function fattenShareHtml(r: any, hideUser: boolean): Promise<string> {
+  const amap = (r && r.assetRefs && typeof r.assetRefs === 'object') ? await resolveAssetRefs(r.assetRefs) : undefined;
+  if (hideUser) {
+    const hasRole = (r.chat && Array.isArray(r.chat.messages) && r.chat.messages.length)
+      || (r.cardCfg && Array.isArray(r.cardCfg.blocks) && r.cardCfg.blocks.length)
+      || (r.webnovel && Array.isArray(r.webnovel.blocks) && r.webnovel.blocks.length);
+    if (!hasRole) return applyAssetMap(String(r.html || ''), amap);   // 역할 구조 없으면 필터 불가 → 본문 임베드만
+    const c = clonej(r);
+    if (c.chat && Array.isArray(c.chat.messages)) c.chat.messages = c.chat.messages.filter((m: any) => m && m.role !== 'user');
+    if (c.cardCfg && Array.isArray(c.cardCfg.blocks)) c.cardCfg.blocks = c.cardCfg.blocks.filter((b: any) => b && b.role !== 'user');
+    if (c.webnovel && Array.isArray(c.webnovel.blocks)) c.webnovel.blocks = c.webnovel.blocks.filter((b: any) => b && b.role !== 'user');
+    return rerenderLog(c, amap);
+  }
+  return applyAssetMap(String(r.html || ''), amap);
 }
 
 // 팩토리 — ctx: { setStatus, reloadLogs, getAllLogs, route, getUser, nameOf }.
@@ -211,7 +232,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       hideChk.onchange = () => { try { localStorage.setItem('pro2-share-hideuser', hideChk.checked ? '1' : '0'); } catch (_) {} };
       hideWrap.append(hideChk, document.createTextNode(' 내 입력 가리기 (공유본에서 내 메시지 빼기 — 내 서재는 그대로)'));
       pop.appendChild(hideWrap);
-      const shareRec = () => Object.assign({}, r, { html: hideChk.checked ? filteredShareHtml(r) : r.html, hideUser: hideChk.checked });
+      const shareRec = async () => Object.assign({}, r, { html: await fattenShareHtml(r, hideChk.checked), hideUser: hideChk.checked });   // ★공유본은 이미지 임베드(받는 사람은 로컬 블롭 없음)
       if (r.shareId) {
         pop.appendChild(mk('div', 'share-note', '이 링크를 받은 사람은 로그인 없이 이 화를 볼 수 있습니다 (이미지 포함). 이미지는 공유용으로 축소된 화질입니다.'));
         const row = document.createElement('div'); row.className = 'share-link-row';
@@ -223,7 +244,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
         row.append(input, copyB); pop.appendChild(row);
         const acts = document.createElement('div'); acts.className = 'share-actions';
         const refreshB = mk('button', '', '내용 갱신') as HTMLButtonElement; refreshB.title = '편집 후 최신 내용으로 링크 갱신';
-        refreshB.onclick = async () => { refreshB.disabled = true; refreshB.textContent = '갱신 중…'; try { const S = await loadShare(); await S.createShare(shareRec(), r.shareId); setStatus('링크 내용을 갱신했습니다.'); } catch (e: any) { setStatus('갱신 실패: ' + ((e && e.message) || '')); } refreshB.disabled = false; refreshB.textContent = '내용 갱신'; };
+        refreshB.onclick = async () => { refreshB.disabled = true; refreshB.textContent = '갱신 중…'; try { const S = await loadShare(); await S.createShare(await shareRec(), r.shareId); setStatus('링크 내용을 갱신했습니다.'); } catch (e: any) { setStatus('갱신 실패: ' + ((e && e.message) || '')); } refreshB.disabled = false; refreshB.textContent = '내용 갱신'; };
         const unshareB = mk('button', 'series-del', '공유 해제') as HTMLButtonElement;
         unshareB.onclick = async () => { unshareB.disabled = true; try { const S = await loadShare(); await S.deleteShare(r.shareId); delete r.shareId; await logsAdd(r); btn.innerHTML = icon('link') + ' 공유'; setStatus('공유를 해제했습니다.'); draw(); } catch (e: any) { setStatus('해제 실패: ' + ((e && e.message) || '')); unshareB.disabled = false; } };
         acts.append(refreshB, unshareB); pop.appendChild(acts);
@@ -234,7 +255,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
           makeB.disabled = true; makeB.textContent = '만드는 중…';
           try {
             const S = await loadShare();
-            const id = await S.createShare(shareRec());
+            const id = await S.createShare(await shareRec());
             r.shareId = id; await logsAdd(r); btn.innerHTML = icon('link') + ' 공유됨';
             try { await navigator.clipboard.writeText(S.shareUrl(id)); setStatus('공개 링크를 클립보드에 복사했습니다.'); } catch (_) { setStatus('공개 링크가 만들어졌습니다.'); }
             draw();
@@ -276,7 +297,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
   }
 
   // 단일 화 열람(그 로그만). char·epId로 allLogs에서 찾아 렌더. prev/next·복사·공유·편집기로·번역·정리·삭제·몰입.
-  function renderSingleLog(char: string, epId: string) {
+  async function renderSingleLog(char: string, epId: string) {
     const app = document.getElementById('app')!;
     const all = getAllLogs();
     const eps = sortEps(all.filter((r: any) => r.char === char));
@@ -304,6 +325,8 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       location.hash = '#/series/' + encodeURIComponent(char); return;   // 로드됐는데 없음 = 진짜 없는 화 → 작품 페이지
     }
     const r = eps[idx];
+    // ★마른 레코드(rec.assetRefs=이름→해시): 이 화에 필요한 이미지만 IDB_BLOBS에서 지연 복원(name→dataURL). 옛 레코드(rec.assets base64)는 undefined → rerenderLog가 rec.assets로 하위호환.
+    const amap: Record<string, string> | undefined = (r && r.assetRefs && typeof r.assetRefs === 'object') ? await resolveAssetRefs(r.assetRefs) : undefined;
     // ★작업 3: 번역된 적 있는 화(r.orig)인데 본문이 원문으로 되돌아가 있으면(왕복/동기화 잔여) 캐시에서 자동 복원 — 무료·키 불필요·진입당 1회.
     //   비파괴(원문 토글 유지) · 캐시 미스면 원문 유지(무해) · 진입=상단이라 스크롤 보존 회귀 없음.
     if (r && r.orig && !origView[r.id] && !r._trAuto && translateAvailable()) {
@@ -331,7 +354,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     nextB.onclick = () => { location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(eps[idx + 1].id); };
     const setBtn = document.createElement('button'); setBtn.className = 'reader-iconbtn'; setBtn.innerHTML = icon('sliders') + ' 보기';
     const cp = document.createElement('button'); cp.className = 'reader-iconbtn'; cp.innerHTML = icon('copy') + ' 복사'; cp.title = '리치 복사 — 아카 에디터에 붙여넣으면 이미지까지 올라감';
-    cp.onclick = async () => { const o = cp.textContent; cp.textContent = '변환중…'; try { await richCopy(r.html, r.input || ''); cp.textContent = '복사됨!'; } catch (err: any) { cp.textContent = '실패'; setStatus('복사 오류: ' + ((err && err.message) || '')); } setTimeout(() => { cp.textContent = o; }, 1400); };
+    cp.onclick = async () => { const o = cp.textContent; cp.textContent = '변환중…'; try { await richCopy(displayHtml, r.input || ''); cp.textContent = '복사됨!'; } catch (err: any) { cp.textContent = '실패'; setStatus('복사 오류: ' + ((err && err.message) || '')); } setTimeout(() => { cp.textContent = o; }, 1400); };   // ★표시본(이미지 임베드)으로 복사 — 마른 레코드는 r.html이 마커뿐이라 displayHtml 사용
     const shareB = document.createElement('button'); shareB.className = 'reader-iconbtn'; shareB.innerHTML = icon('link') + (r.shareId ? ' 공유됨' : ' 공유'); shareB.title = '공개 읽기전용 링크 — 받은 사람이 로그인 없이 이 화를 봄';
     shareB.onclick = () => toggleSharePop(reader, r, shareB);
     const editLog = document.createElement('button'); editLog.className = 'reader-iconbtn'; editLog.innerHTML = icon('pencil') + ' 편집기로'; editLog.title = '이 로그를 편집기에서 수정';
@@ -425,12 +448,13 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     // ── 관리실 정리 규칙 비파괴 적용 + "정리/원본" 토글 (이 화를 실제로 바꾸는 규칙이 있을 때만 노출, 기본=정리됨) ──
     const showOrig = !!(hasOrig && origView[r.id]);
     const baseRec = showOrig ? origRecord(r) : r;
-    const baseHtml = showOrig ? rerenderLog(origRecord(r)) : r.html;
+    // 표시용 본문: 마른 레코드는 amap(그 화 이미지)으로 임베드, 옛 레코드는 r.html 그대로(이미 임베드됨, amap=undefined → applyAssetMap 무동작).
+    const baseHtml = showOrig ? rerenderLog(origRecord(r), amap) : applyAssetMap(r.html, amap);
     let displayHtml = baseHtml; let cleanSeg: HTMLElement | null = null;
     const cRules = cleanupRules().concat(perLogCleanup(r));   // 관리실 글로벌 + per-log(가져온 챗 동봉) 정리 규칙 합성
     if (cRules.length && cleanupChanges(baseRec, cRules)) {
       const on = cleanView[r.id] !== false;
-      displayHtml = on ? renderCleaned(baseRec, cRules) : baseHtml;
+      displayHtml = on ? renderCleaned(baseRec, cRules, amap) : baseHtml;
       cleanSeg = document.createElement('div'); cleanSeg.className = 'reader-seg';
       const cOn = document.createElement('button'); cOn.className = 'reader-iconbtn' + (on ? ' on' : ''); cOn.textContent = '정리';
       const cOff = document.createElement('button'); cOff.className = 'reader-iconbtn' + (on ? '' : ' on'); cOff.textContent = '원본';

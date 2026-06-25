@@ -20,7 +20,8 @@ import {
   collection, doc, getDoc, getDocs, setDoc, deleteDoc, onSnapshot, query, where,
 } from 'firebase/firestore';
 import { getStorage, ref as sref, uploadString, getBytes, deleteObject, listAll } from 'firebase/storage';
-import { LocalBackend } from './store.js';   // KV 이중 쓰기(같은 기기 로컬 자동저장도 최신화)용
+import { LocalBackend, blobsGet, blobsPutRaw, setBlobCloudFetcher } from './store.js';   // KV 이중 쓰기 + 공유 에셋 블롭(콘텐츠해시) 동기화
+import { parseDataUrlImg, buildAssetDataUrl } from '../../core/card/assetRefs.js';
 
 let _db: any = null, _storage: any = null;
 function db(): any {
@@ -51,8 +52,9 @@ export async function wipeUserCloud(uid: string, onProgress?: (n: number) => voi
   }
   // 2) 본인 소유 공유 문서(shares/{id}, owner==uid)
   try { const snap = await getDocs(query(collection(database, 'shares'), where('owner', '==', uid))); for (const d of snap.docs) { try { await deleteDoc(d.ref); tick(); } catch (_) {} } } catch (_) {}
-  // 3) Storage 객체(큰 로그 html·표지 분리본) — users/{uid}/ 전부
+  // 3) Storage 객체(큰 로그 html·표지 분리본 + 공유 에셋 블롭) — users/{uid}/ 전부
   try { await wipeStoragePrefix(store, 'users/' + uid, tick); } catch (_) {}
+  try { localStorage.removeItem('pro2-cloud-blobs-' + uid); } catch (_) {}   // 블롭 업로드 집합 초기화(이후 재업로드 보장)
   return n;
 }
 
@@ -83,6 +85,40 @@ export function createFirebaseBackend(uid: string): any {
   const savePending = (ids: string[]) => { try { localStorage.setItem(PENDING_KEY, JSON.stringify(Array.from(new Set(ids)))); } catch (_) {} };
   const addPending = (id: string) => { const p = loadPending(); if (!p.includes(String(id))) { p.push(String(id)); savePending(p); } };
   const removePending = (id: string) => savePending(loadPending().filter((x) => x !== String(id)));
+
+  // ── 공유 에셋 블롭(콘텐츠해시) 동기화 — 마른 레코드(rec.assetRefs=이름→해시)의 이미지 바이트를 기기 간 공유 ──
+  //   업로드: users/{uid}/blobs/{hash} (콘텐츠주소 = 자동 dedup). 이미 올린 해시는 로컬 집합으로 건너뜀(멱등).
+  //   다운로드: 리더가 그 화 표시 직전, 로컬에 없는 해시만 받아 IDB_BLOBS에 채움(setBlobCloudFetcher 훅, 온디맨드·메모리 바운드).
+  const blobPath = (h: string) => `users/${uid}/blobs/${h}`;
+  const UPKEY = 'pro2-cloud-blobs-' + uid;
+  const loadUploaded = (): Set<string> => { try { const a = JSON.parse(localStorage.getItem(UPKEY) || '[]'); return new Set(Array.isArray(a) ? a.map(String) : []); } catch (_) { return new Set(); } };
+  const markUploaded = (hs: string[]) => { try { const s = loadUploaded(); for (const h of hs) s.add(h); localStorage.setItem(UPKEY, JSON.stringify(Array.from(s))); } catch (_) {} };
+  async function pushBlobs(hashes: string[]): Promise<void> {
+    const want = Array.from(new Set((hashes || []).filter(Boolean)));
+    if (!want.length) return;
+    const up = loadUploaded();
+    const todo = want.filter((h) => !up.has(h));
+    if (!todo.length) return;
+    const bytes = await blobsGet(todo);   // 로컬 IDB_BLOBS에서 바이트(한 화 분량, 바운드)
+    const done: string[] = [];
+    for (const h of todo) {
+      const b = bytes.get(h); if (!b) continue;   // 로컬에 없으면(이미 마름) 스킵
+      try { await uploadString(sref(storage(), blobPath(h)), buildAssetDataUrl(b.mime, b.b64), 'raw', { contentType: 'text/plain;charset=utf-8' }); done.push(h); } catch (_) { /* 실패 = 다음 기회(멱등) */ }
+    }
+    if (done.length) markUploaded(done);
+  }
+  async function fetchBlobs(hashes: string[]): Promise<void> {
+    const want = Array.from(new Set((hashes || []).filter(Boolean)));
+    if (!want.length) return;
+    const got: Array<{ h: string; mime: string; b64: string }> = [];
+    for (const h of want) {
+      try {
+        const txt = new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), blobPath(h)))));
+        const p = parseDataUrlImg(txt); if (p) got.push({ h, mime: p.mime, b64: p.b64 });
+      } catch (_) { /* 그 해시만 건너뜀(마커 유지) */ }
+    }
+    if (got.length) { try { await blobsPutRaw(got); } catch (_) {} }
+  }
 
   // 로그 1건을 클라우드(Firestore + 필요시 Storage)로 올린다. 실패 시 throw.
   async function pushLog(rec: any): Promise<void> {
@@ -116,8 +152,12 @@ export function createFirebaseBackend(uid: string): any {
       delete r.assetsRef;
       try { await deleteObject(sref(storage(), logAssetsPath(r.id))); } catch (_) {}
     }
+    // ★마른 레코드의 공유 에셋 블롭 업로드(콘텐츠해시 dedup) — assetRefs(이름→해시)는 작아 문서에 인라인 유지.
+    if (r.assetRefs && typeof r.assetRefs === 'object') { try { await pushBlobs(Object.values(r.assetRefs)); } catch (_) {} }
     await setDoc(docRef('logs', r.id), r);
   }
+
+  setBlobCloudFetcher(fetchBlobs);   // ★리더 온디맨드 블롭 보충 활성(로그아웃 시 store.setBackend가 해제)
 
   return {
     // ── 로그 보관함 ──
