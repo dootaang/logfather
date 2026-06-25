@@ -16,7 +16,7 @@ import { cleanUnits } from './cleanup.js';
 import { defaultSettings } from '../../core/preset/bundle.js';
 import { convertText } from '../../core/convert/convertText.js';
 import { expandCardRegex, sanitizeRegexOut } from '../../core/convert/cardRegex.js';   // 관리실 정리 규칙(표시 정규식) 적용 + 외부 규칙 out 살균
-import { processImageTags } from '../../core/convert/processImageTags.js';   // 가져온 에셋 맵 재적용(재렌더 시 증발 방지)
+import { processImageTags, stripUnresolvedAssetImages } from '../../core/convert/processImageTags.js';   // 가져온 에셋 맵 재적용 + 미해결 에셋명 <img> 숨김(엑박 방지)
 import { resolveAssetCBS } from '../../core/convert/prepareBody.js';
 import { resolveAssetMarkers } from '../../core/convert/risuMarkers.js';
 
@@ -114,18 +114,23 @@ export function filteredShareHtml(r: any): string {
 //   옛 레코드(rec.assets/임베드된 r.html): amap=undefined → 그대로(이미 임베드). hideUser면 user 메시지 빼고 재렌더.
 export async function fattenShareHtml(r: any, hideUser: boolean): Promise<string> {
   const amap = (r && r.assetRefs && typeof r.assetRefs === 'object') ? await resolveAssetRefs(r.assetRefs) : undefined;
+  let h: string;
   if (hideUser) {
     const hasRole = (r.chat && Array.isArray(r.chat.messages) && r.chat.messages.length)
       || (r.cardCfg && Array.isArray(r.cardCfg.blocks) && r.cardCfg.blocks.length)
       || (r.webnovel && Array.isArray(r.webnovel.blocks) && r.webnovel.blocks.length);
-    if (!hasRole) return applyAssetMap(String(r.html || ''), amap);   // 역할 구조 없으면 필터 불가 → 본문 임베드만
-    const c = clonej(r);
-    if (c.chat && Array.isArray(c.chat.messages)) c.chat.messages = c.chat.messages.filter((m: any) => m && m.role !== 'user');
-    if (c.cardCfg && Array.isArray(c.cardCfg.blocks)) c.cardCfg.blocks = c.cardCfg.blocks.filter((b: any) => b && b.role !== 'user');
-    if (c.webnovel && Array.isArray(c.webnovel.blocks)) c.webnovel.blocks = c.webnovel.blocks.filter((b: any) => b && b.role !== 'user');
-    return rerenderLog(c, amap);
+    if (!hasRole) h = applyAssetMap(String(r.html || ''), amap);   // 역할 구조 없으면 필터 불가 → 본문 임베드만
+    else {
+      const c = clonej(r);
+      if (c.chat && Array.isArray(c.chat.messages)) c.chat.messages = c.chat.messages.filter((m: any) => m && m.role !== 'user');
+      if (c.cardCfg && Array.isArray(c.cardCfg.blocks)) c.cardCfg.blocks = c.cardCfg.blocks.filter((b: any) => b && b.role !== 'user');
+      if (c.webnovel && Array.isArray(c.webnovel.blocks)) c.webnovel.blocks = c.webnovel.blocks.filter((b: any) => b && b.role !== 'user');
+      h = rerenderLog(c, amap);
+    }
+  } else {
+    h = applyAssetMap(String(r.html || ''), amap);
   }
-  return applyAssetMap(String(r.html || ''), amap);
+  return stripUnresolvedAssetImages(h);   // 공유본도 미해결 에셋명 <img> 숨김(받는 사람 화면 엑박 방지)
 }
 
 // 팩토리 — ctx: { setStatus, reloadLogs, getAllLogs, route, getUser, nameOf }.
@@ -467,6 +472,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
 
     // 몰입 탭 토글·초기 상태·스크롤 리셋은 공용 mountReaderBody가 처리(일반·공유 리더 동일). 더보기 메뉴 닫힘도 거기서.
     // displayHtml = 원문/번역 토글(origView) + 정리/원본 토글(cleanView) 비파괴 합성(위에서 계산). ★저장은 안 바뀜.
+    displayHtml = stripUnresolvedAssetImages(displayHtml);   // ★매핑 안 된 에셋명 <img>(AI가 지어낸 감정 등)는 표시에서 숨김 = 엑박 아이콘 방지(저장·복사본은 위 displayHtml 기준)
     mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route);
   }
 

@@ -5,7 +5,7 @@
 // 5패턴/4토큰 resolve + 미지 태그 verbatim + _create_image_html 포맷 핀.
 // 실행: node core/convert/processImageTags.test.js
 'use strict';
-const { processImageTags, collectUrlMappings, extractTagFromMatch } = require('./processImageTags.js');
+const { processImageTags, collectUrlMappings, extractTagFromMatch, stripUnresolvedAssetImages } = require('./processImageTags.js');
 
 const style = { size: 100, margin: 10, useBorder: false, borderColor: '#000000', useShadow: true };
 const map = { happy: 'https://example.com/o.png' };
@@ -47,6 +47,16 @@ check(extractTagFromMatch('{{img::cat}}') === 'cat' && extractTagFromMatch('{{im
 check(extractTagFromMatch('<img src=seolji_excited>') === 'seolji_excited', '무따옴표 src 추출');
 check(processImageTags('<img src=happy>', map, style).includes('src="https://example.com/o.png"'), '<img src=happy>(무따옴표) resolve');
 check(processImageTags('<img src=unknown>', map, style) === '<img src=unknown>', '무따옴표 미지 태그 verbatim');
+
+// 8) stripUnresolvedAssetImages: 미해결 에셋명 <img>만 제거(엑박 방지), 진짜 URL/데이터/마커는 보존
+check(stripUnresolvedAssetImages('<img src="Heilian_Default_seductive smile">') === '', '미해결 에셋명(공백 포함) <img> 제거');
+check(stripUnresolvedAssetImages('<img src=seolji_excited>') === '', '무따옴표 에셋명 <img> 제거');
+check(stripUnresolvedAssetImages('<img style="x" src="data:image/png;base64,AAAA" class="y">').includes('data:image/png'), 'data: 이미지 보존');
+check(stripUnresolvedAssetImages('<img src="https://x.com/a.png">').includes('https://x.com/a.png'), 'http URL 보존');
+check(stripUnresolvedAssetImages('<img src="lpblob:' + 'a'.repeat(64) + '">').includes('lpblob:'), 'lpblob 참조 보존(하이드레이트 전)');
+check(stripUnresolvedAssetImages('앞 <img src="happy.webp"> 뒤') === '앞  뒤', '에셋명 제거 후 주변 텍스트 보존');
+check(stripUnresolvedAssetImages('{{img::happy}} 텍스트') === '{{img::happy}} 텍스트', '{{img::}} 마커는 안 건드림(img 태그 아님)');
+check(stripUnresolvedAssetImages('이미지 없음') === '이미지 없음', '<img 없으면 무변경');
 
 if (failed === 0) { console.log('✅ processImageTags: 통과'); process.exit(0); }
 else { console.error(`❌ processImageTags: ${failed} 실패`); process.exit(1); }

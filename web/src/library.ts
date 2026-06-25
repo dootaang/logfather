@@ -1369,16 +1369,20 @@ function hideLibLoading() {
 //   ★자동 삭제 없음 — 사용자가 거대한 작품(용량으로 한눈에 보임)을 직접 골라 그 작품만 지운다(다른 작품·읽기기록·프리셋 보존).
 async function runRecovery() {
   try { const el = document.getElementById('lib-loading'); if (el) el.remove(); } catch (_) {}
+  const goHome = () => { location.hash = '#/'; location.reload(); };   // ★해시만 바꾸면 리로드 안 됨(복구는 부트에서만 분기) → reload로 정상 서재 진입
+  { const b = document.getElementById('brand'); if (b) (b as HTMLElement).onclick = goHome; }   // 로고 클릭 = 서재홈(복구 페이지에선 기본 핸들러 미설정 상태라 직접 연결)
   const app = document.getElementById('app') || document.body;
   app.innerHTML = '';
-  const box = document.createElement('div'); box.style.cssText = 'max-width:640px;margin:48px auto;padding:24px;font:15px/1.7 system-ui,sans-serif;';
+  // .lib-app은 자체 스크롤이 없다(내부 컨테이너가 스크롤) → 긴 목록이 잘리지 않게 스크롤 래퍼로 감싼다.
+  const scroll = document.createElement('div'); scroll.style.cssText = 'flex:1 1 auto;min-height:0;overflow-y:auto;width:100%;';
+  const box = document.createElement('div'); box.style.cssText = 'max-width:640px;margin:48px auto;padding:0 24px 48px;font:15px/1.7 system-ui,sans-serif;';
   const h = document.createElement('div'); h.style.cssText = 'font-size:20px;font-weight:700;margin-bottom:6px;'; h.textContent = '비상 복구';
   const p = document.createElement('div'); p.style.marginBottom = '6px'; p.textContent = '서재가 메모리 부족으로 안 열릴 때 쓰는 화면입니다. 용량이 비정상적으로 큰 작품을 직접 골라 지우세요. (다른 작품·읽기기록·프리셋은 그대로)';
   const status = document.createElement('div'); status.style.cssText = 'color:#a98;margin:8px 0;'; status.textContent = '작품 용량 확인 중…';
   const list = document.createElement('div'); list.style.cssText = 'margin-top:8px;';
   const goBtn = document.createElement('button'); goBtn.textContent = '서재로 가기'; goBtn.style.cssText = 'margin-top:18px;padding:8px 16px;cursor:pointer;';
-  goBtn.onclick = () => { location.replace('library.html#/'); };
-  box.append(h, p, status, list, goBtn); app.appendChild(box);
+  goBtn.onclick = goHome;
+  box.append(h, p, status, list, goBtn); scroll.appendChild(box); app.appendChild(scroll);
   const mb = (n: number) => (n / 1048576).toFixed(1) + 'MB';
   const render = (works: Array<{ key: string; name: string; bytes: number; count: number }>) => {
     list.innerHTML = '';

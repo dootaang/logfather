@@ -109,7 +109,26 @@ function processImageTags(content, mappings, styleSettings) {
   return result;
 }
 
+// 표시 직전: 매핑 안 된 "에셋명" <img>를 숨긴다(=엑박 아이콘 방지).
+//   AI가 지어낸 감정명(예: <img src="Heilian_Default_seductive smile">)처럼 실제 에셋에 없는 이름은
+//   브라우저가 상대경로 URL로 로드 시도 → 깨진 이미지 아이콘. src가 진짜 URL/데이터(http(s):/data:/blob:/lpblob:/슬래시)면 보존, 그 외(스킴 없는 에셋명)는 제거.
+//   ★표시 전용 — 저장 html/구조(마커)는 안 건드림(나중에 charx '에셋 입히기'·동기화로 채울 수 있게).
+function _imgSrc(tag) {
+  let m = /\bsrc\s*=\s*"([^"]*)"/i.exec(tag) || /\bsrc\s*=\s*'([^']*)'/i.exec(tag) || /\bsrc\s*=\s*([^"'>\s]+)/i.exec(tag);
+  return m ? m[1].trim() : '';
+}
+function _isUrlLike(s) { return /^(?:https?:|data:|blob:|lpblob:|\/\/|\/|#|\?)/i.test(String(s || '').trim()); }
+function stripUnresolvedAssetImages(html) {
+  if (!html || html.indexOf('<img') < 0) return html || '';
+  return String(html).replace(/<img\b[^>]*>/gi, (tag) => {
+    const src = _imgSrc(tag);
+    if (!src) return tag;                 // src 없음 = 손대지 않음
+    return _isUrlLike(src) ? tag : '';    // 에셋명(미해결) = 제거, 진짜 URL/데이터는 보존
+  });
+}
+
 module.exports = {
   processImageTags, collectUrlMappings, createBaseStyle, createImageHtml,
   extractTagFromMatch, extractTagIdentifier, cleanUrl, getImagePatterns,
+  stripUnresolvedAssetImages,
 };

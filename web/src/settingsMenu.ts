@@ -339,6 +339,7 @@ function openAdvancedSettings(setStatus: (m: string) => void, getUser: () => any
     try { const n = await dedupeLogsInStore(); setStatus(n > 0 ? `중복된 화 ${n}개를 정리했습니다.` : '정리할 중복이 없습니다.'); if (refresh) refresh(); } catch (_) {}
     b.textContent = o; b.disabled = false;
   });
+  row('비상 복구 (서재가 안 열릴 때)', '용량이 비정상적으로 큰 작품 때문에 서재가 메모리 부족으로 안 열릴 때, 작품별 용량을 보고 직접 골라 지웁니다. (자동 삭제 없음)', () => { close(); location.hash = '#/recover'; location.reload(); });
   section('위험 — 되돌릴 수 없음');
   row('서재 초기화 (이 기기)', '이 기기의 서재(로그·작품 정보)만 비웁니다. 편집기 설정·프리셋·드롭한 카드·폰트는 그대로. 클라우드는 안 건드립니다.', () => {
     close();

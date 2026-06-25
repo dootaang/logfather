@@ -20,10 +20,11 @@ function showBanner(version?: string): void {
   if (document.getElementById('lp-update-banner')) return;
   const b = document.createElement('div'); b.id = 'lp-update-banner'; b.className = 'lp-update-banner';
   const txt = document.createElement('span');
-  txt.textContent = `새 버전${version ? ' ' + version : ''}이 준비됐어요.`;
-  const go = document.createElement('button'); go.className = 'lp-update-go'; go.textContent = '지금 재시작해서 업데이트';
+  // "(버전)이 나왔습니다. 업데이트하시겠습니까?" + 예/아니요. (예=재시작 설치, 강제 아님)
+  txt.textContent = `🎉 새 버전${version ? ' ' + version : ''}이 나왔습니다. 업데이트하시겠습니까?`;
+  const go = document.createElement('button'); go.className = 'lp-update-go'; go.textContent = '예 (지금 재시작)';
   go.onclick = () => { go.disabled = true; go.textContent = '재시작 중…'; try { (window as any).desktop.installUpdate(); } catch (_) {} };
-  const later = document.createElement('button'); later.className = 'lp-update-later'; later.textContent = '나중에';
+  const later = document.createElement('button'); later.className = 'lp-update-later'; later.textContent = '아니요 (나중에)';
   later.onclick = () => b.remove();
   b.append(txt, go, later);
   document.body.appendChild(b);
