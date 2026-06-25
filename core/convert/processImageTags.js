@@ -14,7 +14,7 @@ function getImagePatterns() {
   return [
     new RegExp(`\\{\\{(?:img|image)::${Q}*(${NQ}+)${Q}*\\}\\}`, 'g'),
     new RegExp(`\\{\\{(?:img|image)=${Q}*(${NQ}+)${Q}*\\}\\}`, 'g'),
-    new RegExp(`<(?:img|image)\\s+src=${Q}*[^'\"″]+${Q}*>`, 'g'),
+    new RegExp(`<(?:img|image)\\s+src=${Q}*[^'\"″\\s>]+${Q}*[^>]*>`, 'g'),   // src 값 뒤 속성 허용(예: RisuAI <img src="name" data-risa-fm>)
     new RegExp(`<(?:img|image)=${Q}*[^>]+${Q}*>`, 'g'),
     new RegExp(`<img=${Q}*[^>]+${Q}*>`, 'g'),
   ];
