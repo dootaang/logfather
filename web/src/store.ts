@@ -296,6 +296,33 @@ export function clearUnpushed(): void { try { if (localStorage.getItem(UNPUSHED_
 export function hasUnpushed(): boolean { try { return localStorage.getItem(UNPUSHED_KEY) === '1'; } catch (_) { return false; } }
 function noteLocalChange(): void { if (backendKind !== 'firebase') markUnpushed(); }   // 로컬-퍼스트일 때만(auto/firebase는 즉시 클라우드행)
 
+// ── 작품 삭제 전파 큐(tombstone) ──────────────────────────────────────
+// 로컬-퍼스트 동기화(pull/push)는 "추가만" 한다(삭제 전파 없음 — 데이터 손실 방지 정책). 그래서 작품을 지워도
+// 클라우드 메타가 살아남아, 다음 pull이 metaAll을 통째로 받아 "화 0개 빈 작품"으로 되살린다(서재 맨밑에 쌓임).
+// → 명시적 작품 삭제를 이 큐에 기록 → pushToCloud가 클라우드에서도 로그+메타를 지운다(되살아남 차단).
+// ★사용자가 명시적으로 지운 작품만(자동 판단 삭제 절대 없음). 오프라인/실패면 큐에 남아 다음 push에서 재시도.
+const PENDING_DEL_KEY = 'pro2-pending-deletes';
+export function loadPendingDeletes(): Array<{ char: string; ids: string[] }> {
+  try {
+    const a = JSON.parse(localStorage.getItem(PENDING_DEL_KEY) || '[]');
+    return Array.isArray(a) ? a.filter((x: any) => x && typeof x.char === 'string').map((x: any) => ({ char: String(x.char), ids: Array.isArray(x.ids) ? x.ids.map(String) : [] })) : [];
+  } catch (_) { return []; }
+}
+export function enqueueWorkDeletion(char: string, ids: string[]): void {
+  const key = String(char || ''); if (!key) return;
+  try {
+    const list = loadPendingDeletes();
+    const cur = list.find((d) => d.char === key);
+    if (cur) { for (const id of (ids || []).map(String)) if (!cur.ids.includes(id)) cur.ids.push(id); }
+    else list.push({ char: key, ids: (ids || []).map(String) });
+    localStorage.setItem(PENDING_DEL_KEY, JSON.stringify(list));
+  } catch (_) {}
+  markUnpushed();   // push 트리거(auto=디바운스 push가 큐 비움 / manual=다음 ⬆ 때)
+}
+export function clearPendingDeletion(char: string): void {
+  try { localStorage.setItem(PENDING_DEL_KEY, JSON.stringify(loadPendingDeletes().filter((d) => d.char !== String(char)))); } catch (_) {}
+}
+
 // ── 로그 보관함(backend 경유) ──────────────────────────────────────
 // 저장(=편집) 시각을 찍는다 → 클라우드 백엔드가 "stale 기기가 더 최신본을 덮어쓰는 것"을 막는 가드에 사용.
 export function logsAdd(rec: any) { if (rec && typeof rec === 'object') rec.savedAt = Date.now(); noteLocalChange(); return backend.logsAdd(rec); }

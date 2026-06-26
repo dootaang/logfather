@@ -8,7 +8,7 @@
 //   - 저장(push):     로컬 → 클라우드 (로컬 단독분 추가 + 로컬이 더 최신인 것만, 최신 클라우드 안 덮음).
 //   - 연동 안 함:     완전 로컬 전용(버튼 비활성).
 // @ts-nocheck
-import { LocalBackend, logContentKey, clearUnpushed } from './store.js';
+import { LocalBackend, logContentKey, clearUnpushed, loadPendingDeletes, clearPendingDeletion } from './store.js';
 
 export function isDesktop(): boolean { return !!(typeof window !== 'undefined' && (window as any).desktop); }
 
@@ -97,6 +97,16 @@ export async function pullFromCloud(onProgress?: Prog, opts: { full?: boolean } 
 // 로컬 → 클라우드 (안전 병합): 로컬 단독분 추가(내용 중복 제외) + 로컬이 더 최신인 것만 갱신. ★최신 클라우드 안 덮음.
 export async function pushToCloud(onProgress?: Prog): Promise<SyncReport | null> {
   const fb = await fbForUser(); if (!fb) return null;
+  // ★삭제 전파 먼저: 명시적으로 지운 작품의 로그·메타를 클라우드에서도 제거(안 하면 다음 pull이 metaAll로
+  //   메타를 되살려 "화 0개 빈 작품"이 서재 맨밑에 쌓임). fb.metaDelete는 로컬 메타도 지우므로, pull이 먼저
+  //   끼어들어 로컬에 메타를 되살렸더라도 같이 정리됨. 실패(오프라인 등)는 큐 유지 → 다음 push 재시도.
+  for (const d of loadPendingDeletes()) {
+    try {
+      for (const id of d.ids) { try { await fb.logsDelete(id); } catch (_) {} }
+      try { await fb.metaDelete(d.char); } catch (_) {}
+      clearPendingDeletion(d.char);
+    } catch (_) { /* 큐 유지 → 다음 push에서 재시도 */ }
+  }
   const localLogs = await LocalBackend.logsAll();
   let cloudDocs: any[] = []; try { cloudDocs = fb.logKeyData ? await fb.logKeyData() : await fb.logsAll(); } catch (_) {}
   const cloudById = new Map(cloudDocs.map((d: any) => [String(d.id), d]));

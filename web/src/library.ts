@@ -4,7 +4,7 @@
 // 해시 라우팅: #/(서가) · #/read/:char(뷰어). 데이터는 store.ts(IndexedDB/localStorage)로 에디터와 공유.
 // 화 HTML은 살균 후 본문 DOM에 직접 렌더(연속 스크롤·테마·줌). 본인 로그 + 살균이라 안전.
 // @ts-nocheck
-import { logsAll, logsAdd, logsDelete, loadRead, saveRead, loadReaderCfg, saveReaderCfg, metaGet, metaSet, metaDelete, metaAll, newWorkKey, idbDeleteWorkCard, getBackendKind, kvLoad, kvSave, isSessionSynced, markSessionSynced, OPEN_LOG_KEY, dedupeLogList, dedupeLogsInStore, blobsPutAssetMap, scanWorkSizes, deleteWorkLogs } from './store.js';
+import { logsAll, logsAdd, logsDelete, loadRead, saveRead, loadReaderCfg, saveReaderCfg, metaGet, metaSet, metaDelete, metaAll, newWorkKey, idbDeleteWorkCard, getBackendKind, kvLoad, kvSave, isSessionSynced, markSessionSynced, OPEN_LOG_KEY, dedupeLogList, dedupeLogsInStore, blobsPutAssetMap, scanWorkSizes, deleteWorkLogs, enqueueWorkDeletion } from './store.js';
 import { mountAccountUI } from './accountUI.js';   // 계정 UI(가벼움) — 에디터와 공용
 import { richCopy } from './clipboard.js';         // 리치 복사(아카 붙여넣기) — 에디터와 공용
 import { desktopAvailable, externalCount, bakeLogs } from './bake.js';   // 이미지 굳히기(데스크탑 전용)
@@ -767,6 +767,9 @@ async function renderSeries(char: string) {
       setStatus(`작품 "${s.name}" 삭제 중…`);
       await Promise.all(s.eps.map((e: any) => logsDelete(e.id)));   // 한 번에 삭제(순차 X)
       await metaDelete(char);
+      // ★클라우드에도 삭제 전파(안 하면 다음 pull이 metaAll로 메타를 되살려 "화 0개 빈 작품"이 서재 맨밑에 쌓임).
+      //   firebase 백엔드(데스크탑 자동)는 metaDelete가 이미 클라우드 직삭제라 큐 불필요 → 로컬-퍼스트(웹 등)에서만 큐.
+      if (getBackendKind() !== 'firebase') enqueueWorkDeletion(char, s.eps.map((e: any) => e.id));
       try { await idbDeleteWorkCard(char); } catch (_) {}            // 그 작품에 기억된 카드도 정리
 
       const rd = loadRead(); delete rd.fav[char]; delete rd.lastByChar[char]; if (rd.lastReadAt) delete rd.lastReadAt[char]; for (const e of s.eps) delete rd.readIds[e.id]; saveRead(rd);
