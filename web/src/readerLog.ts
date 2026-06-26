@@ -11,6 +11,7 @@ import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
 import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad, resolveAssetRefs } from './store.js';
 import { isLocalFirst, getSyncMode } from './desktopSync.js';
+import { bakeLogs, externalCount, bakeAvailable } from './bake.js';   // 파파 하이브리드 이미지 굳히기(데스크탑 native / 웹 weserv 폴백)
 import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, ensureTranslateReady, openTranslateSettings } from './translate.js';
 import { cleanUnits } from './cleanup.js';
 import { defaultSettings } from '../../core/preset/bundle.js';
@@ -217,6 +218,21 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     if (res.failed.length) console.warn('[정리 실패]', res.failed);
     const restore = async () => { for (const b of backup) { Object.assign(b.r, { input: b.input, html: b.html, chat: b.chat, diary: b.diary, webnovel: b.webnovel, cardCfg: b.cardCfg }); try { await logsAdd(b.r); } catch (_) {} } await reloadLogs(); };
     return { changedLogs, cleaned: res.cleaned, failed: res.failed, restore };
+  }
+
+  // ★파파 하이브리드 이미지 굳히기 — 외부(핫링크) <img>를 받아 data URL로 박제(저장 시 logsAdd가 블롭으로 dedup·동기화).
+  //   성공=영구 박제 / 실패(CORS·차단·404)=원본 URL 그대로(하이브리드 — 강요 안 함). manual=사용자 버튼(메시지 더 자세히).
+  async function hardenPapaInReader(r: any, manual: boolean): Promise<void> {
+    if (!bakeAvailable()) { if (manual) setStatus('이 환경에선 이미지를 굳힐 수 없어요.'); return; }
+    if (!externalCount(r.html || '')) { if (manual) setStatus('굳힐 외부 이미지가 없어요(이미 박제됨).'); return; }
+    try {
+      const res = await bakeLogs([r], (x: any) => logsAdd(x), (m: string) => setStatus(m));
+      await reloadLogs();
+      { const cur = getAllLogs(); const i = cur.findIndex((x: any) => x.id === r.id); if (i >= 0) cur[i] = r; }   // 방금 굳힌 본문을 allLogs에 직접 반영(stale 재읽기 방지 — 번역 흐름과 동일)
+      if (res.bakedImgs) setStatus(`이미지 ${res.bakedImgs}장 굳힘(영구 박제)` + (res.failed.length ? ` · ${res.failed.length}장 안 굳음(원본 링크 유지)` : ''));
+      else if (res.failed.length && manual) setStatus(`못 굳힌 이미지 ${res.failed.length}장 — 차단·죽은 링크일 수 있어요(원본 그대로 유지).`);
+      route();   // 재렌더(굳힌 이미지는 이제 blob 백업 → 안 썩음)
+    } catch (e: any) { if (manual) setStatus('굳히기 실패: ' + ((e && e.message) || '')); }
   }
 
   // 공유 팝오버(단일 화): 공개 읽기전용 링크 만들기/복사/해제. 로그인 필요.
@@ -436,6 +452,16 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       clUndoB.title = '이 화를 정리 전 원문으로 되돌립니다';
       clUndoB.onclick = async () => { const f = cleanRestores[r.id]; delete cleanRestores[r.id]; if (f) await f(); location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route(); setStatus('정리 전 원문으로 되돌렸습니다.'); };
     }
+    // ★파파 이미지 굳히기 버튼 — 외부(핫링크) 이미지가 남아 있을 때만 노출(=하이브리드 "안 굳음" 표시). 클릭=영구 박제 재시도.
+    let bakeB: HTMLButtonElement | null = null;
+    if (papa) {
+      const ext = externalCount(r.html || '');
+      if (ext && bakeAvailable()) {
+        bakeB = document.createElement('button'); bakeB.className = 'reader-iconbtn'; bakeB.innerHTML = icon('flame') + ` 이미지 굳히기 (${ext})`;
+        bakeB.title = '외부(핫링크) 이미지를 받아 영구 박제 — 원본 호스트가 죽어도 안 깨지게(안 받아지는 건 원본 링크 그대로 유지).';
+        bakeB.onclick = async () => { const o = bakeB!.innerHTML; bakeB!.disabled = true; bakeB!.textContent = '굳히는 중…'; await hardenPapaInReader(r, true); };
+      }
+    }
     const delB = document.createElement('button'); delB.className = 'reader-iconbtn'; delB.innerHTML = icon('trash') + ' 삭제';
     delB.title = '이 화를 서재에서 삭제합니다 (되돌릴 수 없음)';
     delB.onclick = async () => {
@@ -450,7 +476,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     };
     const helpB = document.createElement('button'); helpB.className = 'reader-iconbtn'; helpB.innerHTML = icon('help') + ' 도움말'; helpB.title = '사용설명서'; helpB.onclick = () => { location.href = 'help.html#reader'; };
     const actions = document.createElement('div'); actions.className = 'reader-actions';
-    actions.append(cp, shareB, editLog, ...(clB ? [clB] : []), ...(clUndoB ? [clUndoB] : []), ...(trB ? [trB] : []), ...(trClearB ? [trClearB] : []), ...(trSetB ? [trSetB] : []), delB, helpB, setBtn);
+    actions.append(cp, shareB, editLog, ...(bakeB ? [bakeB] : []), ...(clB ? [clB] : []), ...(clUndoB ? [clUndoB] : []), ...(trB ? [trB] : []), ...(trClearB ? [trClearB] : []), ...(trSetB ? [trSetB] : []), delB, helpB, setBtn);
     const moreB = document.createElement('button'); moreB.className = 'reader-iconbtn reader-more';
     moreB.innerHTML = icon('dots') + ' 더보기'; moreB.title = '더보기';
     moreB.onclick = (e) => { e.stopPropagation(); actions.classList.toggle('open'); };
@@ -479,6 +505,12 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     // displayHtml = 원문/번역 토글(origView) + 정리/원본 토글(cleanView) 비파괴 합성(위에서 계산). ★저장은 안 바뀜.
     if (!papa) displayHtml = stripUnresolvedAssetImages(displayHtml);   // ★매핑 안 된 에셋명 <img>(AI가 지어낸 감정 등)는 표시에서 숨김 = 엑박 아이콘 방지. 파파는 남의 디자인 그대로(진짜 URL/data만) → 미적용
     mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route, papa);
+    // ★파파 = 받자마자(처음 볼 때) 자동 이미지 굳히기 시도 — 배경. 세션당 1회(죽은 링크 매번 두드리지 않게). 성공=blob 박제 후 재렌더, 실패=원본 유지("굳히기" 버튼으로 재시도).
+    const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+    if (papa && online && bakeAvailable() && externalCount(r.html || '') && !r._papaBakeTried) {
+      r._papaBakeTried = true;
+      hardenPapaInReader(r, false).catch(() => {});
+    }
   }
 
   return { renderSingleLog, runTranslateFlow, runCleanFlow, cleanRestores };
