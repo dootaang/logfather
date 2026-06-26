@@ -12,6 +12,7 @@ import { confirmModal } from './confirmModal.js';
 import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad, resolveAssetRefs } from './store.js';
 import { isLocalFirst, getSyncMode } from './desktopSync.js';
 import { bakeLogs, externalCount, bakeAvailable } from './bake.js';   // 파파 하이브리드 이미지 굳히기(데스크탑 native / 웹 weserv 폴백)
+import { stripPapaCruft, papaCruftChanges } from '../../core/cleanup/papaCruft.js';   // 파파 보편 군더더기(CoT/번역분석 접기) 비파괴 제거
 import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, ensureTranslateReady, openTranslateSettings } from './translate.js';
 import { cleanUnits } from './cleanup.js';
 import { defaultSettings } from '../../core/preset/bundle.js';
@@ -139,6 +140,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
   const { setStatus, reloadLogs, getAllLogs, route } = ctx;
   const origView: Record<string, boolean> = {};   // 리더 토글 상태(true=원문 보기). 기본=번역. 세션 UI 상태(데이터는 r.orig로 영속). 옛 세션 ↩원문(trialRestores)을 이 영속 토글로 대체.
   const cleanView: Record<string, boolean> = {};   // 정리 토글 상태(false=원본 보기). 기본=정리됨. 정규식은 관리실 KV(원본 로그 불변).
+  const papaCleanView: Record<string, boolean> = {};   // ★파파 군더더기 숨김 토글(true=정리). 기본=원본(파파 철학="그대로 삼키기" → opt-in). 비파괴.
   const cleanRestores: Record<string, () => Promise<void>> = {};
 
   function shareAvailability(): { ok: boolean; reason: string } {
@@ -497,6 +499,18 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       cOn.title = '등록된 규칙으로 군더더기 숨김(비파괴 — 원본 로그·복사물 불변)'; cOff.title = '숨김 없이 원본 그대로';
       cOn.onclick = () => { if (cleanView[r.id] === false) { cleanView[r.id] = true; route(); } };
       cOff.onclick = () => { if (cleanView[r.id] !== false) { cleanView[r.id] = false; route(); } };
+      cleanSeg.append(cOn, cOff);
+    }
+    // ★파파 보편 군더더기 토글(Phase 3·A안) — CoT/번역분석 접기가 있을 때만 노출. 기본=원본(opt-in, "그대로 삼키기" 철학). 비파괴(원본 불변).
+    if (papa && papaCruftChanges(displayHtml)) {
+      const cleaned = !!papaCleanView[r.id];   // 기본 false=원본
+      if (cleaned) displayHtml = stripPapaCruft(displayHtml);
+      cleanSeg = document.createElement('div'); cleanSeg.className = 'reader-seg';
+      const cOn = document.createElement('button'); cOn.className = 'reader-iconbtn' + (cleaned ? ' on' : ''); cOn.textContent = '정리';
+      const cOff = document.createElement('button'); cOff.className = 'reader-iconbtn' + (cleaned ? '' : ' on'); cOff.textContent = '원본';
+      cOn.title = '사고과정(CoT)·번역분석 같은 접힌 군더더기를 숨깁니다 (비파괴 — 원본·복사물 불변).'; cOff.title = '숨김 없이 받은 그대로';
+      cOn.onclick = () => { if (!papaCleanView[r.id]) { papaCleanView[r.id] = true; route(); } };
+      cOff.onclick = () => { if (papaCleanView[r.id]) { papaCleanView[r.id] = false; route(); } };
       cleanSeg.append(cOn, cOff);
     }
     bar.append(back, rtitle, ...(segWrap ? [segWrap] : []), ...(cleanSeg ? [cleanSeg] : []), prevB, nextB, actions, moreB); reader.appendChild(bar);
