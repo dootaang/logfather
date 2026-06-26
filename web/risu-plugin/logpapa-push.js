@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.9.2
+//@version 1.10.0
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 삽화(생성 이미지) + 에셋(감정 이미지) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -184,13 +184,16 @@
     return out;
   }
   const reEsc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // 메시지에서 실제 쓰인 에셋 수집(맵에 있는 이름만). 우리 4토큰 {{img::}}/{{img=}}/{{image::}}/<img src> + 리스 [🌠|이름].
+  // 메시지에서 실제 쓰인 에셋 수집(맵에 있는 이름만). 우리 토큰 {{img::}}/{{img=}}/{{image::}} + <img src> + ★등호형 <img="이름"> + 리스 [🌠|이름].
+  //   ★등호형(<타입="이름">)이 핵심 버그였음: 에셋봇 customScript가 <img="이름">→{{img::}}로 표시변환하기 전 raw엔 <img="이름">으로 있어, 공백·src 필수였던 reImg가 못 잡아 에셋 전탈락(28개). 등호형 추가로 해결.
+  const RE_EQ_USE = /<(?:img|image|emotion|asset|raw|bg)\s*=\s*['"″]?([^'"″>\s]+)/gi;   // <img="이름"> / <emotion=이름> 등(공백·src 없음, 따옴표 선택)
   function usedAssets(text, byName) {
     if (!byName.size) return [];
     const used = []; const seen = new Set(); let m;
     const consider = (raw) => { const n = String(raw || '').trim().replace(/^['"″]|['"″]$/g, ''); const hit = byName.get(n.toLowerCase()) || byName.get(n.toLowerCase().replace(/\.[a-z0-9]+$/i, '')); if (hit && !seen.has(hit.path)) { seen.add(hit.path); used.push(hit); } };
     const reTok = /\{\{(?:img|image|raw|asset|source|emotion|image_asset)(?:::|=)\s*([^}|]+?)\s*\}\}/gi; while ((m = reTok.exec(text))) consider(m[1]);
     const reImg = /<(?:img|image)\s+src=\s*['"″]?([^'"″>\s]+)/gi; while ((m = reImg.exec(text))) consider(m[1]);
+    RE_EQ_USE.lastIndex = 0; while ((m = RE_EQ_USE.exec(text))) consider(m[1]);   // ★등호형 <img="이름"> (가상화 무관·전 메시지 커버)
     const reCBS = /\[[^\]\n|]*\|\s*([^\]\n]+?)\s*\]/g; while ((m = reCBS.exec(text))) consider(m[1]);   // 리스 CBS [x|이름] (감정/에셋 표시)
     return used;
   }
@@ -204,6 +207,7 @@
       .replace(/\{\{(?:img|image|raw|asset|source|emotion|image_asset)(?:::|=)[^}]*\}\}/gi, '')
       .replace(/\[[^\]\n|]*\|[^\]\n]*\]/g, '')
       .replace(/<(?:img|image)\s+src=\s*(?!['"″]?(?:data:|https?:|\/\/))[^>]*>/gi, '')
+      .replace(/<(?:img|image|emotion|asset|raw|bg)\s*=\s*(?!['"″]?(?:data:|https?:|\/\/))[^>]*>/gi, '')   // ★등호형 <img="이름"> 마커 제거(텍스트만 모드 — data:/http는 보존)
       .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
@@ -275,6 +279,7 @@
       out = out.replace(/\{\{(?:img|image|raw|asset|source|emotion|image_asset)(?:::|=)\s*([^}|]+?)\s*\}\}/gi, (mm, name) => { const r = sub(name); return r == null ? mm : r; });
       out = out.replace(/\[[^\]\n|]*\|\s*([^\]\n]+?)\s*\]/g, (mm, name) => { const r = sub(name); return r == null ? mm : r; });
       out = out.replace(/<(?:img|image)\s+src=\s*(['"″]?)([^'"″>\s]+)\1[^>]*>/gi, (mm, q, name) => { if (/^(?:data:|https?:|\/\/)/i.test(name)) return mm; const r = sub(name); return r == null ? '' : r; });   // 외부/임베드(data:·http)는 보존, 매칭 안 된 맨이름 태그는 제거(깨진 아이콘 방지)
+      out = out.replace(/<(?:img|image|emotion|asset|raw|bg)\s*=\s*(['"″]?)([^'"″>\s]+)\1[^>]*>/gi, (mm, q, name) => { if (/^(?:data:|https?:|\/\/)/i.test(name)) return mm; const r = sub(name); return r == null ? '' : r; });   // ★등호형 <img="이름"> → {{img::표준이름}} 제자리(매칭 안 되면 제거)
 
       // ── 폴백: 번역이 떼어내 본문에 못 들어간 이미지 → 끝에 보충(유실 0) ──
       for (const id of wantIds) { const du = inlayUrl[id]; if (du && !placedInlay.has(du)) { placedInlay.add(du); out += '\n\n<img src="' + du + '">'; } }
@@ -492,5 +497,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.9.2');
+  console.info('[LogPapaPush] loaded v1.10.0');
 })();
