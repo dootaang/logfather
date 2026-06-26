@@ -31,6 +31,7 @@ import { icon } from './icons.js';   // 통일 라인 아이콘(currentColor) �
 import { translateAvailable, translateEditors, openTranslateSettings, ensureTranslateReady } from './translate.js';   // 로그 번역(웹·데스크탑)
 import { cleanEditors } from './cleanup.js';   // 가져온 로그 군더더기 정리(1차 결정론, 키 불필요)
 import { mountUpdateBanner } from './updateBanner.js';   // 자동 업데이트 배너(데스크탑 전용)
+import { sanitizePapaHtml, renderPapaBlocks, PAPA_SEP } from './readerView.js';   // 파파모드 살균·블록별 Shadow DOM 렌더(미리보기=리더 동일 함수)
 import { fontsSupported, refreshFonts, getFontFaceCss, getFontList, addFontFiles, removeFont, getUiFont, applyUiFont } from './fonts.js';   // 커스텀 폰트(데스크탑)
 
 // ---------- 상태 ----------
@@ -225,6 +226,7 @@ function applyDesignPreset(design: string, s: any, ui: any) {
 const $ = (id: string) => document.getElementById(id)!;
 const inputEl = $('input') as HTMLTextAreaElement;
 const previewEl = $('preview') as HTMLIFrameElement;
+const papaPreviewEl = $('papa-preview') as HTMLElement;   // 파파 전용 미리보기 컨테이너(블록별 Shadow DOM)
 const statusEl = $('status');
 
 // ── 편집기 모드(URL 파라미터로 분기 — index.html 한 페이지로 통합) ─────────────────
@@ -558,6 +560,7 @@ function currentInputText(): string {
     const cfg = (settings.templateSettings && settings.templateSettings.webnovel) || {};
     if (cfg.useBlocks && Array.isArray(cfg.blocks) && cfg.blocks.length) return cfg.blocks.map((b: any) => String(b.content || '')).join('\n\n');
   }
+  if (settings.template === 'papa') return papaCombinedHtml();   // 파파 = 살균 합본(다중 블록 포함) → 소스 복사·제목 파생에 사용
   return inputEl.value;
 }
 const cardBlocksActive = () => {
@@ -568,6 +571,18 @@ const wnBlocksActive = () => {
   const cfg = (settings.templateSettings && settings.templateSettings.webnovel) || {};
   return !!cfg.useBlocks;
 };
+const papaBlocksActive = () => {
+  const cfg = (settings.templateSettings && settings.templateSettings.papa) || {};
+  return !!(cfg.useBlocks && Array.isArray(cfg.blocks));
+};
+// 파파 합본 html — 다중 블록이면 블록별 살균본을 구분자로 잇는다(리더/공유가 같은 마커로 쪼개 블록별 격리). 단일이면 입력칸 살균본.
+function papaCombinedHtml(): string {
+  if (papaBlocksActive()) {
+    const cfg = templateConfig('papa');
+    return (cfg.blocks || []).map((b: any) => sanitizePapaHtml(String(b.html || ''))).join('\n' + PAPA_SEP + '\n');
+  }
+  return sanitizePapaHtml(inputEl.value || '');
+}
 
 // (심플/Pro2 모드 제거 — 항상 LogPapa 풀기능. 듀얼 정체성 폐기.)
 
@@ -733,6 +748,14 @@ let renderSeq = 0;
 async function render() {
   const seq = ++renderSeq;
   try {
+    // ★파파모드 = 순수 통과(변환엔진 안 거침). 붙여넣은/소스 HTML을 살균만 하고 블록별 Shadow DOM으로 렌더(리더와 동일 함수=진짜 WYSIWYG).
+    if (settings.template === 'papa') {
+      lastCard = papaCombinedHtml();   // 저장·복사용 합본(다중 블록은 구분자로 이음)
+      renderPapaBlocks(papaPreviewEl, lastCard);   // 미리보기 = 리더와 같은 격리 렌더
+      const hasContent = papaBlocksActive() ? (templateConfig('papa').blocks || []).some((b: any) => String(b.html || '').trim()) : inputEl.value.trim();
+      statusEl.textContent = sticky || (hasContent ? '' : '여기에 다른 제조기 로그를 붙여넣으세요(리치 복사 / 소스 복사)');
+      return;
+    }
     const src = currentInputText();
     // 카드 regex가 펼치는 에셋명까지 매핑하려면 펼친 뒤 스캔(스캔용 throwaway; convertText가 실제로 다시 펼침)
     const scanText = (settings.cardRegex && settings.cardRegex.length) ? expandCardRegex(src, settings.cardRegex) : src;
@@ -789,6 +812,16 @@ function updateInputMode() {
   const isCard = settings.template === 'card';
   const isChat = settings.template === 'chat';
   const isWn = settings.template === 'webnovel';
+  const isPapaUi = settings.template === 'papa';
+  const papaEl = document.getElementById('papa-blocks');
+  const papaToggleRow = document.getElementById('papa-blocks-toggle-row');
+  const papaToggle = document.getElementById('papa-blocks-toggle') as HTMLInputElement | null;
+  const papaBlocks = isPapaUi && papaBlocksActive();
+  applyPapaUi(isPapaUi);   // ★파파 = 02 설정/커스텀·카드에셋·서식툴바 숨김 → 큰 01 입력 + 02 미리보기만
+  if (papaToggleRow) papaToggleRow.hidden = !isPapaUi;   // '여러 블록으로 나누기' 토글은 파파일 때만
+  if (papaToggle) papaToggle.checked = papaBlocks;
+  if (papaEl) papaEl.hidden = !papaBlocks;
+  if (papaBlocks && papaEl) buildPapaBlocksEditor(papaEl, templateConfig('papa'));
   if (!pagesEl) return;
   // 기본카드일 때만 '다중 블록' 토글 노출.
   if (toggleRow) toggleRow.hidden = !isCard;
@@ -800,7 +833,7 @@ function updateInputMode() {
   const collapseToggle = document.getElementById('card-collapse-toggle') as HTMLInputElement | null;
   if (collapseRow) collapseRow.hidden = !cardBlocks;
   if (collapseToggle) collapseToggle.checked = !!templateConfig('card').collapseAll;
-  inputEl.hidden = isDiary || cardBlocks || isChat || wnBlocks;
+  inputEl.hidden = isDiary || cardBlocks || isChat || wnBlocks || papaBlocks;
   pagesEl.hidden = !isDiary;
   if (blocksEl) blocksEl.hidden = !cardBlocks;
   if (chatEl) chatEl.hidden = !isChat;
@@ -835,6 +868,101 @@ function updateInputMode() {
     buildDiaryPagesEditor(pagesEl, cfg);
   }
 }
+
+const papaPrevPlaceholder = inputEl.placeholder;   // 비-파파 기본 안내문 보존(복귀용) — applyPapaUi보다 먼저 선언(TDZ 회피)
+// ★파파모드 편집기 = 02 설정/커스텀 칸 전체 숨김 + 카드·에셋·서식툴바 숨김 → "큰 01 입력 + 03 미리보기"만.
+//   (다른 디자인으로 돌아오면 전부 복구.) body 클래스로도 표시 → 모바일 '설정' 탭 등 CSS가 잡을 수 있게.
+function applyPapaUi(on: boolean) {
+  document.body.classList.toggle('papa-mode', on);
+  const settingsPane = document.querySelector('.pane-settings') as HTMLElement | null;
+  if (settingsPane) settingsPane.hidden = on;
+  const settingsTab = document.querySelector('#mtabs [data-pane="pane-settings"]') as HTMLElement | null;
+  if (settingsTab) settingsTab.hidden = on;
+  const cardAsset = document.getElementById('card-asset') as HTMLElement | null;
+  if (cardAsset) cardAsset.hidden = on;
+  if (editToolbar) editToolbar.hidden = on;   // 서식(B/I/U)·번역·정리 툴바 = 줄글 도구라 통째 HTML엔 무의미
+  // 미리보기: 파파 = iframe 대신 블록별 Shadow DOM 컨테이너(리더와 동일 격리 렌더).
+  previewEl.hidden = on; papaPreviewEl.hidden = !on;
+  inputEl.classList.toggle('papa-input', on);
+  inputEl.placeholder = on ? PAPA_PASTE_PLACEHOLDER : papaPrevPlaceholder;
+}
+const PAPA_PASTE_PLACEHOLDER = '다른 로그제조기·아카 게시글에서 만든 로그를 여기에 붙여넣으세요.\n\n• 리치 복사: 렌더된 로그를 Ctrl+C → 여기에 Ctrl+V (디자인·이미지 그대로)\n• 소스 복사: HTML 소스를 그대로 붙여넣기\n\n살균(안전)만 거쳐 그 디자인 그대로 보관됩니다.';
+// ★리치 복사 붙여넣기 핸들러(공용) — 파파 입력칸·블록 칸 둘 다 사용. clipboard의 text/html을 우선(렌더된 디자인·이미지 보존),
+//   없으면 text/plain(소스 복사). 텍스트에어리어는 기본적으로 text/html을 못 받으므로 paste를 가로채 직접 주입.
+function attachPapaPaste(ta: HTMLTextAreaElement, after?: () => void) {
+  ta.addEventListener('paste', (e: ClipboardEvent) => {
+    if (settings.template !== 'papa') return;   // 다른 디자인은 기존 평문 붙여넣기 그대로
+    const dt = e.clipboardData; if (!dt) return;
+    const html = dt.getData('text/html');
+    const text = dt.getData('text/plain');
+    const payload = (html && html.trim()) ? html : text;
+    if (!payload) return;   // 이미지 등 비텍스트는 기본 동작에 맡김
+    e.preventDefault();
+    const s = ta.selectionStart ?? ta.value.length, en = ta.selectionEnd ?? ta.value.length;
+    ta.value = ta.value.slice(0, s) + payload + ta.value.slice(en);
+    const caret = s + payload.length; ta.setSelectionRange(caret, caret);
+    ta.dispatchEvent(new Event('input', { bubbles: true }));   // 미리보기·자동저장 반영
+    if (after) after();
+    setStatus(html && html.trim() ? '리치 복사(디자인 포함)를 받았어요.' : '소스(HTML)를 받았어요.');
+  });
+}
+attachPapaPaste(inputEl);
+
+// ★파파 블록 에디터: 각 블록 = 독립 붙여넣기 칸(리치/소스). 위/아래/삭제 + 블록 추가. 채팅 메시지 에디터와 같은 골격.
+//   블록 내용은 templateConfig('papa').blocks[i].html. 미리보기·리더는 블록마다 Shadow DOM 격리(디자인 안 섞임).
+let papaCollapsed: Record<number, boolean> = {};
+function buildPapaBlocksEditor(host: HTMLElement, cfg: any) {
+  cfg.blocks = Array.isArray(cfg.blocks) && cfg.blocks.length ? cfg.blocks : [{ html: '' }];
+  const render2 = () => {
+    host.innerHTML = '';
+    const hint = document.createElement('div'); hint.className = 'pair-hint';
+    hint.textContent = '로그를 블록 단위로 나눠 담습니다. 각 블록에 다른 제조기 로그를 따로 붙여넣으세요(리치 복사 / 소스 복사). 블록마다 디자인이 독립 격리돼 서로 안 섞입니다.';
+    host.appendChild(hint);
+    cfg.blocks.forEach((b: any, i: number) => {
+      const card = document.createElement('div'); card.className = 'page-block';
+      const head = document.createElement('div'); head.className = 'page-block-head';
+      const chev = document.createElement('button'); chev.type = 'button'; chev.className = 'pb-chev'; chev.textContent = papaCollapsed[i] ? '▸' : '▾';
+      const name = document.createElement('span'); name.className = 'pb-name'; name.textContent = `블록 ${i + 1}`;
+      const up = document.createElement('button'); up.type = 'button'; up.className = 'pb-btn'; up.textContent = '▲'; up.title = '위로'; up.disabled = i === 0;
+      const dn = document.createElement('button'); dn.type = 'button'; dn.className = 'pb-btn'; dn.textContent = '▼'; dn.title = '아래로'; dn.disabled = i === cfg.blocks.length - 1;
+      const del = document.createElement('button'); del.type = 'button'; del.className = 'pb-btn pb-del'; del.textContent = '✕'; del.title = '삭제';
+      head.append(chev, name, up, dn, del);
+      const body = document.createElement('div'); body.className = 'page-block-body'; body.hidden = !!papaCollapsed[i];
+      const ta = document.createElement('textarea'); ta.className = 'pb-content papa-input'; ta.placeholder = '이 블록에 로그를 붙여넣으세요 (리치 복사 / 소스 복사)'; ta.value = b.html || '';
+      ta.onfocus = () => { activeEditor = ta; };
+      let t: any; ta.oninput = () => { b.html = ta.value; clearTimeout(t); t = setTimeout(scheduleRender, 120); };
+      attachPapaPaste(ta);   // 블록 칸도 리치 복사(text/html 우선)
+      body.appendChild(ta);
+      chev.onclick = () => { papaCollapsed[i] = !papaCollapsed[i]; body.hidden = !!papaCollapsed[i]; chev.textContent = papaCollapsed[i] ? '▸' : '▾'; };
+      up.onclick = () => { if (i > 0) { const a = cfg.blocks; [a[i - 1], a[i]] = [a[i], a[i - 1]]; papaCollapsed = {}; render2(); scheduleRender(); } };
+      dn.onclick = () => { if (i < cfg.blocks.length - 1) { const a = cfg.blocks; [a[i + 1], a[i]] = [a[i], a[i + 1]]; papaCollapsed = {}; render2(); scheduleRender(); } };
+      del.onclick = () => { cfg.blocks.splice(i, 1); if (!cfg.blocks.length) cfg.blocks.push({ html: '' }); papaCollapsed = {}; render2(); scheduleRender(); };
+      card.append(head, body); host.appendChild(card);
+    });
+    const addRow = document.createElement('div'); addRow.className = 'page-add-row';
+    const addB = document.createElement('button'); addB.type = 'button'; addB.className = 'tag-add'; addB.textContent = '+ 블록 추가';
+    addB.onclick = () => { cfg.blocks.push({ html: '' }); render2(); scheduleRender(); };
+    addRow.append(addB); host.appendChild(addRow);
+  };
+  render2();
+}
+// 파파 '여러 블록으로 나누기' 토글 — 켜면 입력칸 내용을 1블록으로 시드, 끄면 블록을 합쳐 입력칸으로 되돌림(카드 토글과 동일 골격).
+(function wirePapaBlocksToggle() {
+  const toggle = document.getElementById('papa-blocks-toggle') as HTMLInputElement | null;
+  if (!toggle) return;
+  toggle.addEventListener('change', () => {
+    const cfg = templateConfig('papa');
+    if (toggle.checked) {
+      if (!Array.isArray(cfg.blocks) || !cfg.blocks.length) cfg.blocks = [{ html: inputEl.value }];
+      cfg.useBlocks = true; papaCollapsed = {};
+    } else {
+      const joined = (Array.isArray(cfg.blocks) ? cfg.blocks : []).map((b: any) => String(b.html || '')).join('\n\n');
+      cfg.useBlocks = false; cfg.blocks = [];
+      inputEl.value = joined;
+    }
+    updateInputMode(); scheduleRender();
+  });
+})();
 
 // 항목 블록 에디터: 페이지(제목·부제·내용)와 섹션(헤더 이미지·섹션제목·부제·구도)을 한 리스트에 섞어 편집.
 // 섹션은 '뒤따르는 페이지들'을 한 카드(챕터)로 묶는다(원본 Log Diary 구조). 순서이동/삭제/접기 + 추가.
@@ -1292,6 +1420,7 @@ function baseSection(title: string) {
 
 function sectionsForCurrentDesign(): Section[] {
   const id = settings.template || 'card';
+  if (id === 'papa') return [];   // 파파 = 설정 없음(순수 통과). 설정 패널 자체도 숨김(applyPapaUi).
   if (id === 'custom-css') {
     return [
       baseSection('내 프리셋'),
@@ -2131,12 +2260,15 @@ let editingLog: any = null;   // 서재에서 편집기로 연 로그(제자리 
 function buildLogRecord(asNew: boolean, opts?: { char?: string; title?: string; order?: number | null }): any {
   const o = opts || {};
   const isDiary = settings.template === 'log-diary';
+  const isPapaT = settings.template === 'papa';
   const dcfg = isDiary ? ((settings.templateSettings && settings.templateSettings['log-diary']) || {}) : null;
   const derivedChar = isDiary
     ? ((dcfg.coverTitle || (dcfg.profiles && dcfg.profiles[0] && dcfg.profiles[0].name) || '').trim() || '다이어리')
+    : isPapaT ? '담은 로그'
     : ((settings.profile.botName || '').trim() || '기타');
   const newChar = (o.char && o.char.trim()) ? o.char.trim() : derivedChar;  // 새로 저장 시 목적지 작품 키 지정
-  const derivedTitle = (isDiary && dcfg.coverTitle && dcfg.coverTitle.trim()) ? dcfg.coverTitle.trim() : deriveTitle(currentInputText());
+  // 제목: 파파는 입력칸이 비어(다중 블록은 blocks에 있음) → 살균 합본(lastCard)에서 첫 텍스트로 파생.
+  const derivedTitle = (isDiary && dcfg.coverTitle && dcfg.coverTitle.trim()) ? dcfg.coverTitle.trim() : deriveTitle(isPapaT ? lastCard : currentInputText());
   const overwrite = !asNew && !!editingLog;
   const rec: any = {
     id: overwrite ? editingLog.id : newLogId(),
@@ -2154,6 +2286,13 @@ function buildLogRecord(asNew: boolean, opts?: { char?: string; title?: string; 
   else if (settings.template === 'webnovel') rec.webnovel = JSON.parse(JSON.stringify((settings.templateSettings && settings.templateSettings.webnovel) || {}));
   else if (settings.template === 'card' && cardBlocksActive()) rec.cardCfg = JSON.parse(JSON.stringify(settings.templateSettings.card));
   else if (settings.template === 'custom-css') { rec.userCardCss = String(settings.userCardCss || ''); if (settings.cssBase) rec.cssBase = settings.cssBase; }
+  // ★파파모드 = 통째 보관: html(살균 합본, 다중 블록은 구분자로 이음)만 영속. 변환 입력칸·역할구조 없음(rec.input 비움 → 미살균 원본 영속 안 함).
+  //   재열람·재편집은 rec.papa.blocks(다중) 또는 rec.html(단일)로 복원.
+  if (isPapaT) {
+    rec.input = '';
+    const pcfg = (settings.templateSettings && settings.templateSettings.papa) || {};
+    rec.papa = { useBlocks: !!pcfg.useBlocks, blocks: JSON.parse(JSON.stringify(Array.isArray(pcfg.blocks) ? pcfg.blocks : [])) };
+  }
   return rec;
 }
 async function saveLog(asNew: boolean, opts?: { char?: string; title?: string; order?: number | null; newWorkName?: string }): Promise<boolean> {
@@ -2259,7 +2398,7 @@ async function showSaveDestModal(defaultChar?: string): Promise<{ char: string; 
   // buildLogRecord와 동일한 파생 이름/제목(기본값).
   const isDiary = settings.template === 'log-diary';
   const dcfg = isDiary ? ((settings.templateSettings && settings.templateSettings['log-diary']) || {}) : null;
-  const derivedName = isDiary ? ((dcfg.coverTitle || (dcfg.profiles && dcfg.profiles[0] && dcfg.profiles[0].name) || '').trim() || '다이어리') : ((settings.profile.botName || '').trim() || '기타');
+  const derivedName = isDiary ? ((dcfg.coverTitle || (dcfg.profiles && dcfg.profiles[0] && dcfg.profiles[0].name) || '').trim() || '다이어리') : (settings.template === 'papa' ? '담은 로그' : ((settings.profile.botName || '').trim() || '기타'));
   const defaultTitle = (isDiary && dcfg.coverTitle && dcfg.coverTitle.trim()) ? dcfg.coverTitle.trim() : deriveTitle(currentInputText());
 
   return new Promise((resolve) => {
@@ -2339,6 +2478,9 @@ function clearActiveContent() {
   } else if (t === 'webnovel') {
     const cfg = templateConfig('webnovel'); if (Array.isArray(cfg.blocks) && cfg.blocks.length) cfg.blocks = [{ title: '', content: '' }];
     inputEl.value = '';
+  } else if (t === 'papa') {
+    const cfg = templateConfig('papa'); if (Array.isArray(cfg.blocks) && cfg.blocks.length) cfg.blocks = [{ html: '' }];
+    papaCollapsed = {}; inputEl.value = '';
   } else { // card / custom-css
     const cfg = (settings.templateSettings && settings.templateSettings.card) || {};
     if (Array.isArray(cfg.blocks) && cfg.blocks.length) cfg.blocks = [{ title: '', subtitle: '', content: '' }];
@@ -2863,11 +3005,17 @@ if (MODE_LOG) {
 }
 async function openLogById(r: any) {
   if (!r) return;
-  const tmpl = (r.template === 'log-diary' || r.template === 'custom-css' || r.template === 'chat' || r.template === 'webnovel') ? r.template : 'card';
+  const tmpl = (r.template === 'log-diary' || r.template === 'custom-css' || r.template === 'chat' || r.template === 'webnovel' || r.template === 'papa') ? r.template : 'card';
   designStore[settings.template || 'card'] = captureLook(settings.template || 'card');
   settings.template = tmpl;
   settings.templateSettings = settings.templateSettings || {};
-  if (tmpl === 'log-diary') {
+  if (tmpl === 'papa') {
+    // 파파 = 통째 보관. 다중 블록이면 blocks 복원(블록 편집기), 단일이면 살균 html을 입력칸에 되돌림(재살균 멱등). 구조/카드 없음.
+    const pcfg = (r.papa && typeof r.papa === 'object') ? r.papa : null;
+    settings.templateSettings.papa = { useBlocks: !!(pcfg && pcfg.useBlocks), blocks: (pcfg && Array.isArray(pcfg.blocks)) ? JSON.parse(JSON.stringify(pcfg.blocks)) : [] };
+    papaCollapsed = {};
+    if (!(pcfg && pcfg.useBlocks)) inputEl.value = String((pcfg && pcfg.blocks && pcfg.blocks[0] && pcfg.blocks[0].html) || r.html || r.input || '');
+  } else if (tmpl === 'log-diary') {
     settings.templateSettings['log-diary'] = r.diary && typeof r.diary === 'object' ? JSON.parse(JSON.stringify(r.diary)) : {};
     diaryCollapsed = {};
   } else if (tmpl === 'chat') {

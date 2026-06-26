@@ -5,7 +5,7 @@
 // 페이지별 상태(allLogs·setStatus·route·로그인 사용자·표시이름)는 ctx로 주입 → library(작품 페이지의 번역/정리)와
 // reader(단일 화 열람)가 같은 코드 1벌을 쓴다(중복 복붙 금지). 리더 본문/페이저/타이포는 readerView.ts 재사용.
 // @ts-nocheck
-import { mountReaderBody, rdCfg, isWebnovel, popAutoClose, mk } from './readerView.js';
+import { mountReaderBody, rdCfg, isWebnovel, isPapa, popAutoClose, mk } from './readerView.js';
 import { icon } from './icons.js';
 import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
@@ -330,11 +330,12 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       location.hash = '#/series/' + encodeURIComponent(char); return;   // 로드됐는데 없음 = 진짜 없는 화 → 작품 페이지
     }
     const r = eps[idx];
+    const papa = isPapa(r);   // ★파파모드 = 순수 통과 보관(번역·정리·역할 구조 없음). 리더는 충실 렌더(Shadow DOM)+스크롤만.
     // ★마른 레코드(rec.assetRefs=이름→해시): 이 화에 필요한 이미지만 IDB_BLOBS에서 지연 복원(name→dataURL). 옛 레코드(rec.assets base64)는 undefined → rerenderLog가 rec.assets로 하위호환.
     const amap: Record<string, string> | undefined = (r && r.assetRefs && typeof r.assetRefs === 'object') ? await resolveAssetRefs(r.assetRefs) : undefined;
     // ★작업 3: 번역된 적 있는 화(r.orig)인데 본문이 원문으로 되돌아가 있으면(왕복/동기화 잔여) 캐시에서 자동 복원 — 무료·키 불필요·진입당 1회.
     //   비파괴(원문 토글 유지) · 캐시 미스면 원문 유지(무해) · 진입=상단이라 스크롤 보존 회귀 없음.
-    if (r && r.orig && !origView[r.id] && !r._trAuto && translateAvailable()) {
+    if (!papa && r && r.orig && !origView[r.id] && !r._trAuto && translateAvailable()) {
       r._trAuto = true;
       try {
         if (rerenderLog(origRecord(r)) === r.html) {   // 현재 본문 = 원문 렌더 = 번역이 되돌아감 → 캐시로 복원
@@ -345,7 +346,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       } catch (_) {}
     }
     const rcfg = rdCfg();
-    const wn = isWebnovel(r);
+    const wn = !papa && isWebnovel(r);
     const rd = loadRead(); rd.readIds[r.id] = true; rd.lastByChar[char] = r.id; rd.lastReadAt = rd.lastReadAt || {}; rd.lastReadAt[char] = Date.now(); saveRead(rd);
     app.innerHTML = '';
     const wnTh = (r.webnovel && r.webnovel.theme) || rcfg.wnTheme;
@@ -365,7 +366,8 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     const editLog = document.createElement('button'); editLog.className = 'reader-iconbtn'; editLog.innerHTML = icon('pencil') + ' 편집기로'; editLog.title = '이 로그를 편집기에서 수정';
     editLog.onclick = () => { location.href = 'index.html?log=' + encodeURIComponent(r.id); };
     // 번역(비파괴): 원문 스냅샷(r.orig)이 있으면 "원문↔번역" 영속 토글 + 다시번역·번역지우기. 없으면 첫 번역 버튼.
-    const hasOrig = !!(r && r.orig);
+    //   ★파파모드는 구조화 텍스트가 없어 번역·정리가 작동 안 함(사장님 확정) → 관련 버튼 전부 숨김.
+    const hasOrig = !papa && !!(r && r.orig);
     let trB: HTMLButtonElement | null = null; let trClearB: HTMLButtonElement | null = null; let segWrap: HTMLElement | null = null;
     if (hasOrig) {
       segWrap = document.createElement('div'); segWrap.className = 'reader-seg';
@@ -397,7 +399,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
         await reloadLogs();
         location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route(); setStatus('번역을 지우고 원문만 남겼어요.');
       };
-    } else if (translateAvailable()) {
+    } else if (!papa && translateAvailable()) {
       trB = document.createElement('button'); trB.className = 'reader-iconbtn'; trB.innerHTML = icon('language') + ' 번역';
       trB.title = '이 화를 한국어로 번역(현재 작품 프롬프트·모델). 원문은 보존돼 언제든 “원문↔번역” 토글이 가능. 이미 한국어인 부분은 건너뜀.';
       trB.onclick = async () => {
@@ -409,22 +411,25 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
         location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route();
       };
     }
-    // ★번역 설정(⚙) — 번역 가능하면 항상(번역 전·후 무관). 작품 프롬프트·파라미터 조정 + 이 설정으로 번역.
+    // ★번역 설정(⚙) — 번역 가능하면 항상(번역 전·후 무관). 작품 프롬프트·파라미터 조정 + 이 설정으로 번역. (파파는 제외)
     let trSetB: HTMLButtonElement | null = null;
-    if (translateAvailable()) {
+    if (!papa && translateAvailable()) {
       trSetB = document.createElement('button'); trSetB.className = 'reader-iconbtn'; trSetB.innerHTML = icon('settings') + ' 번역 설정';
       trSetB.title = '번역 지침(작품 프롬프트)·모델·파라미터 조정 + 이 설정으로 번역';
       trSetB.onclick = () => toggleTransSetPop(reader, r, char, trSetB!);
     }
-    const clB = document.createElement('button'); clB.className = 'reader-iconbtn'; clB.innerHTML = icon('broom') + ' 정리';
-    clB.title = '이 화의 군더더기(응답 헤더·생각의 사슬·OOC·화자 라벨 등)를 걷어내 본문만 남깁니다. 이미지·대사는 보존.';
-    clB.onclick = async () => {
-      const o = clB.innerHTML; clB.disabled = true; clB.textContent = '정리 중…';
-      const res = await runCleanFlow([r], char, {});
-      if (res) cleanRestores[r.id] = res.restore;
-      clB.disabled = false; clB.innerHTML = o;
-      location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route();
-    };
+    let clB: HTMLButtonElement | null = null;
+    if (!papa) {   // 파파는 정리(군더더기 제거)도 비적용 — 통째 보관이라 구조화 텍스트가 없음.
+      clB = document.createElement('button'); clB.className = 'reader-iconbtn'; clB.innerHTML = icon('broom') + ' 정리';
+      clB.title = '이 화의 군더더기(응답 헤더·생각의 사슬·OOC·화자 라벨 등)를 걷어내 본문만 남깁니다. 이미지·대사는 보존.';
+      clB.onclick = async () => {
+        const o = clB!.innerHTML; clB!.disabled = true; clB!.textContent = '정리 중…';
+        const res = await runCleanFlow([r], char, {});
+        if (res) cleanRestores[r.id] = res.restore;
+        clB!.disabled = false; clB!.innerHTML = o;
+        location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); route();
+      };
+    }
     let clUndoB: HTMLButtonElement | null = null;
     if (cleanRestores[r.id]) {
       clUndoB = document.createElement('button'); clUndoB.className = 'reader-iconbtn'; clUndoB.innerHTML = icon('undo') + ' 정리 취소';
@@ -445,7 +450,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     };
     const helpB = document.createElement('button'); helpB.className = 'reader-iconbtn'; helpB.innerHTML = icon('help') + ' 도움말'; helpB.title = '사용설명서'; helpB.onclick = () => { location.href = 'help.html#reader'; };
     const actions = document.createElement('div'); actions.className = 'reader-actions';
-    actions.append(cp, shareB, editLog, clB, ...(clUndoB ? [clUndoB] : []), ...(trB ? [trB] : []), ...(trClearB ? [trClearB] : []), ...(trSetB ? [trSetB] : []), delB, helpB, setBtn);
+    actions.append(cp, shareB, editLog, ...(clB ? [clB] : []), ...(clUndoB ? [clUndoB] : []), ...(trB ? [trB] : []), ...(trClearB ? [trClearB] : []), ...(trSetB ? [trSetB] : []), delB, helpB, setBtn);
     const moreB = document.createElement('button'); moreB.className = 'reader-iconbtn reader-more';
     moreB.innerHTML = icon('dots') + ' 더보기'; moreB.title = '더보기';
     moreB.onclick = (e) => { e.stopPropagation(); actions.classList.toggle('open'); };
@@ -456,7 +461,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     // 표시용 본문: 마른 레코드는 amap(그 화 이미지)으로 임베드, 옛 레코드는 r.html 그대로(이미 임베드됨, amap=undefined → applyAssetMap 무동작).
     const baseHtml = showOrig ? rerenderLog(origRecord(r), amap) : applyAssetMap(r.html, amap);
     let displayHtml = baseHtml; let cleanSeg: HTMLElement | null = null;
-    const cRules = cleanupRules().concat(perLogCleanup(r));   // 관리실 글로벌 + per-log(가져온 챗 동봉) 정리 규칙 합성
+    const cRules = papa ? [] : cleanupRules().concat(perLogCleanup(r));   // 관리실 글로벌 + per-log(가져온 챗 동봉) 정리 규칙 합성 (파파는 미적용)
     if (cRules.length && cleanupChanges(baseRec, cRules)) {
       const on = cleanView[r.id] !== false;
       displayHtml = on ? renderCleaned(baseRec, cRules, amap) : baseHtml;
@@ -472,8 +477,8 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
 
     // 몰입 탭 토글·초기 상태·스크롤 리셋은 공용 mountReaderBody가 처리(일반·공유 리더 동일). 더보기 메뉴 닫힘도 거기서.
     // displayHtml = 원문/번역 토글(origView) + 정리/원본 토글(cleanView) 비파괴 합성(위에서 계산). ★저장은 안 바뀜.
-    displayHtml = stripUnresolvedAssetImages(displayHtml);   // ★매핑 안 된 에셋명 <img>(AI가 지어낸 감정 등)는 표시에서 숨김 = 엑박 아이콘 방지(저장·복사본은 위 displayHtml 기준)
-    mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route);
+    if (!papa) displayHtml = stripUnresolvedAssetImages(displayHtml);   // ★매핑 안 된 에셋명 <img>(AI가 지어낸 감정 등)는 표시에서 숨김 = 엑박 아이콘 방지. 파파는 남의 디자인 그대로(진짜 URL/data만) → 미적용
+    mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route, papa);
   }
 
   return { renderSingleLog, runTranslateFlow, runCleanFlow, cleanRestores };

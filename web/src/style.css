@@ -290,6 +290,15 @@ button.danger:hover { background: color-mix(in srgb, var(--danger) 86%, black); 
 .pane-settings > .pane-head > h2::before { content: "02"; }
 .pane-preview  > .pane-head > h2::before { content: "03"; }
 
+/* ★파파모드: 02 설정 패널이 숨겨져 3칸 그리드의 우측이 비므로 → 2칸으로 가운데 정렬(여백).
+   파파 전용 스코프(body.papa-mode)라 다른 디자인의 3칸 레이아웃·번호는 무영향. (모바일은 .layout이 flex라 무관) */
+body.papa-mode .layout { grid-template-columns: minmax(0, 560px) minmax(0, 760px); justify-content: center; }
+body.papa-mode .pane-preview > .pane-head > h2::before { content: "02"; }   /* 03 → 02 (설정 칸이 없으므로) */
+/* 파파 미리보기 = iframe 대신 블록별 Shadow DOM 호스트(리더와 동일 함수). 각 블록은 자기 디자인을 그대로 그림. */
+.papa-preview { flex: 1; min-height: 0; overflow: auto; }
+.papa-preview .papa-block + .papa-block,
+.reader-card .papa-block + .papa-block { margin-top: 18px; padding-top: 18px; border-top: 1px dashed var(--line-2); }
+
 /* ─────────────────────────── 입력 패널 ─────────────────────────── */
 textarea#input {
   flex: 1; min-height: 220px; resize: none; width: 100%; padding: 14px 16px;

@@ -32,6 +32,61 @@ export function sanitizeArchiveHtml(html: string): string {
   } catch (_) { return ''; }
 }
 
+// ── 파파모드 살균 (디자인 보존 + XSS 차단) ──────────────────────────────────
+// sanitizeArchiveHtml(자가 로그용)은 <style>·<svg>·form류를 통째 제거하지만, 남의 제조기 로그는 <style>
+//   (@keyframes·hover·미디어쿼리·클래스 디자인)·인라인 SVG(구분선·아이콘)를 정당하게 쓴다 → 보존해야 함.
+//   대신 그 보존을 노린 XSS(스크립트 실행)를 전부 막는다. ★렌더는 반드시 Shadow DOM 격리(renderPapaBlocks)에서 — 보존한 남의 <style>가 셸 CSS를 박살내지 않게.
+// papa <style> 본문 CSS 살균 — @import·expression·behavior·javascript:url 등 위험 패턴만 제거(외부 http url()=배경이미지는 Phase1에서 보존, Phase2에서 굳힘).
+function sanitizePapaCss(css: string): string {
+  return String(css || '')
+    .replace(/<\s*\/\s*style/gi, '')                                          // </style 탈출 방지
+    .replace(/@import[^;]*;?/gi, '')                                          // @import(외부 로드)
+    .replace(/@charset[^;]*;?/gi, '')
+    .replace(/expression\s*\(/gi, '(')                                        // IE expression()
+    .replace(/behavior\s*:[^;}]*/gi, '')                                      // IE behavior(.htc)
+    .replace(/-moz-binding\s*:[^;}]*/gi, '')                                  // 레거시 XBL
+    .replace(/url\s*\(\s*['"]?\s*(?:javascript|vbscript):[^)]*\)/gi, 'none')  // url(javascript:)
+    .replace(/javascript:/gi, '');
+}
+export function sanitizePapaHtml(html: string): string {
+  try {
+    const doc = new DOMParser().parseFromString('<div id="__p">' + (html || '') + '</div>', 'text/html');
+    const root = doc.getElementById('__p')!;
+    // 차단: 스크립트/임베드/메타/폼류 = 통째 제거. ★style·svg·details/summary·일반 구조 태그는 보존.
+    root.querySelectorAll('script,iframe,object,embed,link,meta,base,form,input,button,textarea,select,noscript,template').forEach((e) => e.remove());
+    // <style> 본문 CSS 살균(요소는 보존).
+    root.querySelectorAll('style').forEach((s) => { s.textContent = sanitizePapaCss(s.textContent || ''); });
+    root.querySelectorAll('*').forEach((el) => {
+      [...el.attributes].forEach((a) => {
+        const n = a.name.toLowerCase();
+        if (n.startsWith('on')) el.removeAttribute(a.name);                    // on* 이벤트 핸들러 전부
+        else if ((n === 'href' || n === 'src' || n === 'xlink:href' || n === 'srcset' || n === 'data') && /^\s*(javascript|vbscript|data:text\/html)/i.test(a.value)) el.removeAttribute(a.name);
+        else if (n === 'style' && /(expression\s*\(|javascript:|behavior\s*:|-moz-binding)/i.test(a.value)) el.setAttribute('style', sanitizePapaCss(a.value));  // 인라인 style의 위험 패턴만 제거
+      });
+    });
+    return root.innerHTML;
+  } catch (_) { return ''; }
+}
+// ★파파 다중 블록 구분자 — 한 화에 로그를 여러 칸으로 나눠 담을 때, 합본 html을 블록 단위로 쪼개는 마커(HTML 주석=렌더 무해).
+//   블록마다 따로 Shadow DOM에 넣어야 서로 다른 남의 <style>가 충돌하지 않는다(디자인 안 섞임).
+export const PAPA_SEP = '<!--LP_PAPA_BLOCK-->';
+// 파파 로그를 (블록마다) Shadow DOM 안에서 렌더 — 보존한 남의 <style>/클래스/인라인 스타일을 shadow 경계 안에 가둬
+//   우리 리더·서재 셸 CSS를 안 건드리고, 우리 테마(--reader-*)도 남의 디자인 안으로 안 샌다 = "그 디자인 그대로".
+//   ★데이터(복사·공유 fatten)는 평범한 살균 html 문자열을 그대로 씀 — 렌더만 shadow. 단일 블록=구분자 없음=shadow 1개(기존과 동일).
+export function renderPapaBlocks(host: HTMLElement, html: string): void {
+  host.innerHTML = '';
+  const parts = String(html || '').split(PAPA_SEP);
+  parts.forEach((part, i) => {
+    if (parts.length > 1 && !part.trim()) return;   // 다중일 때 빈 조각 스킵
+    const block = document.createElement('div'); block.className = 'papa-block';
+    const safe = sanitizePapaHtml(part);
+    try { (block.attachShadow({ mode: 'open' })).innerHTML = safe; }
+    catch (_) { block.innerHTML = safe; }   // Shadow DOM 미지원 폴백(이미 살균됨)
+    host.appendChild(block);
+  });
+}
+export const isPapa = (r: any) => !!(r && r.template === 'papa');
+
 // 모바일 상단 헤더 자동 숨김(아래 스크롤=숨김, 위=표시). 헤더를 fixed 오버레이로 빼 피드백 루프 차단.
 export function autoHideBar(scroller: HTMLElement, bars: (HTMLElement | null)[]) {
   if (!isMobileLib()) return;
@@ -220,8 +275,8 @@ export function popAutoClose(pop: HTMLElement, trigger?: HTMLElement | null) {
 }
 
 // 리더 본문(스크롤↔페이지넘김 분기). app에 append + 결과 반환. rerender = 읽기방식 토글 시 호출자 라우터.
-export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn: boolean, theme: string | undefined, setBtn: HTMLElement, rerender: () => void): { paged: boolean; scroll?: HTMLElement; col?: HTMLElement } {
-  const paged = wn && wnPagedResolved(rcfg);
+export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn: boolean, theme: string | undefined, setBtn: HTMLElement, rerender: () => void, papa?: boolean): { paged: boolean; scroll?: HTMLElement; col?: HTMLElement } {
+  const paged = wn && wnPagedResolved(rcfg);   // papa는 통짜 디자인이라 항상 스크롤(페이저·웹소설 타이포 비적용)
   if (paged) {
     applyWnTypography(reader, null, rcfg, theme);
     reader.classList.toggle('bar-hidden', !!rcfg.immersive);
@@ -231,7 +286,9 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
     return { paged: true };
   }
   const scroll = mk('div', 'reader-scroll'); const col = mk('div', 'reader-col'); col.style.maxWidth = (wn ? rcfg.wnWidth : rcfg.width) + 'px';
-  const card = mk('div', 'reader-card'); if (!wn) card.style.zoom = String(rcfg.zoom); card.innerHTML = sanitizeArchiveHtml(html || '');
+  const card = mk('div', 'reader-card' + (papa ? ' reader-card-papa' : '')); if (!wn) card.style.zoom = String(rcfg.zoom);
+  if (papa) renderPapaBlocks(card, html || '');   // ★남의 디자인은 (블록마다) Shadow DOM 격리(우리 셸·테마와 상호 비침투)
+  else card.innerHTML = sanitizeArchiveHtml(html || '');
   col.appendChild(card); scroll.appendChild(col); reader.appendChild(scroll); app().appendChild(reader);
   if (wn) applyWnTypography(reader, col, rcfg, theme);
   setBtn.onclick = () => toggleReaderSettings(reader, col, rcfg, wn, undefined, setBtn, rerender);
@@ -257,9 +314,10 @@ const SHARE_PROGRESS_KEY = 'pro2-share-progress';
 function shareProgress(id: string): number { try { const o = JSON.parse(localStorage.getItem(SHARE_PROGRESS_KEY) || '{}'); const n = o && o[id]; return Number.isInteger(n) ? n : -1; } catch (_) { return -1; } }
 function setShareProgress(id: string, n: number): void { try { const o = JSON.parse(localStorage.getItem(SHARE_PROGRESS_KEY) || '{}'); o[id] = n; localStorage.setItem(SHARE_PROGRESS_KEY, JSON.stringify(o)); } catch (_) {} }
 
-function shareReaderView(o: { titleText: string; html: string; backLabel: string; onBack: () => void; prevHash?: string | null; nextHash?: string | null; rerender: () => void }) {
+function shareReaderView(o: { titleText: string; html: string; backLabel: string; onBack: () => void; prevHash?: string | null; nextHash?: string | null; rerender: () => void; papa?: boolean }) {
   const rcfg = rdCfg();
-  const wn = isWebnovel({ html: o.html });
+  const papa = !!o.papa;
+  const wn = !papa && isWebnovel({ html: o.html });
   app().innerHTML = '';
   const reader = mk('div', 'reader' + (wn ? ' wn' : '')); reader.dataset.theme = wn ? rcfg.wnTheme : rcfg.theme;
   const bar = mk('div', 'reader-bar');
@@ -271,7 +329,7 @@ function shareReaderView(o: { titleText: string; html: string; backLabel: string
   const setBtn = mk('button', 'reader-iconbtn') as HTMLButtonElement; setBtn.innerHTML = icon('sliders') + ' 보기';
   const mine = mk('button', 'reader-iconbtn'); mine.innerHTML = icon('pencil') + ' 나도 만들기'; mine.onclick = () => { location.href = 'index.html'; };
   bar.append(setBtn, mine); reader.appendChild(bar);
-  mountReaderBody(reader, o.html, rcfg, wn, wn ? rcfg.wnTheme : undefined, setBtn, o.rerender);
+  mountReaderBody(reader, o.html, rcfg, wn, wn ? rcfg.wnTheme : undefined, setBtn, o.rerender, papa);
 }
 function shareLoading() {
   app().innerHTML = '';
@@ -294,7 +352,7 @@ export async function renderShare(id: string, rerender: () => void) {
   try { const S = await loadShare(); data = await S.getShare(id); } catch (_) {}
   if (!data) { shareNotFound(); return; }
   if (data.type === 'series') { renderSharedSeries(id, data); return; }
-  shareReaderView({ titleText: (data.title || '공유된 로그') + (data.char ? ' · ' + data.char : ''), html: data.html || '', backLabel: '← 서재', onBack: () => { location.href = 'library.html'; }, rerender });
+  shareReaderView({ titleText: (data.title || '공유된 로그') + (data.char ? ' · ' + data.char : ''), html: data.html || '', backLabel: '← 서재', onBack: () => { location.href = 'library.html'; }, rerender, papa: data.template === 'papa' });
 }
 function renderSharedSeries(id: string, data: any) {
   const eps: any[] = data.eps || [];
@@ -361,6 +419,6 @@ export async function renderSharedSeriesEp(id: string, n: number, rerender: () =
     backLabel: '← 목록', onBack: () => { location.hash = '#/share/' + encodeURIComponent(id); },
     prevHash: n > 0 ? '#/share/' + encodeURIComponent(id) + '/' + (n - 1) : null,
     nextHash: n < eps.length - 1 ? '#/share/' + encodeURIComponent(id) + '/' + (n + 1) : null,
-    rerender,
+    rerender, papa: ep.template === 'papa',
   });
 }

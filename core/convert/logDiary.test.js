@@ -23,10 +23,12 @@ const diary = (cfg, text) => {
 // ── 드롭다운 순서: 기본 카드 ↔ 고급 CSS 커스텀 사이 ──
 {
   const i = TEMPLATE_ORDER.indexOf('log-diary');
+  const ic = TEMPLATE_ORDER.indexOf('custom-css');
   ok(TEMPLATE_ORDER[0] === 'card', '첫 항목은 기본 카드');
-  ok(TEMPLATE_ORDER[TEMPLATE_ORDER.length - 1] === 'custom-css', '마지막 항목은 고급 CSS 커스텀');
-  ok(i > 0 && i < TEMPLATE_ORDER.length - 1, 'log-diary는 card와 custom-css 사이');
+  ok(TEMPLATE_ORDER[TEMPLATE_ORDER.length - 1] === 'papa', '마지막 항목은 파파모드');   // papa는 custom-css 밑(맨 끝)에 추가됨
+  ok(i > 0 && i < ic, 'log-diary는 card와 custom-css 사이');
   ok(normalizeTemplateId('log-diary') === 'log-diary', 'log-diary는 유효 템플릿');
+  ok(normalizeTemplateId('papa') === 'papa', 'papa는 유효 템플릿');
   ok(normalizeTemplateId('nope') === 'card', '미지 템플릿은 card 폴백');
 }
 

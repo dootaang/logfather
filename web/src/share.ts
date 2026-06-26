@@ -40,6 +40,7 @@ export async function createShare(rec: any, shareId?: string): Promise<string> {
   const id = shareId || newShareId();
   const raw = String(rec.html || '');
   const base: any = { owner: u.uid, char: String(rec.char || ''), title: String(rec.title || ''), date: String(rec.date || ''), createdAt: Date.now() };
+  if (rec.template === 'papa') base.template = 'papa';   // ★파파모드 공유 = 받는 쪽 리더가 Shadow DOM 격리로 그 디자인 그대로 렌더(살균된 <style>·svg 보존)
   if (rec.hideUser) base.hideUser = true;   // ★내 입력 가린 공유본 표식(팝오버 기억·"내용 갱신" 유지). 내 원본 로그는 불변.
   const fits = (h: string) => byteLen(JSON.stringify(Object.assign({}, base, { html: h }))) <= MAX;
   // 읽기전용 공유 = 화질 덜 중요 → 1MB에 맞을 때까지 점점 더 강하게 축소(삽화 많은 화도 공유되게).

@@ -4,7 +4,7 @@
 // Output design registry. Keep the default card plus the advanced CSS sandbox.
 'use strict';
 
-const TEMPLATE_ORDER = ['card', 'log-diary', 'chat', 'webnovel', 'custom-css'];
+const TEMPLATE_ORDER = ['card', 'log-diary', 'chat', 'webnovel', 'custom-css', 'papa'];
 
 const CARD_HOOKS = [
   'lp-card', 'lp-card-pad', 'lp-inner',
@@ -102,6 +102,19 @@ const TEMPLATE_DEFS = {
     origin: 'Log Generator Pro 2',
     description: '기본 카드 출력을 베이스로 두고, 사용자가 직접 CSS를 써서 출력 카드를 장식하는 샌드박스형 디자인입니다.',
     hooks: CARD_HOOKS,
+  },
+  // ★파파모드 — 변환·편집 안 함(순수 통과). 다른 로그제조기가 만든 결과물(리치/소스 복사)을 그 디자인 그대로
+  //   받아 살균만 거쳐 영구 보관·열람. 변환엔진·카드베이스·역할구조 전부 안 거침(web 셸이 읽는 메타일 뿐).
+  papa: {
+    id: 'papa',
+    label: '파파모드 — 통째로 담기',
+    origin: 'LogPapa',
+    description: '다른 로그제조기·아카 게시글에서 만든 로그를 (리치 복사·소스 복사로) 그 디자인 그대로 받아 보관합니다. 변환·꾸미기 없이 살균만 거쳐 통째로 삼키는 영구 보관 모드입니다.',
+    hooks: [],
+    defaults: {
+      useBlocks: false,   // 여러 블록으로 나누기(opt-in) — 켜면 로그를 여러 칸에 따로 붙여넣기(블록마다 독립 격리 렌더)
+      blocks: [],         // [{ html }] — 블록별 원본 HTML(붙여넣기/소스)
+    },
   },
 };
 
