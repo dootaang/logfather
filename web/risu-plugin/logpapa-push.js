@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.14.0
+//@version 1.15.0
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 에셋(감정 이미지, 어떤 봇 문법이든) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -201,43 +201,75 @@
     try { const n = await sa.length(); for (let i = 0; i < n && i < 4000; i++) { try { out.push(await sa.at(i)); } catch (_) {} } } catch (_) {}
     return out;
   }
-  function fmtInlayDiag(d) { return `[인레이실험] UUID ${d.uuid}·CARD ${d.card} / DOM ${d.dom}·img ${d.imgs}(blob ${d.blob}·data ${d.dataimg}) / 추출 fetch✅${d.fetchOk}·native✅${d.nativeOk}${d.note ? ' · ' + d.note : ''}`; }
+  function fmtInlayDiag(d) {
+    const sc = d.sch || {};
+    const parts = `blob${sc.blob || 0} data${sc.data || 0} http${sc.http || 0} asset${sc.asset || 0} rel${sc.rel || 0} etc${sc.other || 0}`;
+    const samp = (d.samples && d.samples.length) ? ' / 샘플 ' + d.samples.map((s) => '"' + s + '"').join(' ') : '';
+    const win = (d.byScheme && Object.keys(d.byScheme).length) ? ' ★바이트확보:' + Object.entries(d.byScheme).map(([k, v]) => k + '×' + v).join(',') : '';
+    return `[인레이실험] UUID ${d.uuid}·CARD ${d.card} / DOM ${d.dom}·img ${d.imgs} [${parts}]${samp} / 추출 fetch${d.fetchOk} native${d.nativeOk} read${d.readOk}${win}${d.note ? ' · ' + d.note : ''}`;
+  }
+  function schemeOf(src) {
+    const s = String(src || ''); if (!s) return null;
+    if (s.indexOf('blob:') === 0) return 'blob';
+    if (s.indexOf('data:') === 0) return 'data';
+    if (/^https?:\/\//i.test(s)) return (s.indexOf('asset.localhost') >= 0 || s.indexOf('/asset/') >= 0) ? 'asset' : 'http';
+    if (s.indexOf('asset:') === 0 || s.indexOf('tauri:') === 0 || s.indexOf('://asset') >= 0) return 'asset';
+    if (s[0] === '/' || s[0] === '.') return 'rel';
+    return 'other';
+  }
   async function captureDomInlays() {
-    const d = { uuid: 0, card: 0, dom: 'none', imgs: 0, blob: 0, dataimg: 0, fetchOk: 0, nativeOk: 0, note: '' };
-    // 1) 라이브 챗 마커 수 (영속됐는지·몇 장인지)
+    const d = { uuid: 0, card: 0, dom: 'none', imgs: 0, sch: { blob: 0, data: 0, http: 0, asset: 0, rel: 0, other: 0 }, samples: [], fetchOk: 0, nativeOk: 0, readOk: 0, byScheme: {}, note: '' };
+    // 1) 라이브 챗 마커 수
     try {
       const { chat } = await getCurrentChat();
       const all = (chat.message || []).map((m) => { if (!m) return ''; const sw = (Array.isArray(m.swipes) && m.swipes[m.swipeId ?? 0] != null) ? m.swipes[m.swipeId ?? 0] : m.data; return String(sw || ''); }).join('\n');
       d.uuid = (all.match(/\{\{inlay(?:ed)?::[^}]+\}\}/gi) || []).length;
       d.card = (all.match(/INLAY\[<CARD[^\]]*\]/gi) || []).length;
     } catch (_) {}
-    // 2) DOM 접근 (★await 필수 + mainDom 권한 — 권한 프롬프트가 전체화면 뒤에 가려 행될 수 있어 8s 타임아웃)
-    let doc = null; try { doc = await withTimeout(Promise.resolve().then(() => risu.getRootDocument()), 8000, null); } catch (_) { doc = null; }
-    if (!doc) { d.dom = 'null/타임아웃(mainDom 권한 미허용 — 리스가 화면접근 권한 물으면 허용 후 재시도)'; return { diag: fmtInlayDiag(d), byOrder: [], detail: d }; }
-    d.dom = (typeof doc.querySelectorAll === 'function') ? 'ok' : (typeof doc.getElementsByClassName === 'function' ? 'classOnly' : 'noQuery');
-    // 3) <img> 통계 + blob/data 분리 — ★속성 셀렉터로 직접(수백 장 1개씩 비동기 순회 회피 = 멈춘 것처럼 보이던 것 방지)
-    const countSel = async (sel) => { try { const sa = await doc.querySelectorAll(sel); return sa ? (await sa.length()) : 0; } catch (_) { return 0; } };
-    d.imgs = await countSel('img');
-    d.dataimg = await countSel('img[src^="data:"]');
-    const blobUrls = [];
-    try {
-      const sa = await doc.querySelectorAll('img[src^="blob:"]');
-      const list = sa ? await safeArrayToList(sa) : [];
-      for (const el of list) { let src = ''; try { src = await el.getAttribute('src'); } catch (_) {} if (src && src.indexOf('blob:') === 0) blobUrls.push(src); }
-    } catch (_) {}
-    d.blob = blobUrls.length;
-    if (!blobUrls.length) { d.note = d.imgs === 0 ? 'DOM에 img 0 — 챗 스크롤로 삽화 보이게 후 재시도' : 'blob img 0 — 삽화 생성된 챗에서 해야 함(또는 mainDom 권한)'; return { diag: fmtInlayDiag(d), byOrder: [], detail: d }; }
-    // 4) blob 바이트 추출 — T1 fetch → 실패 시 T2 nativeFetch. 등장 순서대로 dataURL 생성(실패=null 슬롯).
-    const byOrder = [];
-    const nativeFn = (typeof risu.nativeFetch === 'function') ? risu.nativeFetch : null;
-    for (const url of blobUrls.slice(0, 24)) {
-      let u8 = await fetchBlobBytes(url, fetch);
-      if (u8) d.fetchOk++;
-      else if (nativeFn) { u8 = await fetchBlobBytes(url, nativeFn); if (u8) d.nativeOk++; }
-      if (u8) { try { byOrder.push(await shrinkImage(u8ToPngDataUrl(u8), IMG_MAX_PX, false)); } catch (_) { byOrder.push(null); } }
-      else byOrder.push(null);
+    // 2) DOM 접근 — ★60s 타임아웃(권한 모달 사람 응답 시간 확보. 로드 시 사전획득과 합쳐 안정).
+    let doc = null; try { doc = await withTimeout(Promise.resolve().then(() => risu.getRootDocument()), 60000, null); } catch (_) { doc = null; }
+    if (!doc) { d.dom = 'null(mainDom 권한 미허용/모달 못봄 — 로드 시 권한창 떴으면 허용, 아니면 플러그인 닫고 재시도)'; return { diag: fmtInlayDiag(d), byOrder: [], detail: d }; }
+    d.dom = (typeof doc.querySelectorAll === 'function') ? 'ok' : 'noQuery';
+    // 3) 전 <img> 수집 → 스킴 분류 + 샘플 src + outerHTML(콘솔). ★blob 가정 폐기 — 실제 스킴을 본다.
+    let imgs = [];
+    try { const sa = await doc.querySelectorAll('img'); imgs = sa ? await safeArrayToList(sa) : []; } catch (_) {}
+    d.imgs = imgs.length;
+    const srcsBy = { blob: [], http: [], asset: [], rel: [], other: [] };
+    let outerN = 0;
+    for (const el of imgs) {
+      let src = ''; try { src = await el.getAttribute('src'); } catch (_) {}
+      const sc = schemeOf(src); if (!sc) continue;
+      d.sch[sc] = (d.sch[sc] || 0) + 1;
+      if (sc !== 'data' && srcsBy[sc] && srcsBy[sc].length < 8) srcsBy[sc].push(src);
+      if (sc !== 'data' && d.samples.length < 3) d.samples.push(String(src).slice(0, 38));
+      if (sc !== 'data' && outerN < 3) { outerN++; try { console.info('[LogPapaPush] inlay img 샘플: ' + String(await el.getOuterHTML()).slice(0, 240)); } catch (_) {} }
     }
-    if (!d.fetchOk && !d.nativeOk) d.note = 'blob 바이트 추출 전부 실패(샌드박스 벽) — 콘솔 로그 확인';
+    // 4) 각 비-data 스킴 후보를 fetch/nativeFetch/readImage로 시도 → 어느 스킴·방법이 바이트를 주나(진단).
+    const nativeFn = (typeof risu.nativeFetch === 'function') ? risu.nativeFetch : null;
+    const readFn = (typeof risu.readImage === 'function') ? risu.readImage : null;
+    let winScheme = null, winMethod = null;
+    for (const sc of ['blob', 'http', 'asset', 'rel', 'other']) {
+      for (const src of srcsBy[sc].slice(0, 4)) {
+        let u8 = await fetchBlobBytes(src, fetch); let method = u8 ? 'fetch' : '';
+        if (u8) d.fetchOk++;
+        if (!u8 && nativeFn) { u8 = await fetchBlobBytes(src, nativeFn); if (u8) { d.nativeOk++; method = 'native'; } }
+        let du = u8 ? u8ToPngDataUrl(u8) : null;
+        if (!du && readFn && (sc === 'asset' || sc === 'rel' || sc === 'other')) { try { const raw = await withTimeout(Promise.resolve().then(() => readFn(src)), 5000, null); const r = imgSrcFrom(raw); if (r && r.indexOf('data:') === 0) { du = r; method = 'read'; d.readOk++; } } catch (_) {} }
+        if (du) { d.byScheme[sc] = (d.byScheme[sc] || 0) + 1; if (!winScheme) { winScheme = sc; winMethod = method; } }
+      }
+    }
+    // 5) 성공 스킴이 있으면 그 스킴 img들로 byOrder 채움(best-effort 박제).
+    const byOrder = [];
+    if (winScheme) {
+      for (const src of srcsBy[winScheme]) {
+        let du = null;
+        if (winMethod === 'read' && readFn) { try { du = imgSrcFrom(await withTimeout(Promise.resolve().then(() => readFn(src)), 5000, null)); } catch (_) {} }
+        else { const u8 = await fetchBlobBytes(src, winMethod === 'native' ? nativeFn : fetch); if (u8) du = u8ToPngDataUrl(u8); }
+        if (du && du.indexOf('data:') === 0) { try { byOrder.push(await shrinkImage(du, IMG_MAX_PX, false)); } catch (_) { byOrder.push(du); } }
+        else byOrder.push(null);
+      }
+    }
+    if (!d.fetchOk && !d.nativeOk && !d.readOk) d.note = (d.imgs === 0) ? 'DOM img 0 — 챗 스크롤로 삽화 보이게 후 재시도' : '전 스킴 추출 실패 — 위 [스킴]·샘플로 다음 버전 보정';
     return { diag: fmtInlayDiag(d), byOrder, detail: d };
   }
 
@@ -563,7 +595,7 @@
               <option value="B">정규식 동봉 (리더에서 정리/원본 토글)</option>
             </select></label>
           <label style="display:flex;align-items:center;gap:8px;margin:10px 0;cursor:pointer;font-size:14px;"><input type="checkbox" id="inlayExpChk" /> 인레이 삽화 실험 — 모듈이 생성한 삽화 가져오기 시도 (실험적)</label>
-          <div class="hint" id="inlayExpHint" style="display:none;margin-top:-4px;">삽화가 실제로 뜬 챗에서 켠 뒤 아래 <b>‘번역+이미지 JSON 내려받기’</b>를 누르세요(용량 제한 없이 진단이 확실히 떠요). 결과의 <b>진단 한 줄</b>을 복사해 회신해 주세요. 처음에 리스가 화면 접근 권한(mainDom)을 물으면 <b>허용</b>해 주세요(거부 시 진단에 “권한 거부”로 떠요).</div>
+          <div class="hint" id="inlayExpHint" style="display:none;margin-top:-4px;">삽화가 실제로 뜬 챗에서 켜세요. ★켠 뒤 <b>리스를 새로고침</b>하면 메인 화면에 <b>‘화면 접근(mainDom)’ 권한 창</b>이 떠요 — 꼭 <b>허용</b>하세요(이게 핵심. 놓치면 진단에 ‘DOM null’). 그 다음 이 창에서 <b>‘번역+이미지 JSON 내려받기’</b> → 뜨는 <b>진단 한 줄</b>을 복사해 회신해 주세요.</div>
           <button class="btn btn-primary" id="sendBtn">${ic('send')} 이 세션 보내기</button>
           <div class="hint" style="margin-top:14px;">이미지가 많아 전송이 무겁거나 실패하면(받은편지함 1MB 한도) 아래로 받아 “채팅 가져오기”로 넣으세요 — 용량 제한 없이 삽화·에셋이 다 들어옵니다.</div>
           <button class="btn btn-primary" id="dlBtn" style="margin-top:8px;opacity:.9;">${ic('download')} 번역+이미지 JSON 내려받기</button>
@@ -660,5 +692,7 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.14.0');
+  // ★인레이 실험 권한 사전획득 — 이전에 실험 켰던 사용자면 플러그인 로드 시(전체화면 전·메인화면)에 mainDom 권한 프롬프트를 미리 띄움(보이게·1회). 허용되면 영속.
+  try { let on = false; try { on = localStorage.getItem('pro2-push-inlayexp') === '1'; } catch (_) {} if (on && typeof risu.getRootDocument === 'function') { Promise.resolve().then(() => risu.getRootDocument()).catch(() => {}); } } catch (_) {}
+  console.info('[LogPapaPush] loaded v1.15.0');
 })();
