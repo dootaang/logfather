@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.13.1
+//@version 1.13.2
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 에셋(감정 이미지, 어떤 봇 문법이든) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -285,6 +285,24 @@
       .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
+  // ── ★RisuAI CBS 제어흐름 제거 + 배경이미지 div 마커화 ────────────────────────────────────
+  //   모듈이 스프라이트를 {{#if 최근3개}}<div style="background-image:url('{{img::이름}}')">{{/}} 로 감싸는데(화면선 리스가 조건 계산해 숨김),
+  //   우리는 raw를 읽어 그 {{#if}}/{{/}}가 글자로 샌다 → 제거. {{#...}}/{{:...}}/{{/...}}만 중첩 {{}} 균형매칭으로 통째 제거(내부 보존).
+  //   우리 {{img::}}/{{inlay::}} 마커는 #/:// 로 시작 안 해 무영향(검증됨).
+  function stripCbsControl(s) {
+    s = String(s || ''); let out = '', i = 0;
+    while (i < s.length) {
+      if (s[i] === '{' && s[i + 1] === '{' && (s[i + 2] === '#' || s[i + 2] === ':' || s[i + 2] === '/')) {
+        let depth = 0, j = i;
+        while (j < s.length) { if (s[j] === '{' && s[j + 1] === '{') { depth++; j += 2; } else if (s[j] === '}' && s[j + 1] === '}') { depth--; j += 2; if (depth === 0) break; } else j++; }
+        i = j;
+      } else { out += s[i]; i++; }
+    }
+    return out;
+  }
+  // <태그 ... background-image:url('{{img::이름}}') ...></태그> → 맨 {{img::이름}} 마커. (우리 import가 카드로 렌더 + 아카는 bg-image strip하므로 마커가 안전.)
+  function unwrapBgImageMarker(s) { return String(s || '').replace(/<(\w+)\b[^>]*url\(\s*['"]?\s*(\{\{img::[^}]+?\}\})\s*['"]?\s*\)[^>]*>(?:\s*<\/\1>)?/gi, '\n\n$2\n\n'); }
+
   // ── 자동 정리(리스 표시 정규식 editdisplay) — 관리실 수동등록 없이 챗에 든 정리 규칙 흡수. 우리 코어 expandCardRegex 이식(살균·ReDoS·$n). ──
   const CLEAN_DISPLAY = new Set(['editdisplay', 'edit_display', 'display', 'editoutput', 'edit_output', 'output']);
   function cleanSanitizeOut(out) { return String(out).replace(/<\s*script\b[\s\S]*?<\s*\/\s*script\s*>/gi, '').replace(/<\s*\/?\s*(?:script|iframe|object|embed|link|meta|base)\b[^>]*>/gi, '').replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '').replace(/javascript:/gi, ''); }
@@ -414,6 +432,7 @@
       if (imageRules.length) body = cleanApply(body, imageRules);
       if ((hasReadImage || exp) && !noImages) body = await embedImagesInPlace(body, origForImg);
       else body = stripImageMarkers(body);   // 텍스트만(noImages): 이미지 마커 제거(기존 거동)
+      body = unwrapBgImageMarker(stripCbsControl(body)).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();   // ★모듈 CBS 조건문({{#if 최근3}})·배경이미지 div 래퍼 정리 — 글자로 새지 않게
       if (!body.trim()) continue;   // 텍스트·이미지 둘 다 없으면 건너뜀(이미지만 있으면 보냄)
       messages.push({ role: m.role === 'user' ? 'user' : 'char', text: body });
     }
@@ -621,5 +640,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.13.1');
+  console.info('[LogPapaPush] loaded v1.13.2');
 })();
