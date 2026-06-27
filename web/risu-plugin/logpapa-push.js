@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.15.0
+//@version 1.16.0
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 에셋(감정 이미지, 어떤 봇 문법이든) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -204,9 +204,9 @@
   function fmtInlayDiag(d) {
     const sc = d.sch || {};
     const parts = `blob${sc.blob || 0} data${sc.data || 0} http${sc.http || 0} asset${sc.asset || 0} rel${sc.rel || 0} etc${sc.other || 0}`;
-    const samp = (d.samples && d.samples.length) ? ' / 샘플 ' + d.samples.map((s) => '"' + s + '"').join(' ') : '';
+    const html = (d.outer && d.outer.length) ? ' / HTML ' + d.outer.map((s) => '«' + s + '»').join(' ') : '';
     const win = (d.byScheme && Object.keys(d.byScheme).length) ? ' ★바이트확보:' + Object.entries(d.byScheme).map(([k, v]) => k + '×' + v).join(',') : '';
-    return `[인레이실험] UUID ${d.uuid}·CARD ${d.card} / DOM ${d.dom}·img ${d.imgs} [${parts}]${samp} / 추출 fetch${d.fetchOk} native${d.nativeOk} read${d.readOk}${win}${d.note ? ' · ' + d.note : ''}`;
+    return `[인레이실험] UUID ${d.uuid}·CARD ${d.card} / DOM ${d.dom}·img ${d.imgs} [${parts}]${html} / 추출 fetch${d.fetchOk} native${d.nativeOk} read${d.readOk}${win}${d.note ? ' · ' + d.note : ''}`;
   }
   function schemeOf(src) {
     const s = String(src || ''); if (!s) return null;
@@ -218,7 +218,7 @@
     return 'other';
   }
   async function captureDomInlays() {
-    const d = { uuid: 0, card: 0, dom: 'none', imgs: 0, sch: { blob: 0, data: 0, http: 0, asset: 0, rel: 0, other: 0 }, samples: [], fetchOk: 0, nativeOk: 0, readOk: 0, byScheme: {}, note: '' };
+    const d = { uuid: 0, card: 0, dom: 'none', imgs: 0, sch: { blob: 0, data: 0, http: 0, asset: 0, rel: 0, other: 0 }, samples: [], outer: [], fetchOk: 0, nativeOk: 0, readOk: 0, byScheme: {}, note: '' };
     // 1) 라이브 챗 마커 수
     try {
       const { chat } = await getCurrentChat();
@@ -235,14 +235,19 @@
     try { const sa = await doc.querySelectorAll('img'); imgs = sa ? await safeArrayToList(sa) : []; } catch (_) {}
     d.imgs = imgs.length;
     const srcsBy = { blob: [], http: [], asset: [], rel: [], other: [] };
-    let outerN = 0;
+    let outerN = 0, ohCalls = 0;   // getOuterHTML는 비동기 브리지라 비싸 → 호출 수 상한(265장 전수 회피)
     for (const el of imgs) {
       let src = ''; try { src = await el.getAttribute('src'); } catch (_) {}
+      let oh = '';
+      const canOh = ohCalls < 50;
+      // ★src가 비면(lazy-load data-src 또는 getAttribute 제약) outerHTML에서 실제 URL 추출.
+      if ((!src || src.length < 3) && canOh) { ohCalls++; try { oh = String((await el.getOuterHTML()) || ''); } catch (_) {} const m = /(?:\bsrc|data-src|data-original|data-lazy-src|data-echo)\s*=\s*["']([^"']+)["']/i.exec(oh) || /\bsrcset\s*=\s*["']\s*([^"'\s,]+)/i.exec(oh); if (m) src = m[1]; }
+      // ★처음 몇 개 outerHTML을 무조건 샘플(빈 src여도) — 실제 마크업(src/data-src/class)을 본다.
+      if (outerN < 4) { outerN++; if (!oh && ohCalls < 50) { ohCalls++; try { oh = String((await el.getOuterHTML()) || ''); } catch (_) {} } if (oh && d.outer.length < 3) d.outer.push(oh.replace(/\s+/g, ' ').slice(0, 78)); try { if (oh) console.info('[LogPapaPush] img 샘플: ' + oh.slice(0, 300)); } catch (_) {} }
       const sc = schemeOf(src); if (!sc) continue;
       d.sch[sc] = (d.sch[sc] || 0) + 1;
       if (sc !== 'data' && srcsBy[sc] && srcsBy[sc].length < 8) srcsBy[sc].push(src);
       if (sc !== 'data' && d.samples.length < 3) d.samples.push(String(src).slice(0, 38));
-      if (sc !== 'data' && outerN < 3) { outerN++; try { console.info('[LogPapaPush] inlay img 샘플: ' + String(await el.getOuterHTML()).slice(0, 240)); } catch (_) {} }
     }
     // 4) 각 비-data 스킴 후보를 fetch/nativeFetch/readImage로 시도 → 어느 스킴·방법이 바이트를 주나(진단).
     const nativeFn = (typeof risu.nativeFetch === 'function') ? risu.nativeFetch : null;
@@ -694,5 +699,5 @@
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
   // ★인레이 실험 권한 사전획득 — 이전에 실험 켰던 사용자면 플러그인 로드 시(전체화면 전·메인화면)에 mainDom 권한 프롬프트를 미리 띄움(보이게·1회). 허용되면 영속.
   try { let on = false; try { on = localStorage.getItem('pro2-push-inlayexp') === '1'; } catch (_) {} if (on && typeof risu.getRootDocument === 'function') { Promise.resolve().then(() => risu.getRootDocument()).catch(() => {}); } } catch (_) {}
-  console.info('[LogPapaPush] loaded v1.15.0');
+  console.info('[LogPapaPush] loaded v1.16.0');
 })();
