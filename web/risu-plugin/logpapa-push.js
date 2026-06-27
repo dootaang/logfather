@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.16.0
+//@version 1.17.0
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 에셋(감정 이미지, 어떤 봇 문법이든) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -206,7 +206,7 @@
     const parts = `blob${sc.blob || 0} data${sc.data || 0} http${sc.http || 0} asset${sc.asset || 0} rel${sc.rel || 0} etc${sc.other || 0}`;
     const html = (d.outer && d.outer.length) ? ' / HTML ' + d.outer.map((s) => '«' + s + '»').join(' ') : '';
     const win = (d.byScheme && Object.keys(d.byScheme).length) ? ' ★바이트확보:' + Object.entries(d.byScheme).map(([k, v]) => k + '×' + v).join(',') : '';
-    return `[인레이실험] UUID ${d.uuid}·CARD ${d.card} / DOM ${d.dom}·img ${d.imgs} [${parts}]${html} / 추출 fetch${d.fetchOk} native${d.nativeOk} read${d.readOk}${win}${d.note ? ' · ' + d.note : ''}`;
+    return `[인레이실험] UUID ${d.uuid}·CARD ${d.card} / DOM ${d.dom}·img ${d.imgs}(인레이클래스 ${d.inlayN || 0}) [${parts}]${html} / 추출 fetch${d.fetchOk} native${d.nativeOk} read${d.readOk}${win}${d.note ? ' · ' + d.note : ''}`;
   }
   function schemeOf(src) {
     const s = String(src || ''); if (!s) return null;
@@ -217,8 +217,10 @@
     if (s[0] === '/' || s[0] === '.') return 'rel';
     return 'other';
   }
+  // ★asset.localhost URL → 디코드된 실제 파일경로(데스크탑 Tauri: readImage(경로)=파일읽기). 예 http://asset.localhost/C%3A%5C... → C:\...
+  function assetLocalPath(src) { const s = String(src || ''); const i = s.indexOf('asset.localhost/'); if (i < 0) return null; let p = s.slice(i + 16); const q = p.indexOf('?'); if (q >= 0) p = p.slice(0, q); try { return decodeURIComponent(p); } catch (_) { return p; } }
   async function captureDomInlays() {
-    const d = { uuid: 0, card: 0, dom: 'none', imgs: 0, sch: { blob: 0, data: 0, http: 0, asset: 0, rel: 0, other: 0 }, samples: [], outer: [], fetchOk: 0, nativeOk: 0, readOk: 0, byScheme: {}, note: '' };
+    const d = { uuid: 0, card: 0, dom: 'none', imgs: 0, inlayN: 0, sch: { blob: 0, data: 0, http: 0, asset: 0, rel: 0, other: 0 }, samples: [], outer: [], fetchOk: 0, nativeOk: 0, readOk: 0, byScheme: {}, note: '' };
     // 1) 라이브 챗 마커 수
     try {
       const { chat } = await getCurrentChat();
@@ -231,9 +233,11 @@
     if (!doc) { d.dom = 'null(mainDom 권한 미허용/모달 못봄 — 로드 시 권한창 떴으면 허용, 아니면 플러그인 닫고 재시도)'; return { diag: fmtInlayDiag(d), byOrder: [], detail: d }; }
     d.dom = (typeof doc.querySelectorAll === 'function') ? 'ok' : 'noQuery';
     // 3) 전 <img> 수집 → 스킴 분류 + 샘플 src + outerHTML(콘솔). ★blob 가정 폐기 — 실제 스킴을 본다.
-    let imgs = [];
+    let imgs = [], inlayImgs = [];
     try { const sa = await doc.querySelectorAll('img'); imgs = sa ? await safeArrayToList(sa) : []; } catch (_) {}
-    d.imgs = imgs.length;
+    try { const sa = await doc.querySelectorAll('.risu-inlay-image img, img.risu-inlay-image, [class*="inlay"] img'); inlayImgs = sa ? await safeArrayToList(sa) : []; } catch (_) {}
+    d.imgs = imgs.length; d.inlayN = inlayImgs.length;
+    imgs = inlayImgs.concat(imgs);   // ★인레이 후보 먼저 처리(샘플·추출 우선 — 진단이 인레이 마크업을 보게)
     const srcsBy = { blob: [], http: [], asset: [], rel: [], other: [] };
     let outerN = 0, ohCalls = 0;   // getOuterHTML는 비동기 브리지라 비싸 → 호출 수 상한(265장 전수 회피)
     for (const el of imgs) {
@@ -259,7 +263,7 @@
         if (u8) d.fetchOk++;
         if (!u8 && nativeFn) { u8 = await fetchBlobBytes(src, nativeFn); if (u8) { d.nativeOk++; method = 'native'; } }
         let du = u8 ? u8ToPngDataUrl(u8) : null;
-        if (!du && readFn && (sc === 'asset' || sc === 'rel' || sc === 'other')) { try { const raw = await withTimeout(Promise.resolve().then(() => readFn(src)), 5000, null); const r = imgSrcFrom(raw); if (r && r.indexOf('data:') === 0) { du = r; method = 'read'; d.readOk++; } } catch (_) {} }
+        if (!du && readFn && (sc === 'asset' || sc === 'rel' || sc === 'other')) { const path = (sc === 'asset') ? (assetLocalPath(src) || src) : src; try { const raw = await withTimeout(Promise.resolve().then(() => readFn(path)), 6000, null); const r = imgSrcFrom(raw); if (r && r.indexOf('data:') === 0) { du = r; method = 'read'; d.readOk++; } } catch (_) {} }
         if (du) { d.byScheme[sc] = (d.byScheme[sc] || 0) + 1; if (!winScheme) { winScheme = sc; winMethod = method; } }
       }
     }
@@ -268,7 +272,7 @@
     if (winScheme) {
       for (const src of srcsBy[winScheme]) {
         let du = null;
-        if (winMethod === 'read' && readFn) { try { du = imgSrcFrom(await withTimeout(Promise.resolve().then(() => readFn(src)), 5000, null)); } catch (_) {} }
+        if (winMethod === 'read' && readFn) { const path = (winScheme === 'asset') ? (assetLocalPath(src) || src) : src; try { du = imgSrcFrom(await withTimeout(Promise.resolve().then(() => readFn(path)), 6000, null)); } catch (_) {} }
         else { const u8 = await fetchBlobBytes(src, winMethod === 'native' ? nativeFn : fetch); if (u8) du = u8ToPngDataUrl(u8); }
         if (du && du.indexOf('data:') === 0) { try { byOrder.push(await shrinkImage(du, IMG_MAX_PX, false)); } catch (_) { byOrder.push(du); } }
         else byOrder.push(null);
@@ -699,5 +703,5 @@
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
   // ★인레이 실험 권한 사전획득 — 이전에 실험 켰던 사용자면 플러그인 로드 시(전체화면 전·메인화면)에 mainDom 권한 프롬프트를 미리 띄움(보이게·1회). 허용되면 영속.
   try { let on = false; try { on = localStorage.getItem('pro2-push-inlayexp') === '1'; } catch (_) {} if (on && typeof risu.getRootDocument === 'function') { Promise.resolve().then(() => risu.getRootDocument()).catch(() => {}); } } catch (_) {}
-  console.info('[LogPapaPush] loaded v1.16.0');
+  console.info('[LogPapaPush] loaded v1.17.0');
 })();
