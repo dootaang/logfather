@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.12.0
+//@version 1.13.0
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 에셋(감정 이미지, 어떤 봇 문법이든) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -174,6 +174,75 @@
     return src.startsWith('data:') ? await shrinkImage(src, 512, true) : src;
   }
 
+  // ── ★인레이 삽화 실험(v1.13.0·옵트인) — 모듈 generateImage 삽화 복구 시도 ──────────────────
+  //   모듈 삽화 바이트는 리스 inlayStorage(플러그인 차단 저장소)에만 있고, readImage는 forageStorage만 읽어 못 꺼낸다.
+  //   화면엔 <img src="blob:..."> 로 렌더됨 → 유일 경로 = DOM에서 그 blob URL의 바이트를 빼낸다.
+  //   getRootDocument는 async + mainDom 권한 → SafeDocument(querySelectorAll 등 전부 async). blob 바이트를 T1 fetch / T2 nativeFetch로 시도.
+  //   ★진단을 결과창에 한 줄로 출력 = 커뮤니티 1명 회신으로 "되나/뭐가 막히나" 판정(사장님은 콘솔 못 돌림). 무회귀(옵트인·실패해도 본 전송 그대로).
+  function u8ToPngDataUrl(u8) { let s = ''; const CH = 0x8000; for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH)); return 'data:image/png;base64,' + btoa(s); }
+  async function fetchBlobBytes(url, fn) {   // blob: URL → Uint8Array (fetch/nativeFetch 양쪽 응답 모양 관대 처리)
+    try {
+      const r = await fn(url);
+      let buf = null;
+      if (r && typeof r.arrayBuffer === 'function') buf = await r.arrayBuffer();
+      else if (r && r.data instanceof ArrayBuffer) buf = r.data;
+      else if (r && r.data && r.data.buffer instanceof ArrayBuffer) buf = r.data.buffer;
+      else if (r && typeof r.blob === 'function') { const b = await r.blob(); buf = await b.arrayBuffer(); }
+      if (!buf) return null;
+      const u8 = new Uint8Array(buf);
+      return u8.length > 8 ? u8 : null;
+    } catch (_) { return null; }
+  }
+  async function safeArrayToList(sa) {   // SafeClassArray<SafeElement> → [SafeElement] (length()/at(i) 모두 async)
+    const out = [];
+    try { const n = await sa.length(); for (let i = 0; i < n && i < 4000; i++) { try { out.push(await sa.at(i)); } catch (_) {} } } catch (_) {}
+    return out;
+  }
+  function fmtInlayDiag(d) { return `[인레이실험] UUID ${d.uuid}·CARD ${d.card} / DOM ${d.dom}·img ${d.imgs}(blob ${d.blob}·data ${d.dataimg}) / 추출 fetch✅${d.fetchOk}·native✅${d.nativeOk}${d.note ? ' · ' + d.note : ''}`; }
+  async function captureDomInlays() {
+    const d = { uuid: 0, card: 0, dom: 'none', imgs: 0, blob: 0, dataimg: 0, fetchOk: 0, nativeOk: 0, note: '' };
+    // 1) 라이브 챗 마커 수 (영속됐는지·몇 장인지)
+    try {
+      const { chat } = await getCurrentChat();
+      const all = (chat.message || []).map((m) => { if (!m) return ''; const sw = (Array.isArray(m.swipes) && m.swipes[m.swipeId ?? 0] != null) ? m.swipes[m.swipeId ?? 0] : m.data; return String(sw || ''); }).join('\n');
+      d.uuid = (all.match(/\{\{inlay(?:ed)?::[^}]+\}\}/gi) || []).length;
+      d.card = (all.match(/INLAY\[<CARD[^\]]*\]/gi) || []).length;
+    } catch (_) {}
+    // 2) DOM 접근 (★await 필수 + mainDom 권한 — 거부 시 null)
+    let doc = null; try { doc = await risu.getRootDocument(); } catch (_) { doc = null; }
+    if (!doc) { d.dom = 'null(mainDom 권한 거부/미지원)'; return { diag: fmtInlayDiag(d), byOrder: [], detail: d }; }
+    d.dom = (typeof doc.querySelectorAll === 'function') ? 'ok' : (typeof doc.getElementsByClassName === 'function' ? 'classOnly' : 'noQuery');
+    // 3) 렌더된 <img> 수집(등장 순서) → blob: = 인레이 삽화 후보
+    let imgs = [];
+    try {
+      let sa = null;
+      if (typeof doc.querySelectorAll === 'function') sa = await doc.querySelectorAll('img');
+      else if (typeof doc.getElementsByTagName === 'function') sa = await doc.getElementsByTagName('img');
+      if (sa) imgs = await safeArrayToList(sa);
+    } catch (_) {}
+    d.imgs = imgs.length;
+    const blobUrls = [];
+    for (const el of imgs) {
+      let src = ''; try { src = await el.getAttribute('src'); } catch (_) {}
+      if (!src) continue;
+      if (src.indexOf('blob:') === 0) { blobUrls.push(src); d.blob++; }
+      else if (src.indexOf('data:image') === 0) d.dataimg++;
+    }
+    if (!blobUrls.length) { if (d.imgs === 0) d.note = 'DOM에 img 0 — 챗 스크롤로 삽화 보이게 후 재시도'; else d.note = 'blob img 0 — 삽화 생성된 챗에서 해야 함'; return { diag: fmtInlayDiag(d), byOrder: [], detail: d }; }
+    // 4) blob 바이트 추출 — T1 fetch → 실패 시 T2 nativeFetch. 등장 순서대로 dataURL 생성(실패=null 슬롯).
+    const byOrder = [];
+    const nativeFn = (typeof risu.nativeFetch === 'function') ? risu.nativeFetch : null;
+    for (const url of blobUrls.slice(0, 80)) {
+      let u8 = await fetchBlobBytes(url, fetch);
+      if (u8) d.fetchOk++;
+      else if (nativeFn) { u8 = await fetchBlobBytes(url, nativeFn); if (u8) d.nativeOk++; }
+      if (u8) { try { byOrder.push(await shrinkImage(u8ToPngDataUrl(u8), IMG_MAX_PX, false)); } catch (_) { byOrder.push(null); } }
+      else byOrder.push(null);
+    }
+    if (!d.fetchOk && !d.nativeOk) d.note = 'blob 바이트 추출 전부 실패(샌드박스 벽) — 콘솔 로그 확인';
+    return { diag: fmtInlayDiag(d), byOrder, detail: d };
+  }
+
   // ── 인레이 모듈 빈 마커 INLAY[<CARDxx>] ─────────────────────────────────────────────────
   //   ★모듈 생성 삽화는 "생성한 사람"의 리스 런타임에만 있고 저장 데이터/플러그인 API로는 못 꺼낸다(검증됨:
   //   getRootDocument는 화면 DOM이 아니라 데이터 객체 — querySelectorAll 없음). 따라서 빈 마커는 복구 불가 →
@@ -257,6 +326,13 @@
     const cleanMode = opts.cleanMode || 'off';                 // 정리 방식: 'off' | 'A'(미리 정리) | 'B'(정규식 동봉)
     const budget = opts.noBudget ? Infinity : IMG_BUDGET;      // 다운로드(noBudget)=inbox 1MB 우회, 이미지 전량 포함
     const { char, chat } = await getCurrentChat();
+    // ★인레이 삽화 실험(옵트인): DOM에서 blob 이미지 바이트 추출을 1회 수행, byOrder를 인레이 마커에 등장 순서대로 채움. 진단 문자열은 결과창에.
+    let exp = null, inlayDiag = '';
+    if (opts.inlayExp && !noImages) {
+      try { const cap = await captureDomInlays(); inlayDiag = cap.diag || ''; let ci = 0; const bo = cap.byOrder || []; exp = { next: () => (ci < bo.length ? bo[ci++] : null) }; }
+      catch (e) { inlayDiag = '[인레이실험] 오류: ' + ((e && e.message) || e); }
+      try { console.info('[LogPapaPush] ' + inlayDiag); } catch (_) {}
+    }
     const raw = Array.isArray(chat.message) ? chat.message : [];
     const messages = []; let hit = 0, miss = 0, imgCount = 0, imgDropped = 0, imgBytes = 0;
     const assetByName = new Map();   // 캐릭터 에셋(이름→경로) 1회 구축
@@ -272,22 +348,31 @@
     //   번역본(body) 안의 마커를 그 자리에서 치환. 번역이 마커를 떼어내 본문에 없으면 끝에 보충(유실 0). 예산(imgBytes)은 삽화+에셋 공유 — 클로저로 누적.
     async function embedImagesInPlace(body, original) {
       let out = String(body || '');
-      // ── 삽화(inlay): id→dataURL 선해석(예산 한도) ──
-      const inlayUrl = {};   // id -> dataURL ('' = 실패/예산초과)
-      const wantIds = new Set([...extractInlayIds(out), ...extractInlayIds(original)]);
-      for (const id of wantIds) {
-        if (imgBytes >= budget) { imgDropped++; inlayUrl[id] = ''; continue; }
-        const du = await inlayDataUrl(id);
-        if (!du) { inlayUrl[id] = ''; continue; }
-        if (imgBytes + du.length > budget) { imgDropped++; inlayUrl[id] = ''; continue; }
-        imgBytes += du.length; imgCount++; inlayUrl[id] = du;
-      }
+      // ── 삽화(inlay) ──
+      const inlayUrl = {};   // id -> dataURL ('' = 실패/예산초과)  [비-실험 경로]
+      let wantIds = new Set();
       const placedInlay = new Set();
-      out = out.replace(/\{\{inlay(?:ed)?::\s*([^}|]+?)\s*\}\}/gi, (mm, id) => { const du = inlayUrl[String(id).trim()]; if (du) { placedInlay.add(du); return '\n\n<img src="' + du + '">\n\n'; } return ''; });
-      out = out.replace(/<lb-(?:xnai|lazy)\b[^>]*>([\s\S]*?)<\/lb-(?:xnai|lazy)>/gi, (mm, inner) => { for (const id of extractInlayIds(inner)) { const du = inlayUrl[id]; if (du) { placedInlay.add(du); return '\n\n<img src="' + du + '">\n\n'; } } return ''; });
-      out = out.replace(/<lb-(?:xnai|lazy)\b[^>]*\/>/gi, '');   // 자가닫는 모듈 태그(내부 id 없음) → 제거
-
-      out = out.replace(INLAY_CARD_RE, '');   // ★인레이 모듈 빈 마커 제거(이미지 복구 불가 — 글자로 새지 않게)
+      if (exp) {
+        // ★실험 모드: DOM에서 캡처한 blob 이미지(byOrder)를 인레이 마커에 등장 순서대로 치환.
+        //   모듈 INLAY[<CARDi>{{inlay::UUID}}] 래퍼는 통째로(내부 UUID 포함) 한 슬롯, 네이티브 {{inlay}}·lb 태그도 각 한 슬롯.
+        out = out.replace(INLAY_CARD_RE, () => { const du = exp.next(); if (du) { imgCount++; return '\n\n<img src="' + du + '">\n\n'; } return ''; });
+        out = out.replace(/\{\{inlay(?:ed)?::[^}]+\}\}/gi, () => { const du = exp.next(); if (du) { imgCount++; return '\n\n<img src="' + du + '">\n\n'; } return ''; });
+        out = out.replace(/<lb-(?:xnai|lazy)\b[^>]*>[\s\S]*?<\/lb-(?:xnai|lazy)>/gi, () => { const du = exp.next(); if (du) { imgCount++; return '\n\n<img src="' + du + '">\n\n'; } return ''; });
+        out = out.replace(/<lb-(?:xnai|lazy)\b[^>]*\/>/gi, '');
+      } else {
+        wantIds = new Set([...extractInlayIds(out), ...extractInlayIds(original)]);
+        for (const id of wantIds) {
+          if (imgBytes >= budget) { imgDropped++; inlayUrl[id] = ''; continue; }
+          const du = await inlayDataUrl(id);
+          if (!du) { inlayUrl[id] = ''; continue; }
+          if (imgBytes + du.length > budget) { imgDropped++; inlayUrl[id] = ''; continue; }
+          imgBytes += du.length; imgCount++; inlayUrl[id] = du;
+        }
+        out = out.replace(/\{\{inlay(?:ed)?::\s*([^}|]+?)\s*\}\}/gi, (mm, id) => { const du = inlayUrl[String(id).trim()]; if (du) { placedInlay.add(du); return '\n\n<img src="' + du + '">\n\n'; } return ''; });
+        out = out.replace(/<lb-(?:xnai|lazy)\b[^>]*>([\s\S]*?)<\/lb-(?:xnai|lazy)>/gi, (mm, inner) => { for (const id of extractInlayIds(inner)) { const du = inlayUrl[id]; if (du) { placedInlay.add(du); return '\n\n<img src="' + du + '">\n\n'; } } return ''; });
+        out = out.replace(/<lb-(?:xnai|lazy)\b[^>]*\/>/gi, '');
+        out = out.replace(INLAY_CARD_RE, '');   // ★빈 마커 제거(글자로 새지 않게)
+      }
 
       // ── 에셋(감정 스프라이트): 참조→{{img::표준이름}} 제자리. dataURL은 assets 맵에 1회만 ──
       for (const a of usedAssets(out + '\n' + original, assetByName)) {
@@ -329,7 +414,7 @@
       // ★customScript 이미지 정규화 — 어떤 봇 문법이든 표준 마커로(리스 표시와 정합). 멱등(이미 표준형이면 무동작).
       const origForImg = imageRules.length ? cleanApply(original, imageRules) : original;
       if (imageRules.length) body = cleanApply(body, imageRules);
-      if (hasReadImage && !noImages) body = await embedImagesInPlace(body, origForImg);
+      if ((hasReadImage || exp) && !noImages) body = await embedImagesInPlace(body, origForImg);
       else body = stripImageMarkers(body);   // 텍스트만(noImages): 이미지 마커 제거(기존 거동)
       if (!body.trim()) continue;   // 텍스트·이미지 둘 다 없으면 건너뜀(이미지만 있으면 보냄)
       messages.push({ role: m.role === 'user' ? 'user' : 'char', text: body });
@@ -338,7 +423,7 @@
     // ★챗 지문(fp) = 캐릭터명 + 첫 메시지 해시(이어가도 불변) → 보관 시 같은 챗 이어붙이기·중복 방지.
     const firstRaw = raw.find((m) => m && typeof m.data === 'string' && m.data.trim());
     const fp = fpHash(charName + '::' + ((firstRaw && firstRaw.data) || ''));
-    return { charName, messages, hit, miss, fp, imgCount, imgDropped, assets, cleanupRegex: cleanMode === 'B' ? cleanRules : null };
+    return { charName, messages, hit, miss, fp, imgCount, imgDropped, assets, cleanupRegex: cleanMode === 'B' ? cleanRules : null, inlayDiag };
   }
 
   // ── Firestore REST(타입 지정 본문)로 inbox에 create ───────────────
@@ -441,6 +526,8 @@
               <option value="A">미리 정리해서 보냄 (받는 곳에 깔끔히)</option>
               <option value="B">정규식 동봉 (리더에서 정리/원본 토글)</option>
             </select></label>
+          <label style="display:flex;align-items:center;gap:8px;margin:10px 0;cursor:pointer;font-size:14px;"><input type="checkbox" id="inlayExpChk" /> 인레이 삽화 실험 — 모듈이 생성한 삽화 가져오기 시도 (실험적)</label>
+          <div class="hint" id="inlayExpHint" style="display:none;margin-top:-4px;">삽화가 실제로 뜬 챗에서 켠 뒤 아래 <b>‘번역+이미지 JSON 내려받기’</b>를 누르세요(용량 제한 없이 진단이 확실히 떠요). 결과의 <b>진단 한 줄</b>을 복사해 회신해 주세요. 처음에 리스가 화면 접근 권한(mainDom)을 물으면 <b>허용</b>해 주세요(거부 시 진단에 “권한 거부”로 떠요).</div>
           <button class="btn btn-primary" id="sendBtn">${ic('send')} 이 세션 보내기</button>
           <div class="hint" style="margin-top:14px;">이미지가 많아 전송이 무겁거나 실패하면(받은편지함 1MB 한도) 아래로 받아 “채팅 가져오기”로 넣으세요 — 용량 제한 없이 삽화·에셋이 다 들어옵니다.</div>
           <button class="btn btn-primary" id="dlBtn" style="margin-top:8px;opacity:.9;">${ic('download')} 번역+이미지 JSON 내려받기</button>
@@ -455,6 +542,8 @@
       const i = type === 'progress' ? ic('loader', 'spin') : type === 'success' ? ic('check') : type === 'error' ? ic('alert') : ic('check');
       statusEl.className = `status ${type}`; statusEl.style.display = 'flex'; statusEl.innerHTML = i + '<span>' + msg + '</span>';
     };
+    // 인레이 실험 진단 — 결과창에 복사 가능한 한 줄(커뮤니티 회신용).
+    const diagHtml = (d) => d ? ('<br><br><b>인레이 실험 진단</b> — 아래 한 줄을 복사해 로그파파에 회신해 주세요:<br><code style="display:block;background:#18140f;border:1px solid #423626;border-radius:6px;padding:8px;font-size:11px;color:#d9c89a;word-break:break-all;margin-top:4px;">' + escapeHtml(d) + '</code>') : '';
     const keyInput = document.getElementById('keyInput');
     const keyWrap = document.getElementById('keyInputWrap');
     const keyDone = document.getElementById('keyConnected');
@@ -464,6 +553,12 @@
     const cleanSel = document.getElementById('cleanMode');   // 정리 방식(off/A/B) — 마지막 선택 기억
     try { cleanSel.value = localStorage.getItem('pro2-push-cleanmode') || 'off'; } catch (_) {}
     cleanSel.addEventListener('change', () => { try { localStorage.setItem('pro2-push-cleanmode', cleanSel.value); } catch (_) {} });
+    const inlayChk = document.getElementById('inlayExpChk');   // 인레이 실험 토글 — 상태 기억 + 힌트 표시
+    const inlayHint = document.getElementById('inlayExpHint');
+    try { inlayChk.checked = localStorage.getItem('pro2-push-inlayexp') === '1'; } catch (_) {}
+    const syncInlayHint = () => { inlayHint.style.display = inlayChk.checked ? 'block' : 'none'; };
+    syncInlayHint();
+    inlayChk.addEventListener('change', () => { try { localStorage.setItem('pro2-push-inlayexp', inlayChk.checked ? '1' : '0'); } catch (_) {} syncInlayHint(); });
 
     document.getElementById('closeBtn').addEventListener('click', async () => { await risu.hideContainer(); });
 
@@ -476,7 +571,8 @@
       setStatus('progress', '챗을 읽고 번역 캐시를 적용하는 중...');
       try {
         const noImages = document.getElementById('noImgChk').checked;
-        const { charName, messages, hit, miss, fp, imgCount, imgDropped, assets, cleanupRegex } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`), { noImages, cleanMode: cleanSel.value });
+        const inlayExp = document.getElementById('inlayExpChk').checked;
+        const { charName, messages, hit, miss, fp, imgCount, imgDropped, assets, cleanupRegex, inlayDiag } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`), { noImages, cleanMode: cleanSel.value, inlayExp });
         if (!messages.length) { setStatus('error', '보낼 메시지가 없습니다.'); btn.disabled = false; return; }
         if (messages.length > 5000) { setStatus('error', '메시지가 너무 많습니다(5000개 초과). 챗을 나눠 보내주세요.'); btn.disabled = false; return; }
         setStatus('progress', `로그파파로 보내는 중... (${messages.length}개)`);
@@ -484,6 +580,7 @@
         let okMsg = `보냈어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개, 캐시 ${hit} / 원문 ${miss}${imgCount ? ` · 이미지 ${imgCount}개` : ''})<br>로그파파 앱(서재)의 받은 로그함에서 보관하세요.`;
         if (imgDropped > 0) okMsg += `<br><br>이미지 ${imgDropped}개는 용량(1MB) 한도로 못 담았어요 — “이미지 JSON 내려받기”로 받으면 다 들어와요.`;
         if (miss > 0) okMsg += `<br><br>${hit === 0 ? '번역이 안 따라왔어요 — ' : '일부는 원문이에요 — '}리스에서 <b>LLM 번역기</b>로 번역한 챗만 따라와요(구글·DeepL은 플러그인용 캐시를 안 남깁니다). 또는 GigaTrans로 번역한 챗은 번역기와 무관하게 그대로 들어와요.`;
+        okMsg += diagHtml(inlayDiag);
         setStatus(hit === 0 && miss > 0 ? 'info' : 'success', okMsg);
       } catch (err) {
         setStatus('error', escapeHtml((err && err.message) || String(err)));
@@ -498,7 +595,8 @@
       setStatus('progress', '챗을 읽고 번역·이미지를 모으는 중...');
       try {
         const noImages = document.getElementById('noImgChk').checked;
-        const { charName, messages, imgCount, assets, cleanupRegex } = await buildMessages((c, t) => setStatus('progress', `모으는 중... ${c}/${t}`), { noImages, noBudget: true, cleanMode: cleanSel.value });
+        const inlayExp = document.getElementById('inlayExpChk').checked;
+        const { charName, messages, imgCount, assets, cleanupRegex, inlayDiag } = await buildMessages((c, t) => setStatus('progress', `모으는 중... ${c}/${t}`), { noImages, noBudget: true, cleanMode: cleanSel.value, inlayExp });
         if (!messages.length) { setStatus('error', '내려받을 메시지가 없습니다.'); dl.disabled = false; return; }
         const obj = { type: 'risuChat', ver: 1, data: { name: charName, message: messages.map((m) => ({ role: m.role, data: m.text })) }, assets };   // ★assets 맵 동봉(우리 import가 카드 스타일로 렌더)
         if (cleanupRegex && cleanupRegex.length) obj.cleanupRegex = cleanupRegex;   // ★(B) 정리 정규식 동봉 — 가져오기 시 리더가 비파괴 적용
@@ -508,7 +606,7 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a'); a.href = url; a.download = `${safe}_${iso}_chat.json`;
         document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
-        setStatus('success', `내려받았어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개${imgCount ? ` · 이미지 ${imgCount}장` : ''}).<br>로그파파 앱(서재)의 <b>채팅 가져오기</b>로 넣으면 삽화·에셋이 다 보여요(용량 제한 없음).`);
+        setStatus('success', `내려받았어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개${imgCount ? ` · 이미지 ${imgCount}장` : ''}).<br>로그파파 앱(서재)의 <b>채팅 가져오기</b>로 넣으면 삽화·에셋이 다 보여요(용량 제한 없음).` + diagHtml(inlayDiag));
       } catch (err) { setStatus('error', escapeHtml((err && err.message) || String(err))); }
       finally { dl.disabled = false; }
     });
@@ -525,5 +623,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.12.0');
+  console.info('[LogPapaPush] loaded v1.13.0');
 })();
