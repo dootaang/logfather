@@ -121,6 +121,30 @@ const FN = {
   hidden_key: () => '', hiddenkey: () => '', comment: () => '', position: () => '', random: () => '', roll: () => '',
 };
 FN['>'] = FN.greater; FN['<'] = FN.less; FN['>='] = FN.greaterequal; FN['<='] = FN.lessequal;
+// ── Phase 3: 패리티 확장(변수·배열·조건 인라인·기타) ──
+Object.assign(FN, {
+  // 변수(관대 — 메시지 내 setvar→getvar만; 챗 전역 상태/Lua는 없음)
+  getvar: (a, ctx) => (ctx.vars && ctx.vars[a[0]] != null ? String(ctx.vars[a[0]]) : ''),
+  gettempvar: (a, ctx) => (ctx.vars && ctx.vars[a[0]] != null ? String(ctx.vars[a[0]]) : ''),
+  getglobalvar: (a, ctx) => (ctx.vars && ctx.vars[a[0]] != null ? String(ctx.vars[a[0]]) : ''),
+  setvar: (a, ctx) => { if (ctx.vars) ctx.vars[a[0]] = a[1] != null ? a[1] : ''; return ''; },
+  settempvar: (a, ctx) => { if (ctx.vars) ctx.vars[a[0]] = a[1] != null ? a[1] : ''; return ''; },
+  setglobalvar: (a, ctx) => { if (ctx.vars) ctx.vars[a[0]] = a[1] != null ? a[1] : ''; return ''; },
+  hasvar: (a, ctx) => (ctx.vars && ctx.vars[a[0]] != null ? '1' : '0'),
+  // 조건 인라인
+  when: (a) => (truthy(a[0]) ? (a[1] != null ? a[1] : '') : (a[2] != null ? a[2] : '')),
+  iftrue: (a) => (truthy(a[0]) ? (a[1] != null ? a[1] : '') : ''),
+  // 배열/딕셔너리(관대 — JSON 우선)
+  split: (a) => { try { return JSON.stringify(String(a[0] || '').split(String(a[1] || ''))); } catch (_) { return ''; } },
+  join: (a) => { try { const arr = JSON.parse(a[0]); return Array.isArray(arr) ? arr.join(String(a[1] || '')) : String(a[0] || ''); } catch (_) { return String(a[0] || ''); } },
+  arraylength: (a) => { try { const arr = JSON.parse(a[0]); return String(Array.isArray(arr) ? arr.length : 0); } catch (_) { return '0'; } },
+  arrayelement: (a) => { try { const arr = JSON.parse(a[0]); const i = numify(a[1]) || 0; return Array.isArray(arr) && arr[i] != null ? String(arr[i]) : ''; } catch (_) { return ''; } },
+  element: (a) => FN.arrayelement(a),
+  makearray: (a) => { try { return JSON.stringify(a); } catch (_) { return '[]'; } },
+  spread: (a) => a.join('::'),
+  // 기타 미지원(관대 = 빈문자/안전 기본값)
+  model: () => '', axmodel: () => '', previouscharchat: () => '', previoususerchat: () => '', jbtoggled: () => '', isfirstmsg: () => '0', risuerror: () => '',
+});
 
 // 함수 이름 정규화(리스: lowercase + 공백/_/- 제거).
 function normName(name) { return String(name || '').toLocaleLowerCase().replace(/[\s_-]/g, ''); }
@@ -207,6 +231,7 @@ const PROT_OPEN = 'lpAStok', PROT_CLOSE = 'tokAEnd';
 //   여기선 CBS 조건문·계산·비교·변수·배경이미지 div만 해석(에셋 스타일 일관성 유지).
 function renderRisu(text, ctx) {
   ctx = ctx || {};
+  ctx.vars = ctx.vars || {};   // 메시지 내 setvar→getvar(관대)
   try {
     let s = String(text == null ? '' : text);
     s = s.replace(/<(user|char|bot)>/gi, '{{$1}}');   // 레거시 <user> 등

@@ -86,6 +86,15 @@ if (fs.existsSync(file)) {
   console.log('  (스킵 — 실파일 없음: ' + file + ')');
 }
 
+console.log('Phase 3 확장(변수/배열/조건):');
+eq(renderRisu('{{setvar::x::5}}{{getvar::x}}', ctx), '5', '메시지 내 setvar→getvar');
+eq(renderRisu('{{getvar::없음}}', ctx).trim(), '', '미설정 변수 → 빈문자(관대)');
+eq(renderRisu('{{when::1::참::거짓}}', ctx), '참', '{{when}} 참');
+eq(renderRisu('{{when::0::참::거짓}}', ctx), '거짓', '{{when}} 거짓');
+eq(renderRisu('{{join::["a","b","c"]::-}}', ctx), 'a-b-c', '{{join}}');
+eq(renderRisu('{{arraylength::[1,2,3,4]}}', ctx), '4', '{{arraylength}}');
+eq(renderRisu('{{#if {{hasvar::z}}}}있음{{:else}}없음{{/}}'.replace('z', 'none'), ctx).trim(), '있음', '관대: 조건 true 분기(hasvar)');
+
 console.log('통합: 모듈 표시규칙(expandCardRegex) → renderRisu:');
 try {
   const { expandCardRegex } = require('../convert/cardRegex.js');
