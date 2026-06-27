@@ -32,14 +32,17 @@ const ORIG_FIELDS = ['input', 'chat', 'diary', 'webnovel', 'cardCfg', 'userCardC
 const origRecord = (r: any) => Object.assign({ template: r.template, char: r.char, assets: r.assets, assetRefs: r.assetRefs }, r.orig || {});   // 원문 → rerenderLog용 임시 레코드(에셋 맵·참조 동반 → 원문/번역 토글에서도 에셋 보존)
 // ★가져온 에셋(마커 방식)을 모든 재렌더(정리·번역·토글·편집) 끝에 rec.assets로 되살림 — 마커 {{img::이름}}·CBS를 카드 스타일 <img>로(증발 방지).
 const ASSET_IMG_STYLE = { size: 100, margin: 10, useBorder: false, borderColor: '#000000', useShadow: true };
-function applyAssetMap(html: string, assets: any, charName?: string): string {
-  if (!assets || typeof assets !== 'object' || !Object.keys(assets).length) return html;
+function applyAssetMap(html: string, assets: any, charName?: string, displayRules?: any[]): string {
   let h = String(html || '');
+  const hasAssets = assets && typeof assets === 'object' && Object.keys(assets).length;
+  const hasRules = Array.isArray(displayRules) && displayRules.length;
+  if (!hasAssets && !hasRules) return h;   // 둘 다 없으면 무동작(우리 자가 로그·골든 무영향)
   try {
-    // ★리스 CBS/조건문/계산/배경이미지 div 충실 렌더(임포트 챗). 에셋 마커({{img::}})는 보존 → 아래 카드 스타일 해석기로.
-    //   리스 마커가 있을 때만 동작(없으면 무동작 = 우리 자가 로그·골든 무영향).
-    if (/\{\{|background-image\s*:\s*url|<(?:user|char|bot)>/i.test(h)) h = renderRisu(h, { charName, userName: '나', assets, inlays: {}, keepAssetMarkers: true });
-    h = resolveAssetCBS(h, assets); h = processImageTags(h, assets, ASSET_IMG_STYLE); h = resolveAssetMarkers(h, assets, ASSET_IMG_STYLE);
+    // ★모듈/캐릭터 표시규칙 항상 적용(리스처럼) — [hsPortrait:]·@hsTitle·⟦⟧ 등 모듈 DSL을 그 규칙대로 변환. 살균·ReDoS는 expandCardRegex가 보장.
+    if (hasRules) h = expandCardRegex(h, displayRules);
+    // ★리스 CBS/조건문/계산/배경이미지 div 충실 렌더. 에셋 마커({{img::}})는 보존 → 아래 카드 스타일 해석기로.
+    if (/\{\{|background-image\s*:\s*url|<(?:user|char|bot)>/i.test(h)) h = renderRisu(h, { charName, userName: '나', assets: assets || {}, inlays: {}, keepAssetMarkers: true });
+    if (hasAssets) { h = resolveAssetCBS(h, assets); h = processImageTags(h, assets, ASSET_IMG_STYLE); h = resolveAssetMarkers(h, assets, ASSET_IMG_STYLE); }
   } catch (_) {}
   return h;
 }
@@ -102,7 +105,7 @@ export function rerenderLog(rec: any, displayAssets?: Record<string, string>): s
   else if (t === 'custom-css') { s.userCardCss = String(rec.userCardCss || ''); input = String(rec.input || ''); }
   else input = String(rec.input || '');
   const assets = displayAssets !== undefined ? displayAssets : rec.assets;   // 표시=resolve된 맵 / 저장=undefined(마른 마커) / 옛 레코드=rec.assets(base64)
-  return applyAssetMap(convertText(input, s), assets, rec.char);   // ★표시 시에만 에셋 임베드 → 저장 html은 마름(용량·메모리 절약). 옛 레코드는 그대로 보존.
+  return applyAssetMap(convertText(input, s), assets, rec.char, rec.displayRules);   // ★표시 시에만 에셋 임베드 + 모듈 표시규칙 → 저장 html은 마름(용량·메모리 절약). 옛 레코드는 그대로 보존.
 }
 // 공유용 html — 내 입력(user 역할) 항목을 구조에서 빼고 재렌더(★rec.assets 재적용 = 에셋 보존). ★비파괴(복제만, 원본 r 불변).
 //   역할 구조가 있는 디자인(chat/card/webnovel)만 필터 가능 — 없으면(단일 input·custom-css) 원본 html 그대로 반환(안전).
@@ -127,7 +130,7 @@ export async function fattenShareHtml(r: any, hideUser: boolean): Promise<string
     const hasRole = (r.chat && Array.isArray(r.chat.messages) && r.chat.messages.length)
       || (r.cardCfg && Array.isArray(r.cardCfg.blocks) && r.cardCfg.blocks.length)
       || (r.webnovel && Array.isArray(r.webnovel.blocks) && r.webnovel.blocks.length);
-    if (!hasRole) h = applyAssetMap(String(r.html || ''), amap, r.char);   // 역할 구조 없으면 필터 불가 → 본문 임베드만
+    if (!hasRole) h = applyAssetMap(String(r.html || ''), amap, r.char, r.displayRules);   // 역할 구조 없으면 필터 불가 → 본문 임베드만
     else {
       const c = clonej(r);
       if (c.chat && Array.isArray(c.chat.messages)) c.chat.messages = c.chat.messages.filter((m: any) => m && m.role !== 'user');
@@ -136,7 +139,7 @@ export async function fattenShareHtml(r: any, hideUser: boolean): Promise<string
       h = rerenderLog(c, amap);
     }
   } else {
-    h = applyAssetMap(String(r.html || ''), amap, r.char);
+    h = applyAssetMap(String(r.html || ''), amap, r.char, r.displayRules);
   }
   return stripUnresolvedAssetImages(h);   // 공유본도 미해결 에셋명 <img> 숨김(받는 사람 화면 엑박 방지)
 }
@@ -493,7 +496,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     const showOrig = !!(hasOrig && origView[r.id]);
     const baseRec = showOrig ? origRecord(r) : r;
     // 표시용 본문: 마른 레코드는 amap(그 화 이미지)으로 임베드, 옛 레코드는 r.html 그대로(이미 임베드됨, amap=undefined → applyAssetMap 무동작).
-    const baseHtml = showOrig ? rerenderLog(origRecord(r), amap) : applyAssetMap(r.html, amap, r.char);
+    const baseHtml = showOrig ? rerenderLog(origRecord(r), amap) : applyAssetMap(r.html, amap, r.char, r.displayRules);
     let displayHtml = baseHtml; let cleanSeg: HTMLElement | null = null;
     const cRules = papa ? [] : cleanupRules().concat(perLogCleanup(r));   // 관리실 글로벌 + per-log(가져온 챗 동봉) 정리 규칙 합성 (파파는 미적용)
     if (cRules.length && cleanupChanges(baseRec, cRules)) {

@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.13.2
+//@version 1.14.0
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 에셋(감정 이미지, 어떤 봇 문법이든) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -336,6 +336,22 @@
     return out;
   }
 
+  // ★표시규칙 동봉(리스 렌더엔진 이식) — 리더가 [hsPortrait]·@hsTitle·⟦⟧ 등 모듈 DSL을 그 규칙대로 충실 렌더하게.
+  //   char.customscript editdisplay(권한 불필요) + 활성 모듈 regex(getDatabase, ★모듈 DSL 있는 챗에서만 호출=권한 프롬프트 최소화).
+  const DISPLAY_TYPES = new Set(['editdisplay', 'edit_display', 'display']);
+  async function collectDisplayRules(char, wantModules) {
+    const out = []; const seen = new Set();
+    const add = (arr) => { if (!Array.isArray(arr)) return; for (const r of arr) { if (out.length >= 2000) return; if (!r || typeof r.in !== 'string' || typeof r.out !== 'string') continue; const type = r.type || 'editdisplay'; if (!DISPLAY_TYPES.has(type)) continue; const key = r.in + '' + r.out; if (seen.has(key)) continue; seen.add(key); out.push({ in: r.in, out: cleanSanitizeOut(r.out), type, flags: r.flag || r.flags || '' }); } };
+    try { add(char && char.customscript); } catch (_) {}
+    if (wantModules) {
+      try {
+        const db = await withTimeout(Promise.resolve().then(() => (typeof risu.getDatabase === 'function' ? risu.getDatabase(['modules']) : null)), 8000, null);
+        if (db && Array.isArray(db.modules)) for (const mo of db.modules) { if (mo) add(mo.regex || mo.regexScript); }
+      } catch (_) {}
+    }
+    return out;
+  }
+
   async function buildMessages(onProgress, opts) {
     opts = opts || {};
     const noImages = !!opts.noImages;                          // 토글: 이미지(삽화·에셋) 빼고 텍스트만
@@ -359,6 +375,8 @@
     const assets = {};   // 쓰인 에셋 dataURL 맵(이름→dataURL) — 푸시/다운로드 본체에 동봉, 우리 import가 카드 스타일로 렌더(블록 임베드 X)
     const cleanRules = (cleanMode !== 'off') ? collectCleanupRegex(char) : [];   // editdisplay 정리 규칙(A 적용·B 동봉용) 1회 수집
     const imageRules = !noImages ? collectImageRules(char) : [];   // ★봇 customScript 이미지 변환 규칙(어떤 문법이든 표준 마커로) 1회 수집
+    const wantModuleRules = raw.some((m) => m && typeof m.data === 'string' && /\[[A-Za-z]\w*\s*:|@[A-Za-z]\w*\s*:|⟦/.test(m.data));   // 모듈 DSL 흔적 있을 때만 모듈 규칙 수집(권한 프롬프트 최소화)
+    const displayRules = await collectDisplayRules(char, wantModuleRules);   // ★모듈/캐릭터 표시규칙 동봉 — 리더가 항상 적용(리스처럼 [hsPortrait] 등 렌더)
 
     // ★이미지 제자리 심기 — 원래 위치 보존(끝에 몰지 않음). 삽화=인라인 <img src="dataURL">, 에셋→{{img::이름}}(dataURL은 assets 맵).
     //   번역본(body) 안의 마커를 그 자리에서 치환. 번역이 마커를 떼어내 본문에 없으면 끝에 보충(유실 0). 예산(imgBytes)은 삽화+에셋 공유 — 클로저로 누적.
@@ -440,7 +458,7 @@
     // ★챗 지문(fp) = 캐릭터명 + 첫 메시지 해시(이어가도 불변) → 보관 시 같은 챗 이어붙이기·중복 방지.
     const firstRaw = raw.find((m) => m && typeof m.data === 'string' && m.data.trim());
     const fp = fpHash(charName + '::' + ((firstRaw && firstRaw.data) || ''));
-    return { charName, messages, hit, miss, fp, imgCount, imgDropped, assets, cleanupRegex: cleanMode === 'B' ? cleanRules : null, inlayDiag };
+    return { charName, messages, hit, miss, fp, imgCount, imgDropped, assets, cleanupRegex: cleanMode === 'B' ? cleanRules : null, displayRules: displayRules.length ? displayRules : null, inlayDiag };
   }
 
   // ── Firestore REST(타입 지정 본문)로 inbox에 create ───────────────
@@ -456,7 +474,7 @@
   function regexArrayValue(rules) {   // [{in,out,type,flags}] → Firestore arrayValue(mapValue)
     return { arrayValue: { values: (rules || []).map((r) => ({ mapValue: { fields: { in: { stringValue: String(r.in || '') }, out: { stringValue: String(r.out || '') }, type: { stringValue: String(r.type || 'editdisplay') }, flags: { stringValue: String(r.flags || '') } } } })) } };
   }
-  async function postInbox(uid, secret, charName, messages, translated, fp, assets, cleanupRegex) {
+  async function postInbox(uid, secret, charName, messages, translated, fp, assets, cleanupRegex, displayRules) {
     const body = { fields: {
       uid: { stringValue: uid },
       key: { stringValue: secret },
@@ -469,6 +487,7 @@
     } };
     if (assets && Object.keys(assets).length) body.fields.assets = assetsMapValue(assets);   // ★쓰인 에셋(이름→dataURL) — import가 카드 스타일로 렌더
     if (cleanupRegex && cleanupRegex.length) body.fields.cleanupRegex = regexArrayValue(cleanupRegex);   // ★(B) 정리 정규식 동봉 — 리더가 살균·비파괴 적용
+    if (displayRules && displayRules.length) body.fields.displayRules = regexArrayValue(displayRules);   // ★모듈/캐릭터 표시규칙 동봉 — 리더가 항상 적용(리스처럼)
     const fetchFn = (typeof risu.nativeFetch === 'function') ? risu.nativeFetch : fetch;   // CORS 우회(데스크탑/탑) 위해 nativeFetch 우선
     let res;
     try { res = await fetchFn(INBOX_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
@@ -589,11 +608,11 @@
       try {
         const noImages = document.getElementById('noImgChk').checked;
         const inlayExp = document.getElementById('inlayExpChk').checked;
-        const { charName, messages, hit, miss, fp, imgCount, imgDropped, assets, cleanupRegex, inlayDiag } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`), { noImages, cleanMode: cleanSel.value, inlayExp });
+        const { charName, messages, hit, miss, fp, imgCount, imgDropped, assets, cleanupRegex, displayRules, inlayDiag } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`), { noImages, cleanMode: cleanSel.value, inlayExp });
         if (!messages.length) { setStatus('error', '보낼 메시지가 없습니다.'); btn.disabled = false; return; }
         if (messages.length > 5000) { setStatus('error', '메시지가 너무 많습니다(5000개 초과). 챗을 나눠 보내주세요.'); btn.disabled = false; return; }
         setStatus('progress', `로그파파로 보내는 중... (${messages.length}개)`);
-        await postInbox(parsed.uid, parsed.secret, charName, messages, hit > 0, fp, assets, cleanupRegex);
+        await postInbox(parsed.uid, parsed.secret, charName, messages, hit > 0, fp, assets, cleanupRegex, displayRules);
         let okMsg = `보냈어요 — <b>${escapeHtml(charName)}</b> (${messages.length}개, 캐시 ${hit} / 원문 ${miss}${imgCount ? ` · 이미지 ${imgCount}개` : ''})<br>로그파파 앱(서재)의 받은 로그함에서 보관하세요.`;
         if (imgDropped > 0) okMsg += `<br><br>이미지 ${imgDropped}개는 용량(1MB) 한도로 못 담았어요 — “이미지 JSON 내려받기”로 받으면 다 들어와요.`;
         if (miss > 0) okMsg += `<br><br>${hit === 0 ? '번역이 안 따라왔어요 — ' : '일부는 원문이에요 — '}리스에서 <b>LLM 번역기</b>로 번역한 챗만 따라와요(구글·DeepL은 플러그인용 캐시를 안 남깁니다). 또는 GigaTrans로 번역한 챗은 번역기와 무관하게 그대로 들어와요.`;
@@ -613,10 +632,11 @@
       try {
         const noImages = document.getElementById('noImgChk').checked;
         const inlayExp = document.getElementById('inlayExpChk').checked;
-        const { charName, messages, imgCount, assets, cleanupRegex, inlayDiag } = await buildMessages((c, t) => setStatus('progress', `모으는 중... ${c}/${t}`), { noImages, noBudget: true, cleanMode: cleanSel.value, inlayExp });
+        const { charName, messages, imgCount, assets, cleanupRegex, displayRules, inlayDiag } = await buildMessages((c, t) => setStatus('progress', `모으는 중... ${c}/${t}`), { noImages, noBudget: true, cleanMode: cleanSel.value, inlayExp });
         if (!messages.length) { setStatus('error', '내려받을 메시지가 없습니다.'); dl.disabled = false; return; }
         const obj = { type: 'risuChat', ver: 1, data: { name: charName, message: messages.map((m) => ({ role: m.role, data: m.text })) }, assets };   // ★assets 맵 동봉(우리 import가 카드 스타일로 렌더)
         if (cleanupRegex && cleanupRegex.length) obj.cleanupRegex = cleanupRegex;   // ★(B) 정리 정규식 동봉 — 가져오기 시 리더가 비파괴 적용
+        if (displayRules && displayRules.length) obj.displayRules = displayRules;   // ★모듈/캐릭터 표시규칙 동봉 — 리더가 항상 적용(리스처럼 모듈 DSL 렌더)
         const iso = new Date().toISOString().replace(/[:.]/g, '-');
         const safe = (String(charName).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || '로그');
         const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
@@ -640,5 +660,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.13.2');
+  console.info('[LogPapaPush] loaded v1.14.0');
 })();

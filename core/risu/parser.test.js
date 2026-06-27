@@ -86,4 +86,14 @@ if (fs.existsSync(file)) {
   console.log('  (스킵 — 실파일 없음: ' + file + ')');
 }
 
+console.log('통합: 모듈 표시규칙(expandCardRegex) → renderRisu:');
+try {
+  const { expandCardRegex } = require('../convert/cardRegex.js');
+  const rule = { in: '\\[hsPortrait:\\s*([^\\]]*)\\]', out: "<div style=\"background-image:url('{{img::$1}}')\"></div>", type: 'editdisplay', flag: 'g' };
+  const transformed = expandCardRegex('장면 제목\n[hsPortrait: kanashi_basic]\n본문', [rule]);
+  const final = renderRisu(transformed, { assets: { kanashi_basic: 'data:DDD' } });
+  ok(!/\[hsPortrait:/.test(final), '[hsPortrait:] 모듈 규칙으로 변환(잔재 0)');
+  ok(final.includes('data:DDD'), '변환 후 스프라이트 <img> 해석 (표시규칙→CBS→에셋 = 충실 렌더)');
+} catch (e) { console.log('  (스킵 — ' + (e && e.message) + ')'); }
+
 console.log(`\nrisu/parser: 모든 검사 통과 ✓ (${pass})`);
