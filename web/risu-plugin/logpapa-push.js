@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.13.0
+//@version 1.13.1
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 에셋(감정 이미지, 어떤 봇 문법이든) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -179,10 +179,13 @@
   //   화면엔 <img src="blob:..."> 로 렌더됨 → 유일 경로 = DOM에서 그 blob URL의 바이트를 빼낸다.
   //   getRootDocument는 async + mainDom 권한 → SafeDocument(querySelectorAll 등 전부 async). blob 바이트를 T1 fetch / T2 nativeFetch로 시도.
   //   ★진단을 결과창에 한 줄로 출력 = 커뮤니티 1명 회신으로 "되나/뭐가 막히나" 판정(사장님은 콘솔 못 돌림). 무회귀(옵트인·실패해도 본 전송 그대로).
+  // ★어떤 await도 영영 멈추지 않게(권한 프롬프트·느린 DOM 브리지·blob fetch 행). 시간 초과 시 fallback 반환.
+  function withTimeout(p, ms, fb) { let t; const timer = new Promise((res) => { t = setTimeout(() => res(fb), ms); }); return Promise.race([Promise.resolve(p).then((v) => { clearTimeout(t); return v; }, () => { clearTimeout(t); return fb; }), timer]); }
   function u8ToPngDataUrl(u8) { let s = ''; const CH = 0x8000; for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH)); return 'data:image/png;base64,' + btoa(s); }
   async function fetchBlobBytes(url, fn) {   // blob: URL → Uint8Array (fetch/nativeFetch 양쪽 응답 모양 관대 처리)
     try {
-      const r = await fn(url);
+      const r = await withTimeout(Promise.resolve().then(() => fn(url)), 5000, null);
+      if (!r) return null;
       let buf = null;
       if (r && typeof r.arrayBuffer === 'function') buf = await r.arrayBuffer();
       else if (r && r.data instanceof ArrayBuffer) buf = r.data;
@@ -208,31 +211,26 @@
       d.uuid = (all.match(/\{\{inlay(?:ed)?::[^}]+\}\}/gi) || []).length;
       d.card = (all.match(/INLAY\[<CARD[^\]]*\]/gi) || []).length;
     } catch (_) {}
-    // 2) DOM 접근 (★await 필수 + mainDom 권한 — 거부 시 null)
-    let doc = null; try { doc = await risu.getRootDocument(); } catch (_) { doc = null; }
-    if (!doc) { d.dom = 'null(mainDom 권한 거부/미지원)'; return { diag: fmtInlayDiag(d), byOrder: [], detail: d }; }
+    // 2) DOM 접근 (★await 필수 + mainDom 권한 — 권한 프롬프트가 전체화면 뒤에 가려 행될 수 있어 8s 타임아웃)
+    let doc = null; try { doc = await withTimeout(Promise.resolve().then(() => risu.getRootDocument()), 8000, null); } catch (_) { doc = null; }
+    if (!doc) { d.dom = 'null/타임아웃(mainDom 권한 미허용 — 리스가 화면접근 권한 물으면 허용 후 재시도)'; return { diag: fmtInlayDiag(d), byOrder: [], detail: d }; }
     d.dom = (typeof doc.querySelectorAll === 'function') ? 'ok' : (typeof doc.getElementsByClassName === 'function' ? 'classOnly' : 'noQuery');
-    // 3) 렌더된 <img> 수집(등장 순서) → blob: = 인레이 삽화 후보
-    let imgs = [];
-    try {
-      let sa = null;
-      if (typeof doc.querySelectorAll === 'function') sa = await doc.querySelectorAll('img');
-      else if (typeof doc.getElementsByTagName === 'function') sa = await doc.getElementsByTagName('img');
-      if (sa) imgs = await safeArrayToList(sa);
-    } catch (_) {}
-    d.imgs = imgs.length;
+    // 3) <img> 통계 + blob/data 분리 — ★속성 셀렉터로 직접(수백 장 1개씩 비동기 순회 회피 = 멈춘 것처럼 보이던 것 방지)
+    const countSel = async (sel) => { try { const sa = await doc.querySelectorAll(sel); return sa ? (await sa.length()) : 0; } catch (_) { return 0; } };
+    d.imgs = await countSel('img');
+    d.dataimg = await countSel('img[src^="data:"]');
     const blobUrls = [];
-    for (const el of imgs) {
-      let src = ''; try { src = await el.getAttribute('src'); } catch (_) {}
-      if (!src) continue;
-      if (src.indexOf('blob:') === 0) { blobUrls.push(src); d.blob++; }
-      else if (src.indexOf('data:image') === 0) d.dataimg++;
-    }
-    if (!blobUrls.length) { if (d.imgs === 0) d.note = 'DOM에 img 0 — 챗 스크롤로 삽화 보이게 후 재시도'; else d.note = 'blob img 0 — 삽화 생성된 챗에서 해야 함'; return { diag: fmtInlayDiag(d), byOrder: [], detail: d }; }
+    try {
+      const sa = await doc.querySelectorAll('img[src^="blob:"]');
+      const list = sa ? await safeArrayToList(sa) : [];
+      for (const el of list) { let src = ''; try { src = await el.getAttribute('src'); } catch (_) {} if (src && src.indexOf('blob:') === 0) blobUrls.push(src); }
+    } catch (_) {}
+    d.blob = blobUrls.length;
+    if (!blobUrls.length) { d.note = d.imgs === 0 ? 'DOM에 img 0 — 챗 스크롤로 삽화 보이게 후 재시도' : 'blob img 0 — 삽화 생성된 챗에서 해야 함(또는 mainDom 권한)'; return { diag: fmtInlayDiag(d), byOrder: [], detail: d }; }
     // 4) blob 바이트 추출 — T1 fetch → 실패 시 T2 nativeFetch. 등장 순서대로 dataURL 생성(실패=null 슬롯).
     const byOrder = [];
     const nativeFn = (typeof risu.nativeFetch === 'function') ? risu.nativeFetch : null;
-    for (const url of blobUrls.slice(0, 80)) {
+    for (const url of blobUrls.slice(0, 24)) {
       let u8 = await fetchBlobBytes(url, fetch);
       if (u8) d.fetchOk++;
       else if (nativeFn) { u8 = await fetchBlobBytes(url, nativeFn); if (u8) d.nativeOk++; }
@@ -329,7 +327,7 @@
     // ★인레이 삽화 실험(옵트인): DOM에서 blob 이미지 바이트 추출을 1회 수행, byOrder를 인레이 마커에 등장 순서대로 채움. 진단 문자열은 결과창에.
     let exp = null, inlayDiag = '';
     if (opts.inlayExp && !noImages) {
-      try { const cap = await captureDomInlays(); inlayDiag = cap.diag || ''; let ci = 0; const bo = cap.byOrder || []; exp = { next: () => (ci < bo.length ? bo[ci++] : null) }; }
+      try { const cap = await withTimeout(captureDomInlays(), 30000, { diag: '[인레이실험] 타임아웃 30s — 건너뜀(mainDom 권한 미허용 가능). 권한 허용 후 재시도.', byOrder: [] }); inlayDiag = cap.diag || ''; let ci = 0; const bo = cap.byOrder || []; exp = { next: () => (ci < bo.length ? bo[ci++] : null) }; }
       catch (e) { inlayDiag = '[인레이실험] 오류: ' + ((e && e.message) || e); }
       try { console.info('[LogPapaPush] ' + inlayDiag); } catch (_) {}
     }
@@ -623,5 +621,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  console.info('[LogPapaPush] loaded v1.13.0');
+  console.info('[LogPapaPush] loaded v1.13.1');
 })();
