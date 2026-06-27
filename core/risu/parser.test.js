@@ -57,6 +57,11 @@ console.log('절대 throw 안 함:');
 eq(renderRisu(null, ctx), '', 'null 입력 안전');
 ok(typeof renderRisu('{{#if {{#if', ctx) === 'string', '깨진 입력도 문자열 반환');
 
+console.log('keepAssetMarkers 모드(리더 통합용 — 에셋 마커는 보존, CBS만 처리):');
+eq(renderRisu('{{#if 0}}{{img::x}}{{/}}', { assets: { x: 'D' }, keepAssetMarkers: true }).trim(), '{{img::x}}', '조건문 처리 + 에셋 마커 보존');
+eq(renderRisu('{{img::kanashi_basic.png}} {{upper::ab}}', { assets: { 'kanashi_basic.png': 'D' }, keepAssetMarkers: true }), '{{img::kanashi_basic.png}} AB', '에셋 보존 + 인라인 함수 해석');
+ok(!/background-image/.test(renderRisu(`<div style="background-image:url('{{img::x}}')"></div>`, { assets: { x: 'D' }, keepAssetMarkers: true })), 'bg-image div → 마커(보존모드도 언랩)');
+
 // ── 실파일 회귀: 조교 챗(플러그인 출력) — {{#if}}·background-image·{{img:: 잔재 0, <img> 생김 ──
 console.log('실파일 회귀(조교 챗):');
 const file = path.join(__dirname, '..', '..', '캐릭터파일', '조교 아카데미에 어서오세요_2026-06-27T06-23-31-085Z_chat.json');

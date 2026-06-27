@@ -52,7 +52,7 @@ function calcString(input) {
     while (i < s.length && !/[-+*/%()<>=\s]/.test(s[i])) i++;
     return 0;
   }
-  try { const r = parseExpr(); return (typeof r === 'number' && isFinite(r)) ? (Number.isInteger(r) ? String(r) : String(r)) : '0'; }
+  try { const r = parseExpr(); return (typeof r === 'number' && isFinite(r)) ? String(r) : '0'; }
   catch (_) { return '0'; }
 }
 
@@ -72,7 +72,6 @@ function lookupAsset(map, name) {
   if (map[lower] != null) return map[lower];
   const noext = lower.replace(/\.[a-z0-9]+$/i, '');
   if (map[noext] != null) return map[noext];
-  // 맵 키를 소문자/무확장자로 매칭
   for (const k of Object.keys(map)) { const kl = k.toLowerCase(); if (kl === lower || kl.replace(/\.[a-z0-9]+$/i, '') === noext) return map[k]; }
   return null;
 }
@@ -80,39 +79,32 @@ function imgTag(url, name) { return url ? `<img src="${url}" alt="${esc(name || 
 
 // ── 인라인 {{func::args}} 함수 테이블 ── (ctx = {index,total,role,charName,userName,assets,inlays,vars})
 const FN = {
-  // 자기참조/역할
   char: (a, ctx) => ctx.charName || 'Character', bot: (a, ctx) => ctx.charName || 'Character',
   user: (a, ctx) => ctx.userName || 'User', persona: (a, ctx) => ctx.userName || 'User',
   role: (a, ctx) => ctx.role || '',
   chatindex: (a, ctx) => String(ctx.index != null ? ctx.index : ''),
   messagecount: (a, ctx) => String(ctx.total != null ? ctx.total : ''),
   lastmessageid: (a, ctx) => String(ctx.total != null ? ctx.total - 1 : ''), lastcharmessageid: (a, ctx) => String(ctx.total != null ? ctx.total - 1 : ''),
-  // 에셋(이미지)
   img: (a, ctx) => imgTag(lookupAsset(ctx.assets, a[0]), a[0]), image: (a, ctx) => imgTag(lookupAsset(ctx.assets, a[0]), a[0]),
   raw: (a, ctx) => imgTag(lookupAsset(ctx.assets, a[0]), a[0]), path: (a, ctx) => imgTag(lookupAsset(ctx.assets, a[0]), a[0]),
   emotion: (a, ctx) => imgTag(lookupAsset(ctx.assets, a[0]), a[0]), asset: (a, ctx) => imgTag(lookupAsset(ctx.assets, a[0]), a[0]),
   source: (a, ctx) => { const u = lookupAsset(ctx.assets, a[0]); return u || ''; }, bg: (a, ctx) => imgTag(lookupAsset(ctx.assets, a[0]), a[0]),
-  // 영상/음성
   video: (a, ctx) => { const u = lookupAsset(ctx.assets, a[0]); return u ? `<video controls style="max-width:100%;"><source src="${u}"></video>` : ''; },
   'video-img': (a, ctx) => imgTag(lookupAsset(ctx.assets, a[0]), a[0]),
   audio: (a, ctx) => { const u = lookupAsset(ctx.assets, a[0]); return u ? `<audio controls><source src="${u}"></audio>` : ''; },
   bgm: (a, ctx) => { const u = lookupAsset(ctx.assets, a[0]); return u ? `<audio controls><source src="${u}"></audio>` : ''; },
-  // 인레이(생성/첨부 이미지)
   inlay: (a, ctx) => imgTag(lookupAsset(ctx.inlays, a[0]), a[0]), inlayed: (a, ctx) => imgTag(lookupAsset(ctx.inlays, a[0]), a[0]), inlayeddata: (a, ctx) => imgTag(lookupAsset(ctx.inlays, a[0]), a[0]),
-  // 비교/논리 (인라인)
   equal: (a) => (String(a[0]) === String(a[1]) ? '1' : '0'), is: (a) => (String(a[0]) === String(a[1]) ? '1' : '0'),
   notequal: (a) => (String(a[0]) !== String(a[1]) ? '1' : '0'), isnot: (a) => (String(a[0]) !== String(a[1]) ? '1' : '0'),
   greater: (a) => (cmp(a[0], a[1]) > 0 ? '1' : '0'), greaterequal: (a) => (cmp(a[0], a[1]) >= 0 ? '1' : '0'),
   less: (a) => (cmp(a[0], a[1]) < 0 ? '1' : '0'), lessequal: (a) => (cmp(a[0], a[1]) <= 0 ? '1' : '0'),
   and: (a) => (a.every(truthy) ? '1' : '0'), or: (a) => (a.some(truthy) ? '1' : '0'), not: (a) => (truthy(a[0]) ? '0' : '1'),
   all: (a) => (a.every(truthy) ? '1' : '0'), any: (a) => (a.some(truthy) ? '1' : '0'),
-  // 계산
   calc: (a) => calcString(a.join('::')), pow: (a) => String(Math.pow(numify(a[0]) || 0, numify(a[1]) || 0)),
   remaind: (a) => { const y = numify(a[1]) || 0; return String(y ? (numify(a[0]) || 0) % y : 0); },
   min: (a) => String(Math.min(...a.map((x) => numify(x) || 0))), max: (a) => String(Math.max(...a.map((x) => numify(x) || 0))),
   abs: (a) => String(Math.abs(numify(a[0]) || 0)), round: (a) => String(Math.round(numify(a[0]) || 0)),
   floor: (a) => String(Math.floor(numify(a[0]) || 0)), ceil: (a) => String(Math.ceil(numify(a[0]) || 0)),
-  // 문자열
   upper: (a) => String(a[0] || '').toUpperCase(), lower: (a) => String(a[0] || '').toLowerCase(),
   capitalize: (a) => { const s = String(a[0] || ''); return s.charAt(0).toUpperCase() + s.slice(1); },
   trim: (a) => String(a[0] || '').trim(), length: (a) => String(String(a[0] || '').length),
@@ -124,14 +116,10 @@ const FN = {
   slice: (a) => String(a[0] || '').slice(numify(a[1]) || 0, a[2] != null ? numify(a[2]) : undefined),
   substring: (a) => String(a[0] || '').substring(numify(a[1]) || 0, a[2] != null ? numify(a[2]) : undefined),
   tonumber: (a) => { const n = String(a[0] || '').replace(/[^0-9.\-]/g, ''); return n || '0'; },
-  // 공백/줄바꿈/빈값
   br: () => '\n', newline: () => '\n', space: () => ' ', tab: () => '\t', blank: () => '', none: () => '', nothing: () => '',
-  // 날짜(보관 시점 무의미 → 빈문자, 관대)
   datetimeformat: () => '', date: () => '', time: () => '', datetime: () => '', isodate: () => '', unixtime: () => '',
-  // 무해 무시(변수·내부)
   hidden_key: () => '', hiddenkey: () => '', comment: () => '', position: () => '', random: () => '', roll: () => '',
 };
-// 비교 연산자 이름(케이스 라벨 '>','<','>=','<=','is','isnot') 별칭
 FN['>'] = FN.greater; FN['<'] = FN.less; FN['>='] = FN.greaterequal; FN['<='] = FN.lessequal;
 
 // 함수 이름 정규화(리스: lowercase + 공백/_/- 제거).
@@ -140,10 +128,7 @@ function normName(name) { return String(name || '').toLocaleLowerCase().replace(
 // 단일 {{...}} 내용 평가 → 문자열. 미지/실패 = null(호출부가 관대 처리).
 function evalToken(inner, ctx) {
   const p1 = String(inner);
-  if (p1.startsWith('? ') || p1.startsWith('?')) { // {{? expr}} 계산
-    const sub = p1.replace(/^\?\s*/, ''); return calcString(sub);
-  }
-  // :: 우선, 없으면 : 로 분리(리스와 동일)
+  if (p1.startsWith('?')) { const sub = p1.replace(/^\?\s*/, ''); return calcString(sub); }   // {{? expr}} 계산
   let splited;
   const ci = p1.indexOf(':');
   if (ci !== -1 && p1[ci + 1] === ':') splited = p1.split('::');
@@ -151,9 +136,9 @@ function evalToken(inner, ctx) {
   else splited = [p1];
   const name = normName(splited[0]);
   const args = splited.slice(1);
-  const fn = FN[name] || FN[splited[0]]; // 정규화/원형 둘 다
+  const fn = FN[name] || FN[splited[0]];
   if (fn) { try { const r = fn(args, ctx); return r == null ? '' : String(r); } catch (_) { return ''; } }
-  return null; // 미지 함수
+  return null;   // 미지 함수
 }
 
 // 인라인 {{func}} 안쪽부터 바깥으로 반복 치환. 블록 토큰(#,:,/)은 건드리지 않음.
@@ -162,12 +147,10 @@ function evalInline(text, ctx) {
   let guard = 0;
   for (;;) {
     if (guard++ > 10000) break;
-    // 가장 안쪽 {{...}} (내부에 {{ 없음) 1개 찾기
     const m = /\{\{(?!\s*[#:/])([^{}]*?)\}\}/.exec(s);
     if (!m) break;
-    const inner = m[1];
-    const val = evalToken(inner, ctx);
-    const replacement = (val == null) ? '' : val; // 미지 함수 = 제거(관대·잔재 0)
+    const val = evalToken(m[1], ctx);
+    const replacement = (val == null) ? '' : val;   // 미지 함수 = 제거(관대·잔재 0)
     s = s.slice(0, m.index) + replacement + s.slice(m.index + m[0].length);
   }
   return s;
@@ -181,12 +164,9 @@ function expandBlocks(text, ctx) {
     if (guard++ > 5000) break;
     const open = /\{\{(#[a-z_-]*|:[a-z_-]+)\b[^}]*\}\}/i.exec(s);
     if (!open) break;
-    if (open[1][0] === ':') { // 떠도는 {{:else}} 등 — 제거
-      s = s.slice(0, open.index) + s.slice(open.index + open[0].length); continue;
-    }
-    // 매칭되는 {{/}} / {{/if}} 찾기(중첩 카운트)
+    if (open[1][0] === ':') { s = s.slice(0, open.index) + s.slice(open.index + open[0].length); continue; }   // 떠도는 {{:else}} 제거
     const startContent = open.index + open[0].length;
-    let depth = 1, j = startContent, closeStart = -1, closeEnd = -1;
+    let depth = 1, closeStart = -1, closeEnd = -1;
     const re = /\{\{(#[a-z_-]*\b[^}]*|\/[a-z]*)\}\}/gi; re.lastIndex = startContent;
     let t;
     while ((t = re.exec(s))) {
@@ -194,18 +174,15 @@ function expandBlocks(text, ctx) {
       else { depth--; if (depth === 0) { closeStart = t.index; closeEnd = t.index + t[0].length; break; } }
     }
     let body;
-    if (closeStart === -1) { body = s.slice(startContent); closeStart = s.length; closeEnd = s.length; } // 닫힘 없음 = 끝까지
+    if (closeStart === -1) { body = s.slice(startContent); closeStart = s.length; closeEnd = s.length; }   // 닫힘 없음 = 끝까지
     else body = s.slice(startContent, closeStart);
-    // :else 가 있으면 true 분기만(else 버림) — 관대
     const elseM = /\{\{:else\}\}/i.exec(body);
-    if (elseM) body = body.slice(0, elseM.index);
-    // #each 의 {{slot::x}} 잔재 제거(반복 미수행·1회 본문)
-    body = body.replace(/\{\{slot::[^}]*\}\}/gi, '');
+    if (elseM) body = body.slice(0, elseM.index);   // :else 분기 버림(중복 방지)
+    body = body.replace(/\{\{slot::[^}]*\}\}/gi, '');   // #each {{slot::x}} 잔재 제거(1회 본문)
     s = s.slice(0, open.index) + body + s.slice(closeEnd);
   }
-  // 레거시 {#if val\ncontent#}
-  s = s.replace(/\{#\s*if\s+([^\n#]*)\n([\s\S]*?)#\}/gi, (mm, val, content) => content);
-  s = s.replace(/\{#[\s\S]*?#\}/g, ''); // 기타 레거시 블록 제거
+  s = s.replace(/\{#\s*if\s+([^\n#]*)\n([\s\S]*?)#\}/gi, (mm, val, content) => content);   // 레거시 {#if val\ncontent#}
+  s = s.replace(/\{#[\s\S]*?#\}/g, '');
   return s;
 }
 
@@ -214,22 +191,32 @@ function unwrapBgImage(s) {
   return String(s == null ? '' : s)
     .replace(/<(\w+)\b[^>]*background-image\s*:\s*url\(\s*['"]?\s*([^'")]+?)\s*['"]?\s*\)[^>]*>(?:\s*<\/\1>)?/gi, (mm, tag, inner) => {
       const v = inner.trim();
-      if (/^\{\{/.test(v)) return '\n\n' + v + '\n\n'; // {{img::}} 마커 → 그대로(아래 파서가 해석)
+      if (/^\{\{/.test(v)) return '\n\n' + v + '\n\n';
       if (/^(data:|https?:|\/\/)/i.test(v)) return '\n\n<img src="' + v + '" style="max-width:100%;">\n\n';
       return '\n\n' + v + '\n\n';
     });
 }
 
+// 에셋/인레이 함수 마커(보존 모드에서 다운스트림 카드 스타일 해석기에 위임).
+const ASSET_FN_RE = /\{\{(?:img|image|raw|path|emotion|asset|source|bg|bgm|video|audio|inlay|inlayed)::[^{}]*?\}\}/gi;
+// 충돌 0 센티넬(순수 ASCII·정규식 특수문자 없음·실텍스트 출현 극히 희박).
+const PROT_OPEN = 'lpAStok', PROT_CLOSE = 'tokAEnd';
+
 // ── 메인: RisuAI 마커가 든 텍스트를 렌더(관대). 절대 throw 안 함(원본 폴백). ──
+//   ctx.keepAssetMarkers=true → 에셋 마커({{img::}} 등)는 보존(리더가 기존 카드 스타일 해석기로 처리),
+//   여기선 CBS 조건문·계산·비교·변수·배경이미지 div만 해석(에셋 스타일 일관성 유지).
 function renderRisu(text, ctx) {
   ctx = ctx || {};
   try {
     let s = String(text == null ? '' : text);
     s = s.replace(/<(user|char|bot)>/gi, '{{$1}}');   // 레거시 <user> 등
     s = unwrapBgImage(s);                              // 배경이미지 div → 마커/이미지
-    s = evalInline(s, ctx);                            // {{func}} 안쪽부터(에셋→<img>, 비교/계산/변수)
+    let prot = null;
+    if (ctx.keepAssetMarkers) { prot = []; s = s.replace(ASSET_FN_RE, (mm) => { prot.push(mm); return PROT_OPEN + (prot.length - 1) + PROT_CLOSE; }); }
+    s = evalInline(s, ctx);                           // {{func}} 안쪽부터(비교/계산/변수; 에셋은 보존모드면 placeholder)
     s = expandBlocks(s, ctx);                          // {{#if}}..{{/}} 관대(true 분기)
     s = evalInline(s, ctx);                            // 블록이 드러낸 잔여 {{func}} 한 번 더
+    if (prot) s = s.replace(new RegExp(PROT_OPEN + '(\\d+)' + PROT_CLOSE, 'g'), (mm, n) => (prot[+n] != null ? prot[+n] : ''));   // 에셋 마커 복원
     s = s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
     return s;
   } catch (_) { return String(text == null ? '' : text); }
