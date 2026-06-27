@@ -1,7 +1,7 @@
 //@api 3.0
 //@name LogPapaPush
 //@display-name 로그파파로 보내기
-//@version 1.17.0
+//@version 1.18.0
 //@description 현재 채팅 세션을 번역 캐시 적용본 + 에셋(감정 이미지, 어떤 봇 문법이든) + 자동 정리(군더더기)까지 로그파파 서재에 바로 보냅니다(파일 export 없이).
 //@arg connectKey string
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -603,8 +603,6 @@
               <option value="A">미리 정리해서 보냄 (받는 곳에 깔끔히)</option>
               <option value="B">정규식 동봉 (리더에서 정리/원본 토글)</option>
             </select></label>
-          <label style="display:flex;align-items:center;gap:8px;margin:10px 0;cursor:pointer;font-size:14px;"><input type="checkbox" id="inlayExpChk" /> 인레이 삽화 실험 — 모듈이 생성한 삽화 가져오기 시도 (실험적)</label>
-          <div class="hint" id="inlayExpHint" style="display:none;margin-top:-4px;">삽화가 실제로 뜬 챗에서 켜세요. ★켠 뒤 <b>리스를 새로고침</b>하면 메인 화면에 <b>‘화면 접근(mainDom)’ 권한 창</b>이 떠요 — 꼭 <b>허용</b>하세요(이게 핵심. 놓치면 진단에 ‘DOM null’). 그 다음 이 창에서 <b>‘번역+이미지 JSON 내려받기’</b> → 뜨는 <b>진단 한 줄</b>을 복사해 회신해 주세요.</div>
           <button class="btn btn-primary" id="sendBtn">${ic('send')} 이 세션 보내기</button>
           <div class="hint" style="margin-top:14px;">이미지가 많아 전송이 무겁거나 실패하면(받은편지함 1MB 한도) 아래로 받아 “채팅 가져오기”로 넣으세요 — 용량 제한 없이 삽화·에셋이 다 들어옵니다.</div>
           <button class="btn btn-primary" id="dlBtn" style="margin-top:8px;opacity:.9;">${ic('download')} 번역+이미지 JSON 내려받기</button>
@@ -630,12 +628,6 @@
     const cleanSel = document.getElementById('cleanMode');   // 정리 방식(off/A/B) — 마지막 선택 기억
     try { cleanSel.value = localStorage.getItem('pro2-push-cleanmode') || 'off'; } catch (_) {}
     cleanSel.addEventListener('change', () => { try { localStorage.setItem('pro2-push-cleanmode', cleanSel.value); } catch (_) {} });
-    const inlayChk = document.getElementById('inlayExpChk');   // 인레이 실험 토글 — 상태 기억 + 힌트 표시
-    const inlayHint = document.getElementById('inlayExpHint');
-    try { inlayChk.checked = localStorage.getItem('pro2-push-inlayexp') === '1'; } catch (_) {}
-    const syncInlayHint = () => { inlayHint.style.display = inlayChk.checked ? 'block' : 'none'; };
-    syncInlayHint();
-    inlayChk.addEventListener('change', () => { try { localStorage.setItem('pro2-push-inlayexp', inlayChk.checked ? '1' : '0'); } catch (_) {} syncInlayHint(); });
 
     document.getElementById('closeBtn').addEventListener('click', async () => { await risu.hideContainer(); });
 
@@ -648,7 +640,7 @@
       setStatus('progress', '챗을 읽고 번역 캐시를 적용하는 중...');
       try {
         const noImages = document.getElementById('noImgChk').checked;
-        const inlayExp = document.getElementById('inlayExpChk').checked;
+        const inlayExp = false;   // 인레이 실험 종결(플러그인으론 blob 삽화 바이트 불가 — 증명됨). 비활성.
         const { charName, messages, hit, miss, fp, imgCount, imgDropped, assets, cleanupRegex, displayRules, inlayDiag } = await buildMessages((c, t) => setStatus('progress', `번역 캐시 적용 중... ${c}/${t}`), { noImages, cleanMode: cleanSel.value, inlayExp });
         if (!messages.length) { setStatus('error', '보낼 메시지가 없습니다.'); btn.disabled = false; return; }
         if (messages.length > 5000) { setStatus('error', '메시지가 너무 많습니다(5000개 초과). 챗을 나눠 보내주세요.'); btn.disabled = false; return; }
@@ -672,7 +664,7 @@
       setStatus('progress', '챗을 읽고 번역·이미지를 모으는 중...');
       try {
         const noImages = document.getElementById('noImgChk').checked;
-        const inlayExp = document.getElementById('inlayExpChk').checked;
+        const inlayExp = false;   // 인레이 실험 종결(플러그인으론 blob 삽화 바이트 불가 — 증명됨). 비활성.
         const { charName, messages, imgCount, assets, cleanupRegex, displayRules, inlayDiag } = await buildMessages((c, t) => setStatus('progress', `모으는 중... ${c}/${t}`), { noImages, noBudget: true, cleanMode: cleanSel.value, inlayExp });
         if (!messages.length) { setStatus('error', '내려받을 메시지가 없습니다.'); dl.disabled = false; return; }
         const obj = { type: 'risuChat', ver: 1, data: { name: charName, message: messages.map((m) => ({ role: m.role, data: m.text })) }, assets };   // ★assets 맵 동봉(우리 import가 카드 스타일로 렌더)
@@ -701,7 +693,5 @@
   );
 
   await risu.onUnload(async () => { console.log('[LogPapaPush] Unloaded.'); });
-  // ★인레이 실험 권한 사전획득 — 이전에 실험 켰던 사용자면 플러그인 로드 시(전체화면 전·메인화면)에 mainDom 권한 프롬프트를 미리 띄움(보이게·1회). 허용되면 영속.
-  try { let on = false; try { on = localStorage.getItem('pro2-push-inlayexp') === '1'; } catch (_) {} if (on && typeof risu.getRootDocument === 'function') { Promise.resolve().then(() => risu.getRootDocument()).catch(() => {}); } } catch (_) {}
-  console.info('[LogPapaPush] loaded v1.17.0');
+  console.info('[LogPapaPush] loaded v1.18.0');
 })();
