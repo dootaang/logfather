@@ -264,7 +264,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       hideChk.onchange = () => { try { localStorage.setItem('pro2-share-hideuser', hideChk.checked ? '1' : '0'); } catch (_) {} };
       hideWrap.append(hideChk, document.createTextNode(' 내 입력 가리기 (공유본에서 내 메시지 빼기 — 내 서재는 그대로)'));
       pop.appendChild(hideWrap);
-      const shareRec = async () => Object.assign({}, r, { html: await fattenShareHtml(r, hideChk.checked), hideUser: hideChk.checked });   // ★공유본은 이미지 임베드(받는 사람은 로컬 블롭 없음)
+      const shareRec = async () => Object.assign({}, r, { charName: r.workName || ctx.nameOf(r.char) || r.char, html: await fattenShareHtml(r, hideChk.checked), hideUser: hideChk.checked });   // ★공유본은 이미지 임베드(받는 사람은 로컬 블롭 없음) + 작품 표시이름 동봉(내부 키 wk_… 노출 방지)
       if (r.shareId) {
         pop.appendChild(mk('div', 'share-note', '이 링크를 받은 사람은 로그인 없이 이 화를 볼 수 있습니다 (이미지 포함). 이미지는 공유용으로 축소된 화질입니다.'));
         const row = document.createElement('div'); row.className = 'share-link-row';

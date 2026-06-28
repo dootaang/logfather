@@ -472,13 +472,13 @@ async function doShareSeries(s: any, pop: HTMLElement, redraw: () => void, makeB
   if (makeBtn) { makeBtn.disabled = true; makeBtn.textContent = '만드는 중…'; }
   try {
     const S = await loadShare();
-    const episodes = await Promise.all(s.eps.map(async (e: any) => ({ char: s.char, title: e.title, date: e.date, html: await fattenShareHtml(e, !!hideUser), hideUser: !!hideUser })));   // ★공유본: 이미지 임베드(마른 레코드 복원) + 내 입력 가리기(원본 불변)
+    const episodes = await Promise.all(s.eps.map(async (e: any) => ({ char: s.char, charName: s.name, title: e.title, date: e.date, html: await fattenShareHtml(e, !!hideUser), hideUser: !!hideUser })));   // ★공유본: 이미지 임베드(마른 레코드 복원) + 내 입력 가리기(원본 불변) + 작품 표시이름(charName) 동봉
     // 표지·소개도 함께 공유 → 공유 열람 화면이 작품 페이지처럼 보임.
     let cm: any = {}; try { cm = (await metaGet(s.char)) || {}; } catch (_) {}
     let cover = cm.cover || s.cover || '';
     if (cover) { try { cover = await downscaleDataUrl(cover, 480); } catch (_) {} }   // 인덱스 문서 가볍게(JPEG 480px)
     const desc = (cm.desc != null && String(cm.desc).trim() !== '') ? String(cm.desc) : (previewLine(s.eps[0]) || '');
-    const res = await S.createSeriesShare(s.char, s.char, episodes, (i: number, n: number) => { if (note) note.textContent = `만드는 중… (${i + 1}/${n}화)`; }, { cover, desc });
+    const res = await S.createSeriesShare(s.name, s.name, episodes, (i: number, n: number) => { if (note) note.textContent = `만드는 중… (${i + 1}/${n}화)`; }, { cover, desc });   // ★s.name = 풀린 작품 표시이름(meta.name→workName→폴백). 받는 사람 화면에 코드(wk_…) 대신 이름이 뜸.
     if (prev) { try { await S.deleteSeriesShare(prev); } catch (_) {} }   // 옛 공유 정리(갱신)
     setSeriesShareId(s.char, res.id);
     try { await navigator.clipboard.writeText(shareUrlFor(res.id)); setStatus(`작품 공유 링크를 복사했습니다 (${res.count}화${res.failed ? `, ${res.failed}화는 이미지가 많아 제외` : ''}).`); }

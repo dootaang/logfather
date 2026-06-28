@@ -39,7 +39,8 @@ export async function createShare(rec: any, shareId?: string): Promise<string> {
   if (!u) throw new Error('로그인이 필요합니다.');
   const id = shareId || newShareId();
   const raw = String(rec.html || '');
-  const base: any = { owner: u.uid, char: String(rec.char || ''), title: String(rec.title || ''), date: String(rec.date || ''), createdAt: Date.now() };
+  // ★char = 받는 사람에게 보이는 작품 "이름"만 저장(내부 키 wk_…는 절대 안 올림). 호출부가 풀어준 charName 우선, 없으면 workName(가져올 때 저장된 표시이름), 그래도 없으면 char(옛 작품은 char가 이름이기도 함).
+  const base: any = { owner: u.uid, char: String(rec.charName || rec.workName || rec.char || ''), title: String(rec.title || ''), date: String(rec.date || ''), createdAt: Date.now() };
   if (rec.template === 'papa') base.template = 'papa';   // ★파파모드 공유 = 받는 쪽 리더가 Shadow DOM 격리로 그 디자인 그대로 렌더(살균된 <style>·svg 보존)
   if (rec.hideUser) base.hideUser = true;   // ★내 입력 가린 공유본 표식(팝오버 기억·"내용 갱신" 유지). 내 원본 로그는 불변.
   const fits = (h: string) => byteLen(JSON.stringify(Object.assign({}, base, { html: h }))) <= MAX;
@@ -90,7 +91,8 @@ export async function createSeriesShare(char: string, title: string, episodes: a
   if (!eps.length) throw new Error('공유할 수 있는 화가 없습니다 (이미지가 너무 많을 수 있어요).');
   const id = newShareId();
   // 인덱스 문서에 표지·소개를 함께 담아 공유 열람 화면이 작품 페이지처럼 보이게 한다.
-  const data: any = { type: 'series', owner: u.uid, char: String(char || ''), title: String(title || char || ''), eps, createdAt: Date.now() };
+  // ★char/charName = 작품 표시이름(받는 사람 화면 제목). 호출부가 풀어준 이름을 넘겨줌(내부 키 wk_… 아님).
+  const data: any = { type: 'series', owner: u.uid, char: String(char || ''), charName: String(char || ''), title: String(title || char || ''), eps, createdAt: Date.now() };
   if (meta && meta.desc) data.desc = String(meta.desc);
   if (meta && meta.cover) data.cover = String(meta.cover);
   // 표지(이미지)까지 넣어 1MB를 넘으면 표지만 빼고 저장(목록은 살린다).

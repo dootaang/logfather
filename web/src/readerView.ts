@@ -345,6 +345,20 @@ function shareNotFound() {
   const scroll = mk('div', 'reader-scroll'); const col = mk('div', 'reader-col');
   col.appendChild(mk('div', 'reader-card', '공유를 찾을 수 없습니다. (삭제되었거나 잘못된 링크예요.)')); scroll.appendChild(col); reader.appendChild(scroll); app().appendChild(reader);
 }
+// 공유 문서의 작품 표시이름 — 새 공유=charName(또는 이름이 담긴 char). ★옛 공유는 char에 내부 키(wk_…)가 박혀 있어 절대 노출 안 함.
+const WK_KEY_RE = /^wk_[a-z0-9]+$/i;
+function shareWorkName(d: any): string {
+  const n = d && d.charName ? String(d.charName).trim() : '';
+  if (n && !WK_KEY_RE.test(n)) return n;
+  const c = d && d.char ? String(d.char).trim() : '';
+  return (c && !WK_KEY_RE.test(c)) ? c : '';
+}
+// 옛 공유는 title에도 키가 들어가 있을 수 있어(작품 통째 공유) 키면 버린다.
+function shareTitleSafe(d: any): string {
+  const t = d && d.title ? String(d.title).trim() : '';
+  return (t && !WK_KEY_RE.test(t)) ? t : '';
+}
+
 // #/share/:id — 단일 화면 또는 작품(시리즈) 인덱스. rerender = 이 라우트 다시 그리기(읽기방식 토글용).
 export async function renderShare(id: string, rerender: () => void) {
   shareLoading();
@@ -352,25 +366,27 @@ export async function renderShare(id: string, rerender: () => void) {
   try { const S = await loadShare(); data = await S.getShare(id); } catch (_) {}
   if (!data) { shareNotFound(); return; }
   if (data.type === 'series') { renderSharedSeries(id, data); return; }
-  shareReaderView({ titleText: (data.title || '공유된 로그') + (data.char ? ' · ' + data.char : ''), html: data.html || '', backLabel: '← 서재', onBack: () => { location.href = 'library.html'; }, rerender, papa: data.template === 'papa' });
+  const cn = shareWorkName(data);
+  shareReaderView({ titleText: (data.title || '공유된 로그') + (cn ? ' · ' + cn : ''), html: data.html || '', backLabel: '← 서재', onBack: () => { location.href = 'library.html'; }, rerender, papa: data.template === 'papa' });
 }
 function renderSharedSeries(id: string, data: any) {
   const eps: any[] = data.eps || [];
   const readIdx = shareProgress(id);
+  const workName = shareWorkName(data) || shareTitleSafe(data) || '공유된 작품';   // ★코드(wk_…) 대신 항상 사람이 읽는 이름(옛 공유도 키는 버림)
   app().innerHTML = '';
   const wrap = mk('div', 'series');
   const bar = mk('div', 'reader-bar');
   const back = mk('button', 'reader-back', '← 서재'); back.onclick = () => { location.href = 'library.html'; };
-  bar.append(back, mk('div', 'reader-title', (data.title || data.char || '공유된 작품')));
+  bar.append(back, mk('div', 'reader-title', workName));
   const mine = mk('button', 'reader-iconbtn'); mine.innerHTML = icon('pencil') + ' 나도 만들기'; mine.onclick = () => { location.href = 'index.html'; };
   bar.append(mine); wrap.appendChild(bar);
   const scroll = mk('div', 'series-scroll');
   const hero = mk('div', 'series-hero');
   const cover = mk('div', 'series-cover');
   if (data.cover) { const im = document.createElement('img'); im.src = data.cover; cover.appendChild(im); }
-  else cover.textContent = String(data.char || data.title || '?').slice(0, 2);
+  else cover.textContent = (workName === '공유된 작품' ? '?' : workName).slice(0, 2);
   const info = mk('div', 'series-info');
-  info.append(mk('h1', 'series-name', String(data.char || data.title || '공유된 작품')));
+  info.append(mk('h1', 'series-name', workName));
   info.append(mk('div', 'series-meta', `총 ${eps.length}화` + (data.date ? ` · ${data.date}` : '')));
   if (data.desc) info.append(mk('div', 'series-intro', String(data.desc)));
   const actions = mk('div', 'series-actions');
@@ -414,7 +430,7 @@ export async function renderSharedSeriesEp(id: string, n: number, rerender: () =
   setShareProgress(id, n);
   const eps = series.eps;
   shareReaderView({
-    titleText: `${n + 1}화 · ${ep.title || series.title || ''}`,
+    titleText: `${n + 1}화 · ${ep.title || shareWorkName(series) || shareTitleSafe(series) || ''}`,
     html: ep.html || '',
     backLabel: '← 목록', onBack: () => { location.hash = '#/share/' + encodeURIComponent(id); },
     prevHash: n > 0 ? '#/share/' + encodeURIComponent(id) + '/' + (n - 1) : null,
