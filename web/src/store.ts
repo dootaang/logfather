@@ -156,6 +156,14 @@ export async function blobsGet(hashes: Iterable<string>): Promise<Map<string, { 
 //   ★온디맨드: 리더가 그 화를 표시할 때, 그 화에 필요한데 로컬에 없는 해시만 받는다(다기기 이미지 보존 + 메모리 바운드).
 let _blobCloudFetch: ((hashes: string[]) => Promise<void>) | null = null;
 export function setBlobCloudFetcher(fn: ((hashes: string[]) => Promise<void>) | null) { _blobCloudFetch = fn; }
+// 공유 에셋 업로더 훅 — 로그인 시 firebaseBackend가 등록. assetRefs(name→hash) → name→Storage 다운로드 URL.
+//   ★공유 이미지를 Firestore 인라인(1MB 한도) 대신 Storage로: 화 문서엔 URL만 남아 대용량 작품도 전 화 공유 가능. 콘텐츠해시 중복제거(재공유 캐시).
+let _shareAssetUploader: ((refs: Record<string, string>) => Promise<Record<string, string>>) | null = null;
+export function setShareAssetUploader(fn: ((refs: Record<string, string>) => Promise<Record<string, string>>) | null) { _shareAssetUploader = fn; }
+export async function resolveAssetShareUrls(refs: Record<string, string>): Promise<Record<string, string>> {
+  if (!_shareAssetUploader || !refs || typeof refs !== 'object') return {};
+  try { return (await _shareAssetUploader(refs)) || {}; } catch (_) { return {}; }
+}
 // 외부(클라우드 다운로드)에서 받은 블롭을 IDB_BLOBS에 한 벌 저장.
 export async function blobsPutRaw(items: Array<{ h: string; mime: string; b64: string }>): Promise<void> {
   const list = (items || []).filter((b) => b && b.h && b.b64);
@@ -282,7 +290,7 @@ let backendKind = 'local';
 /** 현재 백엔드 종류('local' | 'firebase' …). */
 export function getBackendKind(): string { return backendKind; }
 /** 로그인/로그아웃 시 백엔드 교체. FirebaseBackend는 LocalBackend와 같은 메서드 모양을 구현한다. */
-export function setBackend(b: any, kind: string) { backend = b || LocalBackend; backendKind = b ? (kind || 'custom') : 'local'; if (backendKind !== 'firebase') _blobCloudFetch = null; }   // 로컬 복귀(로그아웃)면 클라우드 블롭 패처 해제
+export function setBackend(b: any, kind: string) { backend = b || LocalBackend; backendKind = b ? (kind || 'custom') : 'local'; if (backendKind !== 'firebase') { _blobCloudFetch = null; _shareAssetUploader = null; } }   // 로컬 복귀(로그아웃)면 클라우드 블롭 패처·공유 업로더 해제
 /** 새 백엔드(예: FirebaseBackend) 구현 시 기준으로 삼을 로컬 구현 노출. */
 export { LocalBackend };
 

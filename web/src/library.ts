@@ -4,7 +4,7 @@
 // 해시 라우팅: #/(서가) · #/read/:char(뷰어). 데이터는 store.ts(IndexedDB/localStorage)로 에디터와 공유.
 // 화 HTML은 살균 후 본문 DOM에 직접 렌더(연속 스크롤·테마·줌). 본인 로그 + 살균이라 안전.
 // @ts-nocheck
-import { logsAll, logsAdd, logsDelete, loadRead, saveRead, loadReaderCfg, saveReaderCfg, metaGet, metaSet, metaDelete, metaAll, newWorkKey, idbDeleteWorkCard, getBackendKind, kvLoad, kvSave, isSessionSynced, markSessionSynced, OPEN_LOG_KEY, dedupeLogList, dedupeLogsInStore, blobsPutAssetMap, scanWorkSizes, deleteWorkLogs, enqueueWorkDeletion } from './store.js';
+import { logsAll, logsAdd, logsDelete, loadRead, saveRead, loadReaderCfg, saveReaderCfg, metaGet, metaSet, metaDelete, metaAll, newWorkKey, idbDeleteWorkCard, getBackendKind, kvLoad, kvSave, isSessionSynced, markSessionSynced, OPEN_LOG_KEY, dedupeLogList, dedupeLogsInStore, blobsPutAssetMap, resolveAssetShareUrls, scanWorkSizes, deleteWorkLogs, enqueueWorkDeletion } from './store.js';
 import { mountAccountUI } from './accountUI.js';   // 계정 UI(가벼움) — 에디터와 공용
 import { richCopy } from './clipboard.js';         // 리치 복사(아카 붙여넣기) — 에디터와 공용
 import { desktopAvailable, externalCount, bakeLogs } from './bake.js';   // 이미지 굳히기(데스크탑 전용)
@@ -472,6 +472,9 @@ async function doShareSeries(s: any, pop: HTMLElement, redraw: () => void, makeB
   if (makeBtn) { makeBtn.disabled = true; makeBtn.textContent = '만드는 중…'; }
   try {
     const S = await loadShare();
+    // ★전 화의 공유 이미지를 한 번에 Storage 업로드(콘텐츠해시 중복제거) → 화별 fatten은 캐시 적중 = 빠르고 중복 업로드 없음.
+    const allRefs: any = {}; for (const e of s.eps) if (e && e.assetRefs && typeof e.assetRefs === 'object') Object.assign(allRefs, e.assetRefs);
+    if (Object.keys(allRefs).length) { if (note) note.textContent = '이미지 올리는 중…'; try { await resolveAssetShareUrls(allRefs); } catch (_) {} }
     const episodes = await Promise.all(s.eps.map(async (e: any) => { const f = await fattenShareHtml(e, !!hideUser); return { char: s.char, charName: s.name, title: e.title, date: e.date, html: f.html, hideUser: !!hideUser, _missing: f.missing }; }));   // ★공유본: 이미지 임베드(마른 레코드 복원) + 내 입력 가리기(원본 불변) + 작품 표시이름(charName) 동봉
     const missing = episodes.reduce((a: number, e: any) => a + (e._missing || 0), 0);   // 화 전체에서 이미지로 못 박은 에셋 수(안 열어본 화의 블롭 누락 등)
     // 표지·소개도 함께 공유 → 공유 열람 화면이 작품 페이지처럼 보임.

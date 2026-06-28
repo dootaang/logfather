@@ -9,7 +9,7 @@ import { mountReaderBody, rdCfg, isWebnovel, isPapa, popAutoClose, mk } from './
 import { icon } from './icons.js';
 import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
-import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad, resolveAssetRefs } from './store.js';
+import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad, resolveAssetRefs, resolveAssetShareUrls } from './store.js';
 import { isLocalFirst, getSyncMode } from './desktopSync.js';
 import { bakeLogs, externalCount, bakeAvailable } from './bake.js';   // 파파 하이브리드 이미지 굳히기(데스크탑 native / 웹 weserv 폴백)
 import { stripPapaCruft, papaCruftChanges } from '../../core/cleanup/papaCruft.js';   // 파파 보편 군더더기(CoT/번역분석 접기) 비파괴 제거
@@ -125,7 +125,13 @@ export function filteredShareHtml(r: any): string {
 //   옛 레코드(rec.assets/임베드된 r.html): amap=undefined → 그대로(이미 임베드). hideUser면 user 메시지 빼고 재렌더.
 //   ★반환 = { html, missing } — missing = 이미지로 못 박힌 에셋 수(블롭이 손에 없는 화). 공유 후 "N장 안 담김" 경고용.
 export async function fattenShareHtml(r: any, hideUser: boolean): Promise<{ html: string; missing: number }> {
-  const amap = (r && r.assetRefs && typeof r.assetRefs === 'object') ? await resolveAssetRefs(r.assetRefs) : undefined;
+  // ★에셋 있는 화: 이미지를 Storage에 올리고 그 URL을 본문에 박는다(문서 경량 → 1MB 회피, 대용량 작품 전 화 공유).
+  //   URL 모드 불가(비로그인 등)이거나 한 개도 못 올리면 옛 방식(인라인 data:)으로 폴백.
+  let amap: Record<string, string> | undefined;
+  if (r && r.assetRefs && typeof r.assetRefs === 'object') {
+    amap = await resolveAssetShareUrls(r.assetRefs);
+    if (!amap || !Object.keys(amap).length) amap = await resolveAssetRefs(r.assetRefs);
+  }
   let h: string;
   if (hideUser) {
     const hasRole = (r.chat && Array.isArray(r.chat.messages) && r.chat.messages.length)

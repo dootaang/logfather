@@ -19,9 +19,10 @@ import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   collection, doc, getDoc, getDocs, setDoc, deleteDoc, onSnapshot, query, where,
 } from 'firebase/firestore';
-import { getStorage, ref as sref, uploadString, getBytes, deleteObject, listAll } from 'firebase/storage';
-import { LocalBackend, blobsGet, blobsPutRaw, setBlobCloudFetcher } from './store.js';   // KV 이중 쓰기 + 공유 에셋 블롭(콘텐츠해시) 동기화
+import { getStorage, ref as sref, uploadString, getBytes, getDownloadURL, deleteObject, listAll } from 'firebase/storage';
+import { LocalBackend, blobsGet, blobsPutRaw, setBlobCloudFetcher, setShareAssetUploader } from './store.js';   // KV 이중 쓰기 + 공유 에셋 블롭(콘텐츠해시) 동기화 + 공유 이미지 Storage 업로더
 import { parseDataUrlImg, buildAssetDataUrl } from '../../core/card/assetRefs.js';
+import { reencodeOne } from './clipboard.js';   // 공유 이미지 축소(캔버스) 재사용
 
 let _db: any = null, _storage: any = null;
 function db(): any {
@@ -55,6 +56,7 @@ export async function wipeUserCloud(uid: string, onProgress?: (n: number) => voi
   // 3) Storage 객체(큰 로그 html·표지 분리본 + 공유 에셋 블롭) — users/{uid}/ 전부
   try { await wipeStoragePrefix(store, 'users/' + uid, tick); } catch (_) {}
   try { localStorage.removeItem('pro2-cloud-blobs-' + uid); } catch (_) {}   // 블롭 업로드 집합 초기화(이후 재업로드 보장)
+  try { localStorage.removeItem('pro2-shareurls-' + uid); } catch (_) {}   // 공유 이미지 URL 캐시 초기화(이후 재업로드 보장)
   return n;
 }
 
@@ -120,6 +122,43 @@ export function createFirebaseBackend(uid: string): any {
     if (got.length) { try { await blobsPutRaw(got); } catch (_) {} }
   }
 
+  // ── 공유 이미지(Storage) — 공유 스냅샷을 Firestore 1MB에 인라인하는 대신 Storage로 올리고 화 문서엔 URL만 ──
+  //   ★기존 블롭은 text/plain(데이터URL 문자열)이라 <img src>로 직접 못 씀 → 공유용으로 "축소한 실제 이미지"를
+  //     image/jpeg로 따로 올린다. 경로=콘텐츠해시 → 같은 스프라이트는 한 벌(화 간·재공유 중복제거). 다운로드 URL은
+  //     토큰이 박혀 비로그인 받는 사람도 <img>로 로드(표시는 CORS 무관). URL 캐시(localStorage)로 재업로드 회피.
+  const shareAssetPath = (h: string) => `users/${uid}/shareassets/${h}.jpg`;
+  const SHARE_MAXDIM = 1024, SHARE_Q = 0.72;   // 공유 화질(원본 아님) — 용량·화질 균형. 받는 사람 대역폭·egress 절약.
+  const SHAREURL_KEY = 'pro2-shareurls-' + uid;
+  const loadShareUrls = (): Record<string, string> => { try { const o = JSON.parse(localStorage.getItem(SHAREURL_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; } catch (_) { return {}; } };
+  const saveShareUrls = (m: Record<string, string>) => { try { localStorage.setItem(SHAREURL_KEY, JSON.stringify(m)); } catch (_) {} };
+  // refs(name→hash) → name→다운로드 URL. 로컬에 없는 바이트는 클라우드(blobs)에서 보충 후 축소·업로드.
+  async function uploadShareAssets(refs: Record<string, string>): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    if (!refs || typeof refs !== 'object') return out;
+    const cache = loadShareUrls();
+    const hashes = Array.from(new Set(Object.values(refs).filter(Boolean) as string[]));
+    const need = hashes.filter((h) => !cache[h]);
+    if (need.length) {
+      let bytes = await blobsGet(need);
+      const miss = need.filter((h) => !bytes.has(h));
+      if (miss.length) { try { await fetchBlobs(miss); bytes = await blobsGet(need); } catch (_) {} }   // 안 열어본 화 등 로컬에 없는 블롭은 클라우드서 보충
+      const CONC = 8;   // 동시 업로드 제한(과부하 방지)
+      for (let i = 0; i < need.length; i += CONC) {
+        await Promise.all(need.slice(i, i + CONC).map(async (h) => {
+          const b = bytes.get(h); if (!b) return;   // 바이트 못 구함(로컬·클라우드 모두 없음) → 그 에셋 스킵(마커 미해결 = 공유 경고가 잡음)
+          try {
+            const small = await reencodeOne(buildAssetDataUrl(b.mime, b.b64), null, false, SHARE_MAXDIM, SHARE_Q);   // 축소 JPEG data:URL
+            await uploadString(sref(storage(), shareAssetPath(h)), small, 'data_url');   // 실제 이미지 바이트 + image/jpeg contentType
+            cache[h] = await getDownloadURL(sref(storage(), shareAssetPath(h)));
+          } catch (_) { /* 그 에셋만 실패(나머지는 진행) */ }
+        }));
+      }
+      saveShareUrls(cache);
+    }
+    for (const name of Object.keys(refs)) { const u = cache[refs[name]]; if (u) out[name] = u; }
+    return out;
+  }
+
   // 로그 1건을 클라우드(Firestore + 필요시 Storage)로 올린다. 실패 시 throw.
   async function pushLog(rec: any): Promise<void> {
     const r: any = Object.assign({}, rec);
@@ -158,6 +197,7 @@ export function createFirebaseBackend(uid: string): any {
   }
 
   setBlobCloudFetcher(fetchBlobs);   // ★리더 온디맨드 블롭 보충 활성(로그아웃 시 store.setBackend가 해제)
+  setShareAssetUploader(uploadShareAssets);   // ★공유 이미지 Storage 업로더 활성(공유 스냅샷이 화 문서엔 URL만 → 1MB 회피)
 
   return {
     // ── 로그 보관함 ──

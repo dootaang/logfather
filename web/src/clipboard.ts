@@ -14,7 +14,7 @@ function cropOf(tag: string): number | null {
   return null;
 }
 
-function reencodeOne(url: string, crop: number | null, png: boolean, maxDim = 1600, quality: number | null = null): Promise<string> {
+export function reencodeOne(url: string, crop: number | null, png: boolean, maxDim = 1600, quality: number | null = null): Promise<string> {
   return new Promise((resolve) => {
     const im = new Image();
     im.onload = () => {
