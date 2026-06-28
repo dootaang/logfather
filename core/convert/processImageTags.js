@@ -127,8 +127,25 @@ function stripUnresolvedAssetImages(html) {
   });
 }
 
+// 공유 스냅샷에 "이미지로 못 박힌" 에셋 참조 수(고유 이름 기준) — strip 전 html에서 센다.
+//   해석되면 마커({{img::}})는 <img src=data:>로, 에셋명 <img>는 진짜 URL로 바뀌어 사라진다.
+//   → 남아있는 {{img/image::|=}} 마커 + 에셋명(URL 아님) <img> = 못 담긴 에셋. 0보다 크면 공유 시 사용자에게 경고.
+function countUnresolvedAssetRefs(html) {
+  if (!html) return 0;
+  const s = String(html);
+  const names = new Set();
+  for (const m of (s.match(/\{\{(?:img|image)(?:::|=)[^}]*\}\}/gi) || [])) {
+    const t = extractTagFromMatch(m.replace(/″/g, '"')); if (t) names.add(t.toLowerCase());
+  }
+  for (const tag of (s.match(/<img\b[^>]*>/gi) || [])) {
+    const src = _imgSrc(tag);
+    if (src && !_isUrlLike(src)) names.add(src.toLowerCase());
+  }
+  return names.size;
+}
+
 module.exports = {
   processImageTags, collectUrlMappings, createBaseStyle, createImageHtml,
   extractTagFromMatch, extractTagIdentifier, cleanUrl, getImagePatterns,
-  stripUnresolvedAssetImages,
+  stripUnresolvedAssetImages, countUnresolvedAssetRefs,
 };

@@ -5,7 +5,7 @@
 // 5패턴/4토큰 resolve + 미지 태그 verbatim + _create_image_html 포맷 핀.
 // 실행: node core/convert/processImageTags.test.js
 'use strict';
-const { processImageTags, collectUrlMappings, extractTagFromMatch, stripUnresolvedAssetImages } = require('./processImageTags.js');
+const { processImageTags, collectUrlMappings, extractTagFromMatch, stripUnresolvedAssetImages, countUnresolvedAssetRefs } = require('./processImageTags.js');
 
 const style = { size: 100, margin: 10, useBorder: false, borderColor: '#000000', useShadow: true };
 const map = { happy: 'https://example.com/o.png' };
@@ -57,6 +57,14 @@ check(stripUnresolvedAssetImages('<img src="lpblob:' + 'a'.repeat(64) + '">').in
 check(stripUnresolvedAssetImages('앞 <img src="happy.webp"> 뒤') === '앞  뒤', '에셋명 제거 후 주변 텍스트 보존');
 check(stripUnresolvedAssetImages('{{img::happy}} 텍스트') === '{{img::happy}} 텍스트', '{{img::}} 마커는 안 건드림(img 태그 아님)');
 check(stripUnresolvedAssetImages('이미지 없음') === '이미지 없음', '<img 없으면 무변경');
+
+// 9) countUnresolvedAssetRefs: 공유 스냅샷에 못 박힌 에셋 수(고유 이름) — 공유 "N장 안 담김" 경고용
+check(countUnresolvedAssetRefs('{{img::happy}}') === 1, '미해결 {{img::}} 마커 1개');
+check(countUnresolvedAssetRefs('{{img::a}}{{image=b}}<img src=c>') === 3, '마커 2형태 + 에셋명 <img> 합산');
+check(countUnresolvedAssetRefs('{{img::a}} 텍스트 {{img::a}}') === 1, '같은 이름 중복은 1개로(고유)');
+check(countUnresolvedAssetRefs('<img src="data:image/png;base64,AAAA"> <img src="https://x.com/a.png">') === 0, '진짜 URL/데이터 <img>는 안 셈');
+check(countUnresolvedAssetRefs(processImageTags('{{img::happy}}', map, style)) === 0, '해석된(=<img data/url) 본문은 0');
+check(countUnresolvedAssetRefs('') === 0 && countUnresolvedAssetRefs(null) === 0, '빈/널 입력 0');
 
 if (failed === 0) { console.log('✅ processImageTags: 통과'); process.exit(0); }
 else { console.error(`❌ processImageTags: ${failed} 실패`); process.exit(1); }

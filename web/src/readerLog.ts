@@ -18,7 +18,7 @@ import { cleanUnits } from './cleanup.js';
 import { defaultSettings } from '../../core/preset/bundle.js';
 import { convertText } from '../../core/convert/convertText.js';
 import { expandCardRegex, sanitizeRegexOut } from '../../core/convert/cardRegex.js';   // 관리실 정리 규칙(표시 정규식) 적용 + 외부 규칙 out 살균
-import { processImageTags, stripUnresolvedAssetImages } from '../../core/convert/processImageTags.js';   // 가져온 에셋 맵 재적용 + 미해결 에셋명 <img> 숨김(엑박 방지)
+import { processImageTags, stripUnresolvedAssetImages, countUnresolvedAssetRefs } from '../../core/convert/processImageTags.js';   // 가져온 에셋 맵 재적용 + 미해결 에셋명 <img> 숨김(엑박 방지) + 못 담긴 에셋 수(공유 경고)
 import { resolveAssetCBS } from '../../core/convert/prepareBody.js';
 import { resolveAssetMarkers } from '../../core/convert/risuMarkers.js';
 import { renderRisu } from '../../core/risu/parser.js';   // ★리스 CBS 관대 렌더(조건문·계산·변수·배경이미지 div) — 임포트 챗 충실 렌더
@@ -123,7 +123,8 @@ export function filteredShareHtml(r: any): string {
 // 공유용 "살찐(이미지 임베드)" html — 공유 받는 사람은 로컬 블롭이 없으므로 이미지를 본문에 박아 올린다.
 //   마른 레코드(rec.assetRefs): 그 화 이미지를 IDB_BLOBS(필요시 클라우드)에서 복원해 마커에 임베드.
 //   옛 레코드(rec.assets/임베드된 r.html): amap=undefined → 그대로(이미 임베드). hideUser면 user 메시지 빼고 재렌더.
-export async function fattenShareHtml(r: any, hideUser: boolean): Promise<string> {
+//   ★반환 = { html, missing } — missing = 이미지로 못 박힌 에셋 수(블롭이 손에 없는 화). 공유 후 "N장 안 담김" 경고용.
+export async function fattenShareHtml(r: any, hideUser: boolean): Promise<{ html: string; missing: number }> {
   const amap = (r && r.assetRefs && typeof r.assetRefs === 'object') ? await resolveAssetRefs(r.assetRefs) : undefined;
   let h: string;
   if (hideUser) {
@@ -141,7 +142,12 @@ export async function fattenShareHtml(r: any, hideUser: boolean): Promise<string
   } else {
     h = applyAssetMap(String(r.html || ''), amap, r.char, r.displayRules);
   }
-  return stripUnresolvedAssetImages(h);   // 공유본도 미해결 에셋명 <img> 숨김(받는 사람 화면 엑박 방지)
+  const missing = countUnresolvedAssetRefs(h);   // strip(숨김) 전에 센다 — 못 박힌 에셋(텍스트 마커 + 에셋명 <img>)
+  return { html: stripUnresolvedAssetImages(h), missing };   // 공유본도 미해결 에셋명 <img> 숨김(받는 사람 화면 엑박 방지)
+}
+// 공유 후 안내문에 붙일 "이미지 N장 안 담김" 경고(0이면 빈 문자열). 단일·작품 공유 공용.
+export function shareMissingNote(n: number): string {
+  return n > 0 ? ` · 이미지 ${n}장은 링크에 안 담겼어요 — 그 화를 리더에서 한 번 열어본 뒤 “내용 갱신”하면 담겨요.` : '';
 }
 
 // 팩토리 — ctx: { setStatus, reloadLogs, getAllLogs, route, getUser, nameOf }.
@@ -264,7 +270,8 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
       hideChk.onchange = () => { try { localStorage.setItem('pro2-share-hideuser', hideChk.checked ? '1' : '0'); } catch (_) {} };
       hideWrap.append(hideChk, document.createTextNode(' 내 입력 가리기 (공유본에서 내 메시지 빼기 — 내 서재는 그대로)'));
       pop.appendChild(hideWrap);
-      const shareRec = async () => Object.assign({}, r, { charName: r.workName || ctx.nameOf(r.char) || r.char, html: await fattenShareHtml(r, hideChk.checked), hideUser: hideChk.checked });   // ★공유본은 이미지 임베드(받는 사람은 로컬 블롭 없음) + 작품 표시이름 동봉(내부 키 wk_… 노출 방지)
+      let lastMissing = 0;   // 직전 shareRec()에서 이미지로 못 박은 에셋 수(공유 후 경고용)
+      const shareRec = async () => { const f = await fattenShareHtml(r, hideChk.checked); lastMissing = f.missing; return Object.assign({}, r, { charName: r.workName || ctx.nameOf(r.char) || r.char, html: f.html, hideUser: hideChk.checked }); };   // ★공유본은 이미지 임베드(받는 사람은 로컬 블롭 없음) + 작품 표시이름 동봉(내부 키 wk_… 노출 방지)
       if (r.shareId) {
         pop.appendChild(mk('div', 'share-note', '이 링크를 받은 사람은 로그인 없이 이 화를 볼 수 있습니다 (이미지 포함). 이미지는 공유용으로 축소된 화질입니다.'));
         const row = document.createElement('div'); row.className = 'share-link-row';
@@ -276,7 +283,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
         row.append(input, copyB); pop.appendChild(row);
         const acts = document.createElement('div'); acts.className = 'share-actions';
         const refreshB = mk('button', '', '내용 갱신') as HTMLButtonElement; refreshB.title = '편집 후 최신 내용으로 링크 갱신';
-        refreshB.onclick = async () => { refreshB.disabled = true; refreshB.textContent = '갱신 중…'; try { const S = await loadShare(); await S.createShare(await shareRec(), r.shareId); setStatus('링크 내용을 갱신했습니다.'); } catch (e: any) { setStatus('갱신 실패: ' + ((e && e.message) || '')); } refreshB.disabled = false; refreshB.textContent = '내용 갱신'; };
+        refreshB.onclick = async () => { refreshB.disabled = true; refreshB.textContent = '갱신 중…'; try { const S = await loadShare(); await S.createShare(await shareRec(), r.shareId); setStatus('링크 내용을 갱신했습니다.' + shareMissingNote(lastMissing)); } catch (e: any) { setStatus('갱신 실패: ' + ((e && e.message) || '')); } refreshB.disabled = false; refreshB.textContent = '내용 갱신'; };
         const unshareB = mk('button', 'series-del', '공유 해제') as HTMLButtonElement;
         unshareB.onclick = async () => { unshareB.disabled = true; try { const S = await loadShare(); await S.deleteShare(r.shareId); delete r.shareId; await logsAdd(r); btn.innerHTML = icon('link') + ' 공유'; setStatus('공유를 해제했습니다.'); draw(); } catch (e: any) { setStatus('해제 실패: ' + ((e && e.message) || '')); unshareB.disabled = false; } };
         acts.append(refreshB, unshareB); pop.appendChild(acts);
@@ -289,7 +296,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
             const S = await loadShare();
             const id = await S.createShare(await shareRec());
             r.shareId = id; await logsAdd(r); btn.innerHTML = icon('link') + ' 공유됨';
-            try { await navigator.clipboard.writeText(S.shareUrl(id)); setStatus('공개 링크를 클립보드에 복사했습니다.'); } catch (_) { setStatus('공개 링크가 만들어졌습니다.'); }
+            try { await navigator.clipboard.writeText(S.shareUrl(id)); setStatus('공개 링크를 클립보드에 복사했습니다.' + shareMissingNote(lastMissing)); } catch (_) { setStatus('공개 링크가 만들어졌습니다.' + shareMissingNote(lastMissing)); }
             draw();
           } catch (e: any) { setStatus('링크 생성 실패: ' + ((e && e.message) || '')); makeB.disabled = false; makeB.innerHTML = icon('link') + ' 공개 링크 만들기'; }
         };

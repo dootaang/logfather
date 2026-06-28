@@ -10,7 +10,7 @@ import { richCopy } from './clipboard.js';         // 리치 복사(아카 붙�
 import { desktopAvailable, externalCount, bakeLogs } from './bake.js';   // 이미지 굳히기(데스크탑 전용)
 import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, openTranslateSettings, ensureTranslateReady } from './translate.js';   // 로그 번역(웹·데스크탑)
 import { cleanUnits, getCleanPrompt, setCleanPrompt, makeCleanFn, ensureCleanReady } from './cleanup.js';   // 가져온 로그 군더더기 정리(1차 결정론 + 2차 LLM·작품별 프롬프트)
-import { createReaderLog, fattenShareHtml } from './readerLog.js';   // 번역/정리 흐름 + 공유 fatten(이미지 임베드+내 입력 가리기) 공용
+import { createReaderLog, fattenShareHtml, shareMissingNote } from './readerLog.js';   // 번역/정리 흐름 + 공유 fatten(이미지 임베드+내 입력 가리기) + 못 담긴 에셋 경고 공용
 import { popAutoClose } from './readerView.js';   // 공유 팝오버 바깥 탭=닫힘(리더 단일화 공유와 거동 통일)
 import { isLocalFirst, getSyncMode, shareBaseUrl, isDesktop } from './desktopSync.js';   // 로컬-퍼스트(데스크탑 OR 웹-수동) + 수동 동기화 상태 + 플랫폼
 import { mountUpdateBanner } from './updateBanner.js';   // 자동 업데이트 배너(데스크탑 전용)
@@ -472,7 +472,8 @@ async function doShareSeries(s: any, pop: HTMLElement, redraw: () => void, makeB
   if (makeBtn) { makeBtn.disabled = true; makeBtn.textContent = '만드는 중…'; }
   try {
     const S = await loadShare();
-    const episodes = await Promise.all(s.eps.map(async (e: any) => ({ char: s.char, charName: s.name, title: e.title, date: e.date, html: await fattenShareHtml(e, !!hideUser), hideUser: !!hideUser })));   // ★공유본: 이미지 임베드(마른 레코드 복원) + 내 입력 가리기(원본 불변) + 작품 표시이름(charName) 동봉
+    const episodes = await Promise.all(s.eps.map(async (e: any) => { const f = await fattenShareHtml(e, !!hideUser); return { char: s.char, charName: s.name, title: e.title, date: e.date, html: f.html, hideUser: !!hideUser, _missing: f.missing }; }));   // ★공유본: 이미지 임베드(마른 레코드 복원) + 내 입력 가리기(원본 불변) + 작품 표시이름(charName) 동봉
+    const missing = episodes.reduce((a: number, e: any) => a + (e._missing || 0), 0);   // 화 전체에서 이미지로 못 박은 에셋 수(안 열어본 화의 블롭 누락 등)
     // 표지·소개도 함께 공유 → 공유 열람 화면이 작품 페이지처럼 보임.
     let cm: any = {}; try { cm = (await metaGet(s.char)) || {}; } catch (_) {}
     let cover = cm.cover || s.cover || '';
@@ -481,8 +482,8 @@ async function doShareSeries(s: any, pop: HTMLElement, redraw: () => void, makeB
     const res = await S.createSeriesShare(s.name, s.name, episodes, (i: number, n: number) => { if (note) note.textContent = `만드는 중… (${i + 1}/${n}화)`; }, { cover, desc });   // ★s.name = 풀린 작품 표시이름(meta.name→workName→폴백). 받는 사람 화면에 코드(wk_…) 대신 이름이 뜸.
     if (prev) { try { await S.deleteSeriesShare(prev); } catch (_) {} }   // 옛 공유 정리(갱신)
     setSeriesShareId(s.char, res.id);
-    try { await navigator.clipboard.writeText(shareUrlFor(res.id)); setStatus(`작품 공유 링크를 복사했습니다 (${res.count}화${res.failed ? `, ${res.failed}화는 이미지가 많아 제외` : ''}).`); }
-    catch (_) { setStatus(`작품 공유 링크가 만들어졌습니다 (${res.count}화).`); }
+    try { await navigator.clipboard.writeText(shareUrlFor(res.id)); setStatus(`작품 공유 링크를 복사했습니다 (${res.count}화${res.failed ? `, ${res.failed}화는 이미지가 많아 제외` : ''}).` + shareMissingNote(missing)); }
+    catch (_) { setStatus(`작품 공유 링크가 만들어졌습니다 (${res.count}화).` + shareMissingNote(missing)); }
     redraw();
   } catch (e: any) { setStatus('작품 공유 실패: ' + ((e && e.message) || '')); if (makeBtn) { makeBtn.disabled = false; makeBtn.innerHTML = icon('link') + ' 작품 공유 링크 만들기'; } }
 }
