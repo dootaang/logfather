@@ -54,7 +54,20 @@ const fakeUpper = async (masked) => masked.toUpperCase();
     check(r.blocks[0] === 'HELLO WORLD' && r.blocks[2] === 'BYE', '산문 블록 번역됨');
     check(r.blocks[1] === '{{img::x}}', '순수 이미지 블록은 원문 유지');
     check(r.translated === 2, '바뀐 블록 2개');
-    check(steps.length === 3 && steps[2] === '3/3', '진행률 3단계 보고');
+    check(steps.length === 2 && steps[1] === '2/2', '진행률 분모=API 대상만(이미지 블록 제외)');
+  }
+
+  // 5-b) ★진행률 착시 수정: 스킵(한국어·빈칸)이 많아도 (1/N)부터 시작 — 예전엔 분류 루프가 스킵을 즉시 tick해 "(30/40) 시작"처럼 보였음.
+  {
+    const mk = (n, v) => Array.from({ length: n }, () => v);
+    const blocks = [...mk(3, '이미 한국어인 블록입니다'), 'translate me', ...mk(2, ''), 'me too'];
+    for (const combine of [false, true]) {
+      const steps = [];
+      const fn = async (m, ctx) => (ctx && ctx.combine) ? String(m).split(/\n?⟦\s*⟦\s*SEG\s*⟧\s*⟧\n?/).map((s) => s.toUpperCase()).join('\n⟦⟦SEG⟧⟧\n') : m.toUpperCase();
+      const r = await translateBlocks(blocks, fn, { skipKorean: true, combine, onProgress: (d, t) => steps.push(d + '/' + t) });
+      check(steps[0] === '1/2' && steps[steps.length - 1] === '2/2', `진행률 (1/2)부터 시작(combine=${combine}) — 스킵 5개는 분모서 제외`);
+      check(r.skipped === 3 && r.translated === 2, `스킵·번역 리포트는 그대로(combine=${combine})`);
+    }
   }
 
   // 6) 부분 실패 격리: 한 블록이 throw 해도 나머지는 번역, 실패는 원문 유지 + failed 기록.
