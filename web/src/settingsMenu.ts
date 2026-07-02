@@ -235,7 +235,9 @@ function injectDesign(setStatus: (m: string) => void) {
 function openDesignSettings(setStatus: (m: string) => void) {
   const ov = document.createElement('div'); ov.className = 'import-modal';
   const card = document.createElement('div'); card.className = 'import-card adv-card design-card';
-  const close = () => ov.remove();
+  // 닫기 = 저장된 스킨 재적용 — "내 디자인" 미리보기(previewCustomDraft)가 저장 없이 페이지에 남아
+  // "바뀐 줄 알았는데 편집기/재시작엔 안 먹는" 착각 방지. 저장했으면 SKIN_KEY가 그 값이라 그대로 유지.
+  const close = () => { ov.remove(); applySkin(localStorage.getItem(SKIN_KEY) || 'atelier'); };
   card.appendChild(Object.assign(document.createElement('div'), { className: 'import-title', textContent: '디자인 설정' }));
   card.appendChild(Object.assign(document.createElement('div'), { className: 'import-info', textContent: '도구 화면(셸)의 스킨·테마·폰트·UI 커스텀 — 출력 카드와는 무관합니다.' }));
   // ① 스킨 + ② 테마

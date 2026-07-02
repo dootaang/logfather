@@ -183,7 +183,7 @@ export function buildCustomSkin(host: HTMLElement, setStatus: (m: string) => voi
     const s = document.createElement('select'); for (const [v, t] of opts) { const o = document.createElement('option'); o.value = v; o.textContent = t; s.appendChild(o); }
     s.value = val; s.onchange = () => on(s.value); row.appendChild(s); return row;
   };
-  host.appendChild(mkSelect('베이스 스킨 (배경·분위기·라이트/다크)', SKIN_LIST, customDraft.base, (v) => { customDraft.base = v; previewCustomDraft(); }));
+  host.appendChild(mkSelect('베이스 스킨 (미리보기 — "내 디자인 저장"을 눌러야 유지)', SKIN_LIST, customDraft.base, (v) => { customDraft.base = v; previewCustomDraft(); }));
   const accRow = document.createElement('div'); accRow.className = 'ctl inline';
   const accL = document.createElement('label'); accL.textContent = '포인트색';
   const accI = document.createElement('input'); accI.type = 'color'; accI.value = customDraft.accent;

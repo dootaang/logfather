@@ -1553,6 +1553,8 @@ function buildSection(sec: Section) {
 function buildControls() {
   built = []; sectionEls = [];
   const box = $('controls');
+  // Pro1 패널은 body에 사는 fixed 팝업 → 재구축 때 여기서 정리(섹션과 생명주기 일치, 디자인 전환 시 잔존/중복 방지).
+  document.querySelectorAll('.legacy-panel').forEach((e) => e.remove());
   // 트레이는 '에셋 이미지' 섹션 안에 들어가는데 #controls를 innerHTML로 비우면 같이 지워짐 → 비우기 전에 대피시켰다가 재배치.
   const trayEl = document.getElementById('tray');
   if (trayEl && trayEl.parentElement) trayEl.parentElement.removeChild(trayEl);
@@ -1850,7 +1852,10 @@ function buildPro1Panel(host: HTMLElement) {
   const btn = document.createElement('button'); btn.className = 'tag-add'; btn.innerHTML = icon('archiveDown') + ' Pro1 설정 가져오기';
   const fileLegacy = document.createElement('input'); fileLegacy.type = 'file'; fileLegacy.accept = '.json,application/json'; fileLegacy.multiple = true; fileLegacy.style.display = 'none';
   const panel = document.createElement('div'); panel.className = 'legacy-panel'; panel.hidden = true;
-  host.append(btn, fileLegacy, panel);
+  host.append(btn, fileLegacy);
+  // fixed 팝업은 body에(.thumb-pop과 동일 패턴) — 섹션 안에 두면 블러 스킨의 .section backdrop-filter가
+  // fixed의 기준을 섹션으로 바꿔 overflow:hidden에 갇힌다. 옛 패널 정리는 buildControls가 함(디자인 전환 포함).
+  document.body.appendChild(panel);
   let classified: any = null;
   const legacySelect = (label: string, hint: string, options: Array<{ value: string; text: string }>) => {
     const wrap = document.createElement('div'); wrap.className = 'legacy-row';
