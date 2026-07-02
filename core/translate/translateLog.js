@@ -39,7 +39,7 @@ async function translateBlocks(blocks, translateFn, opts) {
     if (!text.trim() || !hasProse(masked)) { out[i] = src[i]; tick(); continue; }           // 산문 없음 → 그대로(호출 0)
     if (skipKorean && isKoreanDominant(stripPlaceholders(masked), threshold)) { out[i] = src[i]; skipped++; tick(); continue; }  // 이미 한국어 → 스킵
     try {
-      const o = await translateFn(masked, { index: i });
+      const o = await translateFn(masked, { index: i, maxResponse: opts.maxResponse });
       out[i] = unmaskMarkup(String(o == null ? masked : o), tokens);
       if (out[i] !== src[i]) translated++;
     } catch (e) { failed.push({ index: i, error: (e && e.message) || String(e) }); out[i] = src[i]; }
@@ -82,9 +82,9 @@ async function translateCombined(src, translateFn, opts, skipKorean, threshold) 
     cur.push(p); curLen += len;
   }
   if (cur.length) batches.push(cur);
-  // per-block 번역(단독·폴백 공용).
+  // per-block 번역(단독·폴백 공용). ★maxResponse도 전달 — 제일 긴 블록(단독)이 제일 작은 응답 상한을 받던 것 수정.
   const translateOne = async (p) => {
-    try { const o = await translateFn(p.masked, { index: p.i }); out[p.i] = unmaskMarkup(String(o == null ? p.masked : o), p.tokens); if (out[p.i] !== src[p.i]) translated++; }
+    try { const o = await translateFn(p.masked, { index: p.i, maxResponse: opts.maxResponse }); out[p.i] = unmaskMarkup(String(o == null ? p.masked : o), p.tokens); if (out[p.i] !== src[p.i]) translated++; }
     catch (e) { failed.push({ index: p.i, error: (e && e.message) || String(e) }); out[p.i] = src[p.i]; }
     tick();
   };

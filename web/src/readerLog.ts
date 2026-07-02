@@ -201,7 +201,8 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
         const nh = rerenderLog(r);
         if (nh !== r.html) {
           // ★비파괴: 번역 전 원문을 레코드 필드로 영속 스냅샷(구조화 텍스트만; html은 토글 때 rerenderLog로 재생성 → 용량·1MB 회피).
-          if (!r.orig) { const b = backup[i]; r.orig = { input: b.input, chat: b.chat, diary: b.diary, webnovel: b.webnovel, cardCfg: b.cardCfg, userCardCss: b.userCardCss }; }
+          //   ★있는 필드만 담는다 — undefined 필드(예: 웹소설형의 chat)가 들어가면 Firestore setDoc이 거부해 클라우드 동기화가 영구 실패했음(applyOrig는 'k in orig'로 판단하니 생략=올바른 복원).
+          if (!r.orig) { const b: any = backup[i]; const o: any = {}; for (const k of ORIG_FIELDS) if (b[k] !== undefined) o[k] = b[k]; r.orig = o; }
           r.html = nh; await logsAdd(r); changedLogs++;
         }
       } catch (_) {}
@@ -211,7 +212,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     //   레코드를 현재 allLogs에 직접 반영. 호출부 route()가 옛 본문을 렌더하지 않게(백그라운드 동기화 재렌더 스킵과 무관).
     { const cur = getAllLogs(); for (const r of logs) { const i = cur.findIndex((x: any) => x.id === r.id); if (i >= 0) cur[i] = r; } }
     let msg = `번역 완료 — ${res.translated}개 번역` + (res.skipped ? ` · 한국어 ${res.skipped}개 건너뜀` : '') + (roleSkipped ? ` · 역할제외 ${roleSkipped}개` : '');
-    if (res.failed.length) msg += ` · 실패 ${res.failed.length}개(원문 유지)`;
+    if (res.failed.length) msg += ` · 실패 ${res.failed.length}개(원문 유지) — ${String(res.failed[0].error || '').slice(0, 160)}`;   // ★첫 실패 사유를 UI에 — 콘솔 못 보는 사용자도 원인(키·모델·쿼터)을 알게
     if (changedLogs) msg += ` · ${changedLogs}개 화 갱신`;
     if (!opts.silent) setStatus(msg);
     if (res.failed.length) console.warn('[번역 실패]', res.failed);
@@ -235,7 +236,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     await reloadLogs();
     { const cur = getAllLogs(); for (const r of logs) { const i = cur.findIndex((x: any) => x.id === r.id); if (i >= 0) cur[i] = r; } }   // 명시적 갱신: 방금 정리분을 allLogs에 직접 반영(stale 재읽기 방지)
     let msg = `정리 완료 — ${res.cleaned}개 정리`;
-    if (res.failed.length) msg += ` · 실패 ${res.failed.length}개(원문 유지)`;
+    if (res.failed.length) msg += ` · 실패 ${res.failed.length}개(원문 유지) — ${String(res.failed[0].error || '').slice(0, 160)}`;   // ★첫 실패 사유를 UI에
     if (changedLogs) msg += ` · ${changedLogs}개 화 갱신`;
     setStatus(msg);
     if (res.failed.length) console.warn('[정리 실패]', res.failed);

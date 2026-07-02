@@ -92,7 +92,14 @@ function buildRequest(cfg, payload) {
   const system = task === 'clean' ? cleanSysPrompt(payload && payload.stylePrompt) : sysPrompt((payload && payload.targetLang) || '한국어', payload && payload.stylePrompt, payload && payload.combine);
   // 응답 토큰: 프리셋 maxResponse가 있으면 그걸로(결합 배치는 입력만큼 길어 부족 시 잘림→코어가 폴백). 없으면 파라미터값.
   const maxResp = (payload && Number.isFinite(+payload.maxResponse) && +payload.maxResponse > 0) ? Math.min(200000, Math.round(+payload.maxResponse)) : 0;
-  const maxTok = maxResp > p.max_tokens ? maxResp : p.max_tokens;
+  // ★응답 예산: 사용자가 max_tokens를 직접 설정했으면 그 값(0=요청서 생략, 기존 의미 유지).
+  //   미설정이면 입력 길이 기반 동적 예산 — 고정 4096이 긴 블록(5천자↑) 번역을 자르고, thinking 모델(Gemini 2.5/3
+  //   기본 사고 ON)은 사고 토큰이 같은 예산을 소진해 빈 응답('응답 형식 오류' 실패)까지 만들던 것 수정.
+  //   max_tokens는 상한일 뿐(과금 무관) → 넉넉히: 글자수×1.5 + 여유, 8192~32768 사이.
+  const rawMax = cfg.params ? cfg.params.max_tokens : null;
+  const userMax = (rawMax != null && String(rawMax) !== '' && isFinite(+rawMax)) ? Math.max(0, Math.min(200000, Math.round(+rawMax))) : null;
+  let maxTok = userMax != null ? userMax : Math.min(32768, Math.max(8192, Math.ceil(text.length * 1.5) + 1024));
+  if (maxResp > maxTok) maxTok = maxResp;
   const base = (cfg.baseUrl || def.base).replace(/\/+$/, '');
   if (def.kind === 'anthropic') {
     const body = { model: cfg.model || def.defModel, max_tokens: maxTok > 0 ? maxTok : 4096, temperature: p.temperature, top_p: p.top_p, system, messages: [{ role: 'user', content: text }] };
@@ -107,7 +114,9 @@ function buildRequest(cfg, payload) {
   const body = { model: cfg.model || def.defModel || 'gpt-4o-mini', messages: [{ role: 'system', content: system }, { role: 'user', content: text }], temperature: p.temperature, top_p: p.top_p };
   if (p.frequency_penalty) body.frequency_penalty = p.frequency_penalty;   // 0이면 미지원 서버 호환 위해 생략
   if (p.presence_penalty) body.presence_penalty = p.presence_penalty;
-  if (maxTok > 0) body.max_tokens = maxTok;
+  // ★OpenAI 본가는 max_completion_tokens(신형 GPT-5·o시리즈가 max_tokens를 400으로 거부, 구형도 수용).
+  //   호환 서버(gemini·ollama·custom 등)는 기존 max_tokens 유지(max_completion_tokens 미지원 서버가 많음).
+  if (maxTok > 0) { if (cfg.provider === 'openai') body.max_completion_tokens = maxTok; else body.max_tokens = maxTok; }
   // ★Gemini thinking(추론 강도, GigaTrans 흡수 ②) — 2.5 계열 사고 모델에서 reasoning_effort로 반영.
   //   off/빈값이면 요청에 안 넣음(= 모델 기본 그대로 → 비사고 모델 gemini-2.0-flash 등에서도 안전). gemini에만 적용.
   const think = String(cfg.thinking || '').toLowerCase();
@@ -120,14 +129,25 @@ function buildRequest(cfg, payload) {
 }
 
 // provider 응답 JSON에서 번역 텍스트 추출.
+// ★잘림·차단·빈 응답은 성공이 아니라 throw — 부분/빈 번역이 원문을 조용히 갈아치우고 캐시까지 오염시키던 것 수정.
+//   (실패면 코어가 그 블록만 원문 유지 = 유실 0. 잘림은 max_tokens 안내, 차단은 안전 필터 안내.)
+const ERR_TRUNC = '응답이 최대 길이에서 잘렸어요 — 설정에서 max_tokens(응답 길이)를 늘리거나 화를 더 잘게 나눠보세요';
+const ERR_EMPTY = '모델이 빈 응답을 반환했어요 — 안전 필터 차단 또는 생각(thinking) 토큰이 응답 예산을 소진했을 수 있어요';
 function parseResponse(kind, json) {
   if (kind === 'anthropic') {
     const out = json && json.content && json.content[0] && json.content[0].text;
+    if (json && json.stop_reason === 'max_tokens') throw new Error(ERR_TRUNC);
     if (typeof out !== 'string') throw new Error('응답 형식 오류');
+    if (!out.trim()) throw new Error(ERR_EMPTY);
     return out;
   }
-  const out = json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
+  const ch = json && json.choices && json.choices[0];
+  const out = ch && ch.message && ch.message.content;
+  const fin = ch && (ch.finish_reason || ch.finishReason);
+  if (fin === 'content_filter') throw new Error('안전 필터가 이 블록을 차단했어요 — 다른 모델·서비스를 시도해보세요');
+  if (fin === 'length') throw new Error(ERR_TRUNC);
   if (typeof out !== 'string') throw new Error('응답 형식 오류');
+  if (!out.trim()) throw new Error(ERR_EMPTY);
   return out;
 }
 
@@ -144,31 +164,42 @@ function errorText(status, bodyText) {
   const hint = (status === 401 || status === 403) ? 'API 키·권한을 확인하세요'
     : status === 404 ? '모델명 또는 서버 주소를 확인하세요'
     : status === 402 ? '요금제·크레딧(결제)을 확인하세요'
-    : status === 429 ? '요청이 너무 많아요 — 잠시 후 다시'
+    : status === 429 ? '요청 한도 초과(레이트리밋) — 무료 키면 분당·일일 쿼터일 수 있어요. 잠시 후 다시 시도하거나 다른 모델·유료 키를 쓰세요'
     : (status >= 500) ? '서버 오류 — 잠시 후 다시'
     : (status === 400 || status === 422) ? '요청이 거부됐어요(모델·설정 확인)'
     : '요청 실패';
   return `${hint} (${status})` + (msg ? ': ' + msg : '');
 }
 const _retrySleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// 스마트 재시도 래퍼. req=buildRequest 결과. doFetch(req)→{status:number, bodyText:string}(네트워크 실패 시 throw).
-//   opts: { retries(기본2), retryNetwork(네트워크 throw도 재시도=데스크탑 true / 웹 false=CORS 즉시), sleep(테스트 주입) }.
+// ★429(레이트리밋)는 분당 쿼터라 밀리초 백오프가 무의미 — 초 단위로 길게 기다려야 창이 리셋된다.
+//   서버가 Retry-After를 주면 그걸 존중(상한 60초), 없으면 이 스케줄.
+const BACKOFF_429 = [2000, 5000, 12000, 30000];
+// 스마트 재시도 래퍼. req=buildRequest 결과. doFetch(req)→{status:number, bodyText:string, retryAfterMs?:number}(네트워크 실패 시 throw).
+//   opts: { retries(기본2 — 5xx·408·네트워크), retries429(기본4 — 레이트리밋 별도·길게),
+//           retryNetwork(네트워크 throw도 재시도=데스크탑 true / 웹 false=CORS 즉시), sleep(테스트 주입) }.
 //   반환 = 성공 응답 본문(text). 치명/소진 시 throw(명확 메시지).
 async function requestWithRetry(req, doFetch, opts) {
   opts = opts || {};
   const retries = opts.retries != null ? opts.retries : 2;
+  const retries429 = opts.retries429 != null ? opts.retries429 : 4;
   const retryNetwork = !!opts.retryNetwork;
   const sleep = opts.sleep || _retrySleep;
-  for (let attempt = 0; ; attempt++) {
+  let aNet = 0, aTrans = 0, a429 = 0;
+  for (;;) {
     let r;
     try { r = await doFetch(req); }
     catch (e) {
-      if (retryNetwork && attempt < retries) { await sleep(600 * Math.pow(2, attempt)); continue; }
+      if (retryNetwork && aNet < retries) { await sleep(600 * Math.pow(2, aNet)); aNet++; continue; }
       throw (e instanceof Error ? e : new Error(String(e || '네트워크 오류')));
     }
     const status = (r && typeof r.status === 'number') ? r.status : 0;
     if (status >= 200 && status < 300) return r.bodyText;
-    if (isTransientStatus(status) && attempt < retries) { await sleep(600 * Math.pow(2, attempt)); continue; }
+    if (status === 429 && a429 < retries429) {
+      const ra = r ? +r.retryAfterMs : 0;
+      const wait = Math.min(60000, (isFinite(ra) && ra > 0) ? ra : BACKOFF_429[Math.min(a429, BACKOFF_429.length - 1)]);
+      await sleep(wait); a429++; continue;
+    }
+    if (status !== 429 && isTransientStatus(status) && aTrans < retries) { await sleep(600 * Math.pow(2, aTrans)); aTrans++; continue; }
     throw new Error(errorText(status, r && r.bodyText));
   }
 }

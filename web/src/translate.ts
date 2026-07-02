@@ -126,7 +126,7 @@ export async function translateUnits(units: string[], stylePrompt: string, onPro
   if (!force) { try { hits = await trcacheGet(keys); } catch (_) {} }
   const out = units.slice();
   let cachedCount = 0; const missIdx: number[] = [];
-  for (let i = 0; i < units.length; i++) { if (hits[i] != null) { out[i] = hits[i] as string; cachedCount++; } else missIdx.push(i); }
+  for (let i = 0; i < units.length; i++) { if (hits[i] != null && String(hits[i]).trim()) { out[i] = hits[i] as string; cachedCount++; } else missIdx.push(i); }   // ★빈 캐시 값은 미스 취급(과거 빈 응답 오염 자동 치유)
   let translated = 0, skipped = 0; const failed: { index: number; error: string }[] = [];
   if (missIdx.length && !cacheOnly) {   // cacheOnly면 미스는 원문 그대로(번역 호출 안 함)
     const missUnits = missIdx.map((i) => units[i]);
@@ -135,7 +135,7 @@ export async function translateUnits(units: string[], stylePrompt: string, onPro
     const failedK = new Set(res.failed.map((f: any) => f.index));
     res.failed.forEach((f: any) => failed.push({ index: missIdx[f.index], error: f.error }));
     const toCache: { k: string; v: string }[] = [];
-    missIdx.forEach((origI, k) => { out[origI] = res.blocks[k]; if (!failedK.has(k) && res.blocks[k] !== units[origI]) toCache.push({ k: keys[origI], v: res.blocks[k] }); });   // 실제 번역분만 캐시(한국어스킵·실패·미변경 제외)
+    missIdx.forEach((origI, k) => { out[origI] = res.blocks[k]; if (!failedK.has(k) && res.blocks[k] !== units[origI] && String(res.blocks[k]).trim()) toCache.push({ k: keys[origI], v: res.blocks[k] }); });   // 실제 번역분만 캐시(한국어스킵·실패·미변경·★빈값 제외)
     if (toCache.length) { try { await trcachePut(toCache); } catch (_) {} }
   }
   return { blocks: out, translated: translated + cachedCount, skipped, failed };

@@ -53,7 +53,11 @@ export async function webTranslate(payload: any): Promise<string> {
     let res: Response;
     try { res = await fetch(rq.url, { method: rq.method, headers: rq.headers, body: rq.body }); }
     catch (_) { throw new Error('브라우저에서 이 서비스에 직접 연결하지 못했어요(CORS일 수 있음). Gemini·Anthropic을 쓰거나 데스크탑 앱을 이용하세요.'); }
-    return { status: res.status, bodyText: await res.text() };
+    // ★Retry-After(초 또는 날짜) → ms — 429 때 서버가 알려준 대기시간을 재시도가 존중.
+    let retryAfterMs = 0;
+    const ra = res.headers.get('retry-after');
+    if (ra) { const s = +ra; retryAfterMs = isFinite(s) ? s * 1000 : Math.max(0, Date.parse(ra) - Date.now()); }
+    return { status: res.status, bodyText: await res.text(), retryAfterMs };
   }, { retries: 2, retryNetwork: false });
   let json: any = null; try { json = JSON.parse(body); } catch (_) {}
   if (!json) throw new Error('응답 파싱 실패');

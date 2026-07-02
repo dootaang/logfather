@@ -161,7 +161,9 @@ export function createFirebaseBackend(uid: string): any {
 
   // 로그 1건을 클라우드(Firestore + 필요시 Storage)로 올린다. 실패 시 throw.
   async function pushLog(rec: any): Promise<void> {
-    const r: any = Object.assign({}, rec);
+    // ★JSON 왕복 = 깊은 undefined 제거 — Firestore setDoc은 undefined 필드를 거부(과거 번역이 만든 orig.chat:undefined로
+    //   동기화가 영구 실패·재시도 무한 루프). 이미 로컬에 남은 오염 레코드도 다음 flush에서 자동 치유된다.
+    const r: any = JSON.parse(JSON.stringify(rec));
     // html이 커서 문서가 임계를 넘으면 Storage로 분리.
     if (r.html && byteLen(JSON.stringify(r)) > THRESHOLD) {
       await uploadString(sref(storage(), logHtmlPath(r.id)), r.html, 'raw', { contentType: 'text/html;charset=utf-8' });

@@ -161,6 +161,17 @@ const fakeUpper = async (masked) => masked.toUpperCase();
     check(combineCalls === 1, 'batchCount=2 → 2블록 배치만 결합 호출(나머지 1블록 단독)');
     check(r.blocks[1] === 'FOO BAR' && r.blocks[2] === 'BAR BAZ' && r.blocks[3] === 'QUX QUUX', '외국어 전부 번역');
   }
+  // 17-b) ★단독(큰) 블록·순차 경로에도 maxResponse 전달 — 제일 긴 블록이 제일 작은 응답 상한(4096)을 받아 잘리던 것.
+  {
+    const seen = [];
+    const fn = async (m, ctx) => { seen.push(ctx && ctx.maxResponse); return m.toUpperCase(); };
+    const big = 'long english text '.repeat(300);   // ≥4000자 → 결합서도 단독 배치
+    await translateBlocks([big, 'small one'], fn, { combine: true, maxResponse: 12345 });
+    check(seen.length === 2 && seen.every((v) => v === 12345), '결합 모드 단독 블록에 maxResponse 전달');
+    const seen2 = [];
+    await translateBlocks(['plain text'], async (m, ctx) => { seen2.push(ctx && ctx.maxResponse); return m; }, { maxResponse: 777 });
+    check(seen2[0] === 777, '순차(비결합) 경로에도 maxResponse 전달');
+  }
   // 18) 진행률(onProgress)은 결합에서도 블록 단위로 total까지 보고.
   {
     const steps = [];

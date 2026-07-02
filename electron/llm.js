@@ -63,7 +63,11 @@ async function fetchOnce(req) {
   const timer = setTimeout(() => ctrl.abort(), 60000);
   try {
     const res = await net.fetch(req.url, { method: req.method, headers: req.headers, body: req.body, signal: ctrl.signal });
-    return { status: res.status, bodyText: await res.text() };
+    // ★Retry-After(초 또는 날짜) → ms — 429 때 서버가 알려준 대기시간을 재시도가 존중.
+    let retryAfterMs = 0;
+    const ra = res.headers.get('retry-after');
+    if (ra) { const s = +ra; retryAfterMs = isFinite(s) ? s * 1000 : Math.max(0, Date.parse(ra) - Date.now()); }
+    return { status: res.status, bodyText: await res.text(), retryAfterMs };
   } catch (e) {
     if (ctrl.signal.aborted) throw new Error('시간 초과(60초)');   // 타임아웃 = 일시 → requestWithRetry가 재시도
     throw e;
