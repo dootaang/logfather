@@ -9,6 +9,7 @@ import { isDesktop } from './desktopSync.js';   // 웹=정리규칙만 / 데스�
 import { kvLoad, kvSave, archiveSaveSource, archiveList, archiveGetFile, archiveDelete, idbSaveCard } from './store.js';
 import { extractSourceInfo } from '../../core/card/sourceRegex.js';
 import { buildRegex, isCatastrophic, sanitizeRegexOut, escapeRegexLiteral } from '../../core/convert/cardRegex.js';   // 내 숨김 규칙(수동) 검증·이스케이프·살균
+import { saveCardCss, deleteCardCss, hasCardCss } from './cardCss.js';   // ★3단계 "리스 스타일": 카드 CSS 이 기기 보관(동기화 KV엔 모드 플래그만)
 import { parseCardAssets, cardAssetBytes } from '../../core/card/cardAssets.js';
 import { encodeJson, encodeCharx, encodePng, pickPngBase } from '../../core/card/cardEncode.js';   // C: 봇카드 포맷 변환(charx↔png↔json)
 import { assetDataUrl } from '../../core/card/assets.js';
@@ -26,6 +27,23 @@ const cssCountFor = (id: string) => { const s = rules.sources.find((x) => x.id =
 // B: 소스별 개별 활성(기본 on=미설정/없음). 리더는 켜진 소스 규칙만 적용 → 프롬프트 충돌 시 끄면 됨.
 const isSrcEnabled = (id: string) => { const s = rules.sources.find((x) => x.id === id); return !s || s.enabled !== false; };
 const setSrcEnabled = (id: string, on: boolean) => { const s = rules.sources.find((x) => x.id === id); if (s) { s.enabled = !!on; persistRules(); } };
+// ★3단계 "리스 스타일" 모드: strip(기본)=숨김 요소 제거 / risu=카드 CSS를 리더에 입혀 리스처럼 표시.
+const isRisuMode = (id: string) => { const s = rules.sources.find((x) => x.id === id); return !!(s && s.cssMode === 'risu'); };
+const setRisuMode = (id: string, on: boolean) => { const s = rules.sources.find((x) => x.id === id); if (s) { if (on) s.cssMode = 'risu'; else delete s.cssMode; persistRules(); } };
+// 리스 스타일 토글 버튼(웹 목록·데탑 상세 공용) — 카드 CSS가 이 기기에 있을 때만 노출.
+function risuModeBtn(id: string, onChange: () => void): HTMLButtonElement | null {
+  if (!hasCardCss(id)) return null;
+  const b = Object.assign(document.createElement('button'), { textContent: '리스 스타일' }) as HTMLButtonElement;
+  const paint = () => b.classList.toggle('primary', isRisuMode(id));
+  b.title = '켜면 이 카드의 CSS를 리더 본문에 입혀 리스처럼 표시(툴팁 가림·상태창 꾸밈). 끄면 숨김 요소를 제거만 해요. CSS는 이 기기에 보관돼요(다른 기기는 카드 재업로드).';
+  b.onclick = () => { setRisuMode(id, !isRisuMode(id)); paint(); onChange(); };
+  paint(); return b;
+}
+// 소스 저장 시 카드 CSS 동반 처리: 번들 있으면 저장(실패=너무 큼 → 잔재 제거), 없으면 잔재 제거. 반환=저장 여부.
+function persistCardCss(id: string, name: string, bundle: any): boolean {
+  if (bundle && saveCardCss(id, Object.assign({ name }, bundle))) return true;
+  deleteCardCss(id); return false;
+}
 
 // ── 내 숨김 규칙(수동) — 유저가 직접 추가하는 문자열/정규식 숨김. 각 규칙 = user:true 소스 1개로
 //    rules.sources에 합류 → 리더 적용(cleanupRules 평탄화)·개별 토글·기기 동기화(KV)가 기존 파이프라인 그대로.
@@ -132,7 +150,7 @@ function makeDrop(label: string, onFiles: (fs: File[]) => void): HTMLElement {
 
 // ── 드롭 = 보관 + 규칙 + 에셋 인덱스 (한 번에) ──
 async function onDrop(files: File[]) {
-  let saved = 0, totR = 0, totC = 0, totA = 0, dup = 0, failed = 0;
+  let saved = 0, totR = 0, totC = 0, totCss = 0, totA = 0, dup = 0, failed = 0;
   setStatus('보관 중…');
   for (const f of files) {
     try {
@@ -143,16 +161,18 @@ async function onDrop(files: File[]) {
       const name = info.name || fileName;   // ★소스 내부 표시 이름(D) — 봇카드 data.name·모듈 module.name·.risup preset.name, 없으면 파일명
       const rs = info.rules || []; const ch = info.cssHide || [];   // ★ch = backgroundHTML CSS 기본 숨김 클래스(2단계)
       const entry = await archiveSaveSource(bytes, { name, format: info.format || '', assetCount, ruleCount: rs.length });
-      // 규칙 KV 연결(id=파일해시) — 재보관이면 교체
+      // 규칙 KV 연결(id=파일해시) — 재보관이면 교체(리스 스타일 모드는 보존)
+      const prevMode = isRisuMode(entry.id);
       rules.sources = rules.sources.filter((s) => s.id !== entry.id);
-      if (rs.length || ch.length) rules.sources.push({ id: entry.id, name, rules: rs, cssHide: ch, addedAt: entry.addedAt });
+      const gotCss = persistCardCss(entry.id, name, info.cssBundle); if (gotCss) totCss++;   // ★카드 CSS(3단계) 이 기기 보관
+      if (rs.length || ch.length || gotCss) rules.sources.push({ id: entry.id, name, rules: rs, cssHide: ch, addedAt: entry.addedAt, ...(prevMode ? { cssMode: 'risu' } : {}) });   // CSS만 있어도 등록(리스 스타일 토글 대상)
       persistRules();
       if (entry.existed) dup++; else saved++;
       totR += rs.length; totC += ch.length; totA += assetCount;
     } catch (e) { failed++; console.warn('[관리실] 보관 실패', f.name, e); }
   }
   await refreshGrid();
-  setStatus(`보관 ${saved}개${dup ? ` · 이미 있음 ${dup}개` : ''} · 규칙 ${totR}${totC ? ` · CSS숨김 ${totC}` : ''} · 에셋 ${totA}` + (failed ? ` · 실패 ${failed}` : '')
+  setStatus(`보관 ${saved}개${dup ? ` · 이미 있음 ${dup}개` : ''} · 규칙 ${totR}${totC ? ` · CSS숨김 ${totC}` : ''}${totCss ? ` · 카드CSS ${totCss}` : ''} · 에셋 ${totA}` + (failed ? ` · 실패 ${failed}` : '')
     + ((saved + dup) > 0 && totR === 0 && totC === 0 && !failed ? ' — 표시 정규식·CSS 숨김이 없는 소스예요. 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨길 수 있어요.' : ''));
 }
 
@@ -255,7 +275,8 @@ async function openDetail(entry: any) {
     if (isSrcEnabled(entry.id)) togB.classList.add('primary');
     togB.onclick = () => { setSrcEnabled(entry.id, !isSrcEnabled(entry.id)); const on = isSrcEnabled(entry.id); togB!.textContent = on ? '정리 켜짐' : '정리 꺼짐'; togB!.classList.toggle('primary', on); renderGrid(); };
   }
-  acts.append(useB, ...(togB ? [togB] : []), allB, reB, delB); card.appendChild(acts);
+  const risuB = risuModeBtn(entry.id, () => renderGrid());   // ★3단계: 카드 CSS 보유 소스만(리스처럼 표시)
+  acts.append(useB, ...(togB ? [togB] : []), ...(risuB ? [risuB] : []), allB, reB, delB); card.appendChild(acts);
   // C: 봇카드만 포맷 변환(charx↔png↔json). risum(모듈)·risup(프롬프트) 제외. cur는 아래 비동기 로드가 채움(클릭 시 참조).
   if (typeOf(entry.format) === 'card') {
     const conv = document.createElement('div'); conv.className = 'import-btns'; conv.style.justifyContent = 'flex-start';
@@ -290,11 +311,11 @@ async function openDetail(entry: any) {
 
   reB.onclick = async () => {
     reB.disabled = true; reB.textContent = '재추출 중…';
-    try { const bytes = await archiveGetFile(entry.id); if (bytes) { const inf = await extractSourceInfo(bytes, entry.name + '.' + (entry.format || '')); const rs = inf.rules || []; const ch = inf.cssHide || []; const parsed = parseCardAssets(bytes, entry.name + '.' + (entry.format || '')); const ac = (parsed.assets || []).filter((a: any) => a.found !== false).length; await archiveSaveSource(bytes, { name: entry.name, format: entry.format, assetCount: ac, ruleCount: rs.length }); rules.sources = rules.sources.filter((s) => s.id !== entry.id); if (rs.length || ch.length) rules.sources.push({ id: entry.id, name: entry.name, rules: rs, cssHide: ch, addedAt: entry.addedAt }); persistRules(); setStatus(`“${entry.name}” 재추출 — 규칙 ${rs.length}${ch.length ? ` · CSS숨김 ${ch.length}` : ''} · 에셋 ${ac}`); } }
+    try { const bytes = await archiveGetFile(entry.id); if (bytes) { const inf = await extractSourceInfo(bytes, entry.name + '.' + (entry.format || '')); const rs = inf.rules || []; const ch = inf.cssHide || []; const parsed = parseCardAssets(bytes, entry.name + '.' + (entry.format || '')); const ac = (parsed.assets || []).filter((a: any) => a.found !== false).length; await archiveSaveSource(bytes, { name: entry.name, format: entry.format, assetCount: ac, ruleCount: rs.length }); const gotCss = persistCardCss(entry.id, entry.name, (inf as any).cssBundle); const prevMode = isRisuMode(entry.id); rules.sources = rules.sources.filter((s) => s.id !== entry.id); if (rs.length || ch.length || gotCss) rules.sources.push({ id: entry.id, name: entry.name, rules: rs, cssHide: ch, addedAt: entry.addedAt, ...(prevMode ? { cssMode: 'risu' } : {}) }); persistRules(); setStatus(`“${entry.name}” 재추출 — 규칙 ${rs.length}${ch.length ? ` · CSS숨김 ${ch.length}` : ''}${gotCss ? ' · 카드CSS 보관' : ''} · 에셋 ${ac}`); } }
     catch (_) { setStatus('재추출 실패'); }
     ov.remove(); refreshGrid();
   };
-  delB.onclick = async () => { try { await archiveDelete(entry.id); rules.sources = rules.sources.filter((s) => s.id !== entry.id); persistRules(); } catch (_) {} ov.remove(); setStatus(`“${entry.name}” 보관 삭제`); refreshGrid(); };
+  delB.onclick = async () => { try { await archiveDelete(entry.id); rules.sources = rules.sources.filter((s) => s.id !== entry.id); persistRules(); deleteCardCss(entry.id); } catch (_) {} ov.remove(); setStatus(`“${entry.name}” 보관 삭제`); refreshGrid(); };
 }
 
 // 정리 토글(공용): 리더 적용 on/off.
@@ -334,22 +355,25 @@ function buildArchiveRoom(wrap: HTMLElement) {
 // ── 웹: 정리 규칙만(드롭→규칙 추출→동기화 KV). 에셋/보관은 데스크탑 전용. ──
 async function sha256Hex(b: Uint8Array): Promise<string> { const buf = await crypto.subtle.digest('SHA-256', b); return Array.from(new Uint8Array(buf)).map((x) => x.toString(16).padStart(2, '0')).join(''); }
 async function onDropWeb(files: File[]) {
-  let added = 0, totR = 0, totC = 0, empty = 0, failed = 0;
+  let added = 0, totR = 0, totC = 0, totCss = 0, empty = 0, failed = 0;
   setStatus('규칙 추출 중…');
   for (const f of files) {
     try {
       const bytes = new Uint8Array(await f.arrayBuffer());
       const info = await extractSourceInfo(bytes, f.name);
       const ch = info.cssHide || [];   // ★backgroundHTML CSS 기본 숨김 클래스(2단계) — 정규식 0개여도 정리 가능
-      if (!info.rules.length && !ch.length) { empty++; continue; }
       const id = await sha256Hex(bytes);   // 콘텐츠 해시 = dedup(같은 소스 재드롭 1벌)
+      const name = info.name || f.name.replace(/\.[^.]+$/, '');
+      const gotCss = persistCardCss(id, name, info.cssBundle); if (gotCss) totCss++;   // ★카드 CSS(3단계) 이 기기 보관
+      if (!info.rules.length && !ch.length && !gotCss) { empty++; continue; }
+      const prevMode = isRisuMode(id);   // 재드롭 시 리스 스타일 모드 보존
       rules.sources = rules.sources.filter((s) => s.id !== id);
-      rules.sources.push({ id, name: info.name || f.name.replace(/\.[^.]+$/, ''), rules: info.rules, cssHide: ch, addedAt: Date.now() });
+      rules.sources.push({ id, name, rules: info.rules, cssHide: ch, addedAt: Date.now(), ...(prevMode ? { cssMode: 'risu' } : {}) });
       persistRules(); added++; totR += info.rules.length; totC += ch.length;
     } catch (e) { failed++; console.warn('[관리실 웹] 규칙 추출 실패', f.name, e); }
   }
   renderRulesList();
-  setStatus(added ? `정리 규칙 ${totR}개${totC ? ` · CSS숨김 ${totC}개` : ''} 추출 (소스 ${added}개)` + (empty ? ` · 표시규칙 없음 ${empty}` : '') : empty ? '이 소스엔 표시 정규식·CSS 숨김이 아예 없어요. 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨겨보세요.' : '소스를 읽지 못했어요(.charx · .png · .json · .risum · .risup).');
+  setStatus(added ? `정리 규칙 ${totR}개${totC ? ` · CSS숨김 ${totC}개` : ''}${totCss ? ` · 카드CSS ${totCss}개(리스 스타일 가능)` : ''} 추출 (소스 ${added}개)` + (empty ? ` · 표시규칙 없음 ${empty}` : '') : empty ? '이 소스엔 표시 정규식·CSS 숨김이 아예 없어요. 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨겨보세요.' : '소스를 읽지 못했어요(.charx · .png · .json · .risum · .risup).');
 }
 function renderRulesList() {
   if (!rulesListEl) return; rulesListEl.innerHTML = '';
@@ -367,8 +391,9 @@ function renderRulesList() {
     tg.title = '이 소스의 정리 규칙을 리더에 적용 켜기/끄기';
     tg.onclick = () => { setSrcEnabled(s.id, !isSrcEnabled(s.id)); renderRulesList(); };
     acts.appendChild(tg);
+    const rb = risuModeBtn(s.id, () => renderRulesList()); if (rb) acts.appendChild(rb);   // ★3단계: 카드 CSS 보유 소스만
     const del = Object.assign(document.createElement('button'), { className: 'series-del', textContent: '삭제' });
-    del.onclick = () => { rules.sources = rules.sources.filter((x) => x.id !== s.id); persistRules(); renderRulesList(); };
+    del.onclick = () => { rules.sources = rules.sources.filter((x) => x.id !== s.id); persistRules(); deleteCardCss(s.id); renderRulesList(); };
     acts.appendChild(del); row.appendChild(acts); rulesListEl.appendChild(row);
   }
 }

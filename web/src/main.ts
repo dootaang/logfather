@@ -7,6 +7,7 @@
 import { convertText } from '../../core/convert/convertText.js';
 import { parseCard } from '../../core/card/parseCard.js';
 import { extractSourceInfo } from '../../core/card/sourceRegex.js';   // 편집기→관리실 자동 보관(B): 내부 이름·표시 규칙
+import { saveCardCss, deleteCardCss } from './cardCss.js';   // ★카드 CSS(관리실 3단계 "리스 스타일") 이 기기 보관
 import { parseCardAssets } from '../../core/card/cardAssets.js';      // 〃 에셋 수
 import { isDesktop } from './desktopSync.js';                          // 〃 데스크탑에서만 보관(클라우드 X)
 import { assetDataUrl, applyTagScheme } from '../../core/card/assets.js';
@@ -2235,11 +2236,14 @@ async function archiveFromEditor(bytes: Uint8Array, fileName: string) {
     const name = info.name || fileName.replace(/\.[^.]+$/, '');
     const entry = await archiveSaveSource(bytes, { name, format: info.format || '', assetCount, ruleCount: (info.rules || []).length });
     const cssHide = (info as any).cssHide || [];   // ★backgroundHTML CSS 기본 숨김 클래스(관리실 2단계)
-    if ((info.rules && info.rules.length) || cssHide.length) {
+    let gotCss = false;   // ★카드 CSS(관리실 3단계 "리스 스타일") — 이 기기 보관, 실패/없음이면 잔재 제거
+    try { const b = (info as any).cssBundle; if (b) gotCss = saveCardCss(entry.id, Object.assign({ name }, b)); if (!gotCss) deleteCardCss(entry.id); } catch (_) {}
+    if ((info.rules && info.rules.length) || cssHide.length || gotCss) {
       const r: any = kvLoad('pro2-cleanup-rules');
       const rr = (r && typeof r === 'object') ? { enabled: r.enabled !== false, sources: Array.isArray(r.sources) ? r.sources : [] } : { enabled: true, sources: [] };
+      const prev = rr.sources.find((s: any) => s.id === entry.id);   // 리스 스타일 모드 보존
       rr.sources = rr.sources.filter((s: any) => s.id !== entry.id);
-      rr.sources.push({ id: entry.id, name, rules: info.rules || [], cssHide, addedAt: entry.addedAt });
+      rr.sources.push({ id: entry.id, name, rules: info.rules || [], cssHide, addedAt: entry.addedAt, ...(prev && prev.cssMode === 'risu' ? { cssMode: 'risu' } : {}) });
       kvSave('pro2-cleanup-rules', rr);
     }
   } catch (e) { console.warn('[편집기→관리실] 자동 보관 실패', e); }

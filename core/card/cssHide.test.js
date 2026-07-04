@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
-const { extractCssHide, extractHiddenClasses, stripCbs, styleBodies } = require('./cssHide.js');
+const { extractCssHide, extractHiddenClasses, stripCbs, styleBodies, parseVarsBlock, resolveCssCbs, sanitizeCardCss, extractCssClasses, scopeCss, extractCardCssBundle } = require('./cssHide.js');
 
 const ROOT = path.join(__dirname, '..', '..');
 let n = 0;
@@ -96,6 +96,74 @@ const has = (list, cls) => list.some((h) => h.cls === cls);
   ok(extractCssHide(null).length === 0 && extractCssHide({}).length === 0, '빈 입력 안전');
 }
 
+// ── 3단계: resolveCssCbs — CSS 전용 CBS 실평가 ──
+{
+  const vars = parseVarsBlock('cv_assetfolding=1\ncv_off=0\ncv_name = elsie ');
+  ok(vars.cv_assetfolding === '1' && vars.cv_off === '0' && vars.cv_name === 'elsie', 'defaultVariables 블록 파싱');
+  const css = `
+    .asset-container {
+      {{#if_pure {{equal::{{getvar::cv_assetfolding}}::1}}}}
+        {{#if {{? {{screen_width}} > 768 }} }} width: 25em; {{/if}}
+        {{#if {{? {{screen_width}} <= 768 }} }} width: 100%; {{/if}}
+      {{/if_pure}}
+      position: relative;
+    }
+    .gated { {{#if {{equal::{{getvar::cv_off}}::1}}}} color: red; {{:else}} color: blue; {{/if}} }
+    .mystery { {{#if {{unknownfn::x}}}} outline: none; {{/if}} }
+    .kf { animation: roll 1s; } @keyframes roll { 0% { content: '{{roll::20}}'; } }
+  `;
+  const desktop = resolveCssCbs(css, { width: 1200, vars });
+  ok(desktop.includes('width: 25em') && !desktop.includes('width: 100%'), '중첩 조건 실평가: 데스크탑 분기만 생존');
+  const mobile = resolveCssCbs(css, { width: 400, vars });
+  ok(mobile.includes('width: 100%') && !mobile.includes('width: 25em'), '모바일 폭이면 반대 분기');
+  const foldOff = resolveCssCbs(css, { width: 1200, vars: { cv_assetfolding: '0' } });
+  ok(!foldOff.includes('width: 25em') && !foldOff.includes('width: 100%'), 'if_pure 바깥 조건 0이면 안쪽 통째 제거');
+  ok(desktop.includes('color: blue') && !desktop.includes('color: red'), '{{:else}} 분기 선택(조건 0)');
+  ok(desktop.includes('outline: none'), '미해석 조건은 관대(본문 유지)');
+  ok(!desktop.includes('{{') && desktop.includes("content: ''"), '잔여 CBS 전부 제거(CSS 문법 보호)');
+}
+
+// ── 3단계: sanitizeCardCss / scopeCss / extractCssClasses ──
+{
+  const dirty = `@import url('https://evil.example/x.css'); /* c */
+    .a { background: url("javascript:alert(1)"); position: fixed; top: 0; }
+    .b { behavior: url(x.htc); width: expression(alert(1)); }`;
+  const clean = sanitizeCardCss(dirty);
+  ok(!/@import|javascript:|behavior|expression\s*\(/i.test(clean), '살균: @import·js url·behavior·expression 제거');
+  ok(/position:\s*relative/.test(clean) && !/fixed/.test(clean), '살균: position:fixed → relative(오버레이 방지)');
+  ok(sanitizeCardCss('.x { {{#if {{? {{screen_width}} > 7}} }} color:red; {{/if}} }').includes('{{#if'), '살균: CBS 보존(렌더 시 평가)');
+
+  const css = `
+    .tip { opacity: 0; } .tip:hover { opacity: 1; }
+    p { color: red; } body { margin: 0; }
+    .wrap p, hr { color: gold; }
+    @media (max-width: 768px) { .tip { width: 100%; } div { padding: 0; } }
+    @keyframes spin { to { transform: rotate(1turn); } }
+  `;
+  const scoped = scopeCss(css, '.reader-card');
+  ok(scoped.includes('.reader-card .tip{') && scoped.includes('.reader-card .tip:hover{'), '스코프: 클래스 규칙 접두(호버 포함)');
+  ok(!/(^|\n)\.reader-card p\{/.test(scoped) && !scoped.includes('body'), '스코프: 순수 요소 선택자(p·body)는 드롭');
+  ok(scoped.includes('.reader-card .wrap p{') && !scoped.includes('hr{'), '스코프: 콤마 목록 항목별 필터(클래스 낀 것만)');
+  ok(/@media \(max-width: 768px\)\{[\s\S]*\.reader-card \.tip\{ width: 100%; \}/.test(scoped) && !/@media[\s\S]*div\{/.test(scoped), '스코프: @media 내부 재귀 재작성');
+  ok(scoped.includes('@keyframes spin{') && scoped.includes('rotate(1turn)'), '스코프: @keyframes 원문 보존');
+
+  const classes = extractCssClasses(css);
+  ok(classes.includes('tip') && classes.includes('wrap') && classes.length === 2, '클래스 수집(매칭용): 선택자의 클래스 토큰만');
+}
+
+// ── 3단계: extractCardCssBundle — 카드에서 번들(css·vars·classes) ──
+{
+  const parsed = { card: { data: { extensions: { risuai: {
+    backgroundHTML: '<style>.st { opacity: 0; } @import url(https://x/y.css);</style>',
+    defaultVariables: 'cv_a=1\ncv_b=2',
+  } } } } };
+  const b = extractCardCssBundle(parsed);
+  ok(b && b.css.includes('.st') && !/@import/.test(b.css), '번들: 살균된 CSS');
+  ok(b.vars.cv_a === '1' && b.vars.cv_b === '2', '번들: defaultVariables 동반');
+  ok(b.classes.includes('st'), '번들: 매칭용 클래스');
+  ok(extractCardCssBundle({ card: { data: {} } }) === null, 'CSS 없는 카드 = null');
+}
+
 // ── 실물: 메리시스터즈 charx(140MB, 로컬 있을 때만 — 지연 색인이라 에셋 안 풂) ──
 {
   const p = path.join(ROOT, '캐릭터파일', 'Merry Sisters! - Final.charx');
@@ -106,6 +174,15 @@ const has = (list, cls) => list.some((h) => h.cls === cls);
     ok(has(r, 'info-tooltip') && has(r, 'gauge-tooltip'), `실물 메리시스터즈: 호감도 툴팁 클래스 감지 (총 ${r.length}개)`);
     ok(!has(r, 'asset-container') && !has(r, 'status-wrapper'), '실물: 본문 컨테이너는 미감지(오탐 없음)');
     console.log('    감지 목록:', r.map((h) => h.cls + '(' + h.why + ')').join(' · '));
+    // 3단계 실물: 번들 → CBS 실평가(카드 기본 변수·데스크탑 폭) → 스코프
+    const b = extractCardCssBundle(parsed);
+    ok(b && b.css.length > 10000 && b.classes.includes('info-tooltip'), `실물: CSS 번들 추출(${(b.css.length / 1024).toFixed(0)}KB · 클래스 ${b.classes.length}개)`);
+    const resolved = resolveCssCbs(b.css, { width: 1200, vars: b.vars });
+    ok(resolved.indexOf('{{') === -1, '실물: CBS 잔재 0(중괄호 안전)');
+    ok(resolved.includes('width: 25em') && /\.info-tooltip\s*\{[^}]*opacity:\s*0/.test(resolved), '실물: 데스크탑 분기 생존 + 툴팁 기본숨김 유지');
+    const scoped = scopeCss(resolved, '.reader-card');
+    ok(scoped.includes('.reader-card .info-tooltip') && scoped.includes('.reader-card .asset-container:hover .info-tooltip'), '실물: 스코프 접두(호버 드러내기 규칙 포함)');
+    ok(!/(^|\n)\s*\.reader-card\s+(?:body|html)\b/.test(scoped), '실물: 요소 선택자 유출 없음');
   } else {
     console.log('  - 실물 charx 없음(로컬 전용) — 합성 테스트로 대체');
   }

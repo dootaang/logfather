@@ -22,6 +22,7 @@ import { processImageTags, stripUnresolvedAssetImages, countUnresolvedAssetRefs 
 import { resolveAssetCBS } from '../../core/convert/prepareBody.js';
 import { resolveAssetMarkers } from '../../core/convert/risuMarkers.js';
 import { renderRisu } from '../../core/risu/parser.js';   // ★리스 CBS 관대 렌더(조건문·계산·변수·배경이미지 div) — 임포트 챗 충실 렌더
+import { hasCardCss, loadCardCss, scopedCardCss } from './cardCss.js';   // ★3단계 "리스 스타일": 카드 CSS 주입(제거 대신 리스처럼 가리기·꾸미기)
 
 const loadShare = () => import('./share.js');
 const epOrder = (x: any) => (x && x.order != null ? x.order : 1e9);
@@ -58,8 +59,33 @@ function cleanupCssHide(): string[] {
   try {
     const r = kvLoad(CLEANUP_KEY); if (!r || r.enabled === false || !Array.isArray(r.sources)) return [];
     const seen = new Set<string>(); const out: string[] = [];
-    for (const s of r.sources) if (s && s.enabled !== false && Array.isArray(s.cssHide))
+    for (const s of r.sources) {
+      if (!s || s.enabled === false || !Array.isArray(s.cssHide)) continue;
+      if (s.cssMode === 'risu' && hasCardCss(s.id)) continue;   // ★3단계 "리스 스타일" 소스 = 제거 대신 CSS 주입(카드CSS가 이 기기에 있을 때만 — 없으면 제거 폴백)
       for (const c of s.cssHide) if (typeof c === 'string' && /^[A-Za-z_][\w-]*$/.test(c) && !seen.has(c)) { seen.add(c); out.push(c); }
+    }
+    return out;
+  } catch (_) { return []; }
+}
+// ★3단계: 이 화에 주입할 카드 CSS 목록 — "리스 스타일" 모드 소스 중, 그 카드의 클래스가 실제 본문에 등장하는 것만
+//   (작품↔카드 자동 매칭: 다른 봇 로그에 남의 상태창 CSS가 끼지 않게). 반환 = 스코프 완료 CSS 문자열들.
+function cardCssFor(html: string): string[] {
+  try {
+    const r = kvLoad(CLEANUP_KEY); if (!r || r.enabled === false || !Array.isArray(r.sources)) return [];
+    const h = String(html || ''); if (!h) return [];
+    const out: string[] = [];
+    for (const s of r.sources) {
+      if (!s || s.enabled === false || s.cssMode !== 'risu') continue;
+      const b = loadCardCss(s.id);
+      if (!b || !Array.isArray(b.classes) || !b.classes.length) continue;
+      // 매칭 = class="..." 속성 안 단어 경계(본문 텍스트의 우연한 단어 일치로 남의 카드 CSS가 끼지 않게)
+      const names = b.classes.filter((c: string) => typeof c === 'string' && /^[A-Za-z_][\w-]*$/.test(c));
+      let matched = false;
+      try { matched = names.length > 0 && new RegExp('class="[^"]*\\b(?:' + names.join('|') + ')\\b').test(h); } catch (_) {}
+      if (!matched) continue;
+      const css = scopedCardCss(s.id, (typeof window !== 'undefined' && window.innerWidth) || 1024);
+      if (css) out.push(css);
+    }
     return out;
   } catch (_) { return []; }
 }
@@ -539,9 +565,12 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     let displayHtml = baseHtml; let cleanSeg: HTMLElement | null = null;
     const cRules = papa ? [] : cleanupRules().concat(perLogCleanup(r));   // 관리실 글로벌 + per-log(가져온 챗 동봉) 정리 규칙 합성 (파파는 미적용)
     const cCss = papa ? [] : cleanupCssHide();   // ★CSS 기본 숨김 클래스(관리실 2단계) — 규칙과 같은 토글로 합성
-    if ((cRules.length || cCss.length) && cleanupChanges(baseRec, cRules, cCss)) {
+    const cInj = papa ? [] : cardCssFor(baseHtml);   // ★카드 CSS 주입(3단계 "리스 스타일") — 이 화에 그 카드 클래스가 나올 때만
+    let injectCss = '';   // 정리 ON일 때 리더에 꽂을 <style> 내용(스코프 완료)
+    if (((cRules.length || cCss.length) && cleanupChanges(baseRec, cRules, cCss)) || cInj.length) {
       const on = cleanView[r.id] !== false;
       displayHtml = on ? renderCleaned(baseRec, cRules, amap, cCss) : baseHtml;
+      if (on) injectCss = cInj.join('\n');
       cleanSeg = document.createElement('div'); cleanSeg.className = 'reader-seg';
       const cOn = document.createElement('button'); cOn.className = 'reader-iconbtn' + (on ? ' on' : ''); cOn.textContent = '정리';
       const cOff = document.createElement('button'); cOff.className = 'reader-iconbtn' + (on ? '' : ' on'); cOff.textContent = '원본';
@@ -568,6 +597,9 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     // displayHtml = 원문/번역 토글(origView) + 정리/원본 토글(cleanView) 비파괴 합성(위에서 계산). ★저장은 안 바뀜.
     if (!papa) displayHtml = stripUnresolvedAssetImages(displayHtml);   // ★매핑 안 된 에셋명 <img>(AI가 지어낸 감정 등)는 표시에서 숨김 = 엑박 아이콘 방지. 파파는 남의 디자인 그대로(진짜 URL/data만) → 미적용
     mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route, papa);
+    // ★3단계 "리스 스타일": 카드 CSS를 화 컨테이너(.reader-card) 스코프로 주입 — 리스처럼 툴팁은 가려지고 상태창은 꾸며짐.
+    //   reader는 렌더마다 새로 만들어져 스타일 수명은 자동. 원본 토글이면 injectCss='' = 주입 없음.
+    if (injectCss) { const st = document.createElement('style'); st.dataset.lpCardcss = '1'; st.textContent = injectCss; reader.appendChild(st); }
     // ★파파 = 받자마자(처음 볼 때) 자동 이미지 굳히기 시도 — 배경. 세션당 1회(죽은 링크 매번 두드리지 않게). 성공=blob 박제 후 재렌더, 실패=원본 유지("굳히기" 버튼으로 재시도).
     const online = typeof navigator === 'undefined' || navigator.onLine !== false;
     if (papa && online && bakeAvailable() && externalCount(r.html || '') && !r._papaBakeTried) {

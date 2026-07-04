@@ -134,4 +134,139 @@ function extractCssHide(parsed) {
   return found;
 }
 
-module.exports = { extractCssHide, extractHiddenClasses, stripCbs, styleBodies };
+// ════════════════════════════════════════════════════════════════════════════
+// 3단계: 카드 CSS 통째 이식(리스 표시 패리티) — 리더가 이 CSS를 화 컨테이너에 스코프해 주입.
+//   저장(관리실): sanitizeCardCss(원본, CBS 보존) + vars(defaultVariables) + classes(매칭용)
+//   렌더(리더):  resolveCssCbs(CBS 실평가: screen_width·getvar·equal·? 비교) → scopeCss(선택자 접두)
+// ════════════════════════════════════════════════════════════════════════════
+
+// defaultVariables 블록("k=v" 줄들) → 맵. CBS 조건({{getvar::cv_x}})의 기본값 소스.
+function parseVarsBlock(str) {
+  const out = Object.create(null);
+  for (const line of String(str || '').split(/\r?\n/)) {
+    const k = line.indexOf('=');
+    if (k > 0) out[line.slice(0, k).trim()] = line.slice(k + 1).trim();
+  }
+  return out;
+}
+
+// CSS 전용 CBS 미니 평가기(공유 파서 무변경 — 리더 renderRisu는 조건을 실평가 안 하는 "관대"라 CSS엔 부적합).
+//   지원: {{screen_width/height}} {{getvar::x}} {{equal/any/all/not}} {{? A OP B}} + {{#if(_pure)}}...{{:else}}...{{/if}}
+//   미해석 조건 = 관대(본문 유지, 리스 기본과 유사). 남은 {{...}}는 최종 제거(CSS 문법 보호).
+function resolveCssCbs(css, env) {
+  env = env || {};
+  const vars = env.vars || {};
+  const truthy = (v) => { const s = String(v).trim(); return s !== '' && s !== '0' && s.toLowerCase() !== 'false'; };
+  let s = String(css || '');
+  // 1) 리프 토큰 반복 평가(안쪽부터). 해석 불가 토큰은 자리 유지(무한루프 방지 위해 "바뀐 게 없으면 종료").
+  for (let guard = 0; guard < 200; guard++) {
+    let changed = false;
+    s = s.replace(/\{\{(?!\s*[#:/])([^{}]*)\}\}/g, (whole, body) => {
+      const b = body.trim();
+      let r = null;
+      if (/^screen_width$/i.test(b)) r = String(env.width != null ? env.width : 1024);
+      else if (/^screen_height$/i.test(b)) r = String(env.height != null ? env.height : 768);
+      else if (/^getvar::/i.test(b)) { const k = b.slice(8).trim(); r = vars[k] != null ? String(vars[k]) : '0'; }
+      else if (/^equal::/i.test(b)) { const a = b.slice(7).split('::'); r = (a.length >= 2 && a[0].trim() === a[1].trim()) ? '1' : '0'; }
+      else if (/^any::/i.test(b)) r = b.slice(5).split('::').some(truthy) ? '1' : '0';
+      else if (/^all::/i.test(b)) r = b.slice(5).split('::').every(truthy) ? '1' : '0';
+      else if (/^not::/i.test(b)) r = truthy(b.slice(5)) ? '0' : '1';
+      else if (/^\?/.test(b)) {
+        const m = /^([-\d.]+)\s*(>=|<=|==|!=|=|>|<)\s*([-\d.]+)$/.exec(b.replace(/^\?\s*/, ''));
+        if (m) {
+          const A = parseFloat(m[1]), B = parseFloat(m[3]), op = m[2];
+          r = (op === '>' ? A > B : op === '<' ? A < B : op === '>=' ? A >= B : op === '<=' ? A <= B : op === '!=' ? A !== B : A === B) ? '1' : '0';
+        }
+      }
+      if (r == null) return whole;   // 미지 토큰 유지(아래 블록 관대 판정 → 최종 제거)
+      changed = true; return r;
+    });
+    if (!changed) break;
+  }
+  // 2) 조건 블록(안쪽=본문에 {{#가 없는 것)부터: 1=본문 · 0=else(있으면) · 미해석=관대(본문).
+  const BLOCK = /\{\{#(?:if|if_pure)\b([^{}]*)\}\}((?:(?!\{\{#)[\s\S])*?)\{\{\/(?:if_pure|if)?\}\}/i;
+  for (let guard = 0; guard < 500; guard++) {
+    const m = BLOCK.exec(s);
+    if (!m) break;
+    const cond = m[1].trim();
+    let body = m[2];
+    const elseM = /\{\{:else\}\}/i.exec(body);
+    const yes = elseM ? body.slice(0, elseM.index) : body;
+    const no = elseM ? body.slice(elseM.index + elseM[0].length) : '';
+    const pick = (cond === '0' || cond === '') ? no : yes;   // '1'·미해석 → 본문(관대)
+    s = s.slice(0, m.index) + pick + s.slice(m.index + m[0].length);
+  }
+  return stripCbs(s);   // 잔여 CBS({{roll::}} 등) 제거 — CSS 문법 보호
+}
+
+// 카드 CSS 살균(파파모드 sanitizePapaCss와 같은 계열 + position:fixed 강등). CBS 토큰은 보존(렌더 시 평가).
+function sanitizeCardCss(css) {
+  return String(css || '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')                                         // 주석(용량·파서 단순화)
+    .replace(/<\s*\/\s*style/gi, '')                                          // </style 탈출 방지
+    .replace(/@import[^;]*;?/gi, '')                                          // 외부 로드
+    .replace(/@charset[^;]*;?/gi, '')
+    .replace(/expression\s*\(/gi, '(')                                        // IE expression()
+    .replace(/behavior\s*:[^;}]*/gi, '')
+    .replace(/-moz-binding\s*:[^;}]*/gi, '')
+    .replace(/url\s*\(\s*['"]?\s*(?:javascript|vbscript):[^)]*\)/gi, 'none')
+    .replace(/javascript:/gi, '')
+    .replace(/position\s*:\s*fixed/gi, 'position: relative');                 // 리더 UI 위로 떠오르는 오버레이 방지
+}
+
+// 선택자 수집(매칭용): CSS의 모든 클래스 토큰. 리더가 "이 화에 이 카드 클래스가 나오나"로 주입 여부 판단.
+function extractCssClasses(cssText) {
+  const css = stripCbs(String(cssText || '').replace(/\/\*[\s\S]*?\*\//g, ''));
+  const seen = new Set();
+  walkCss(css, (selector) => {
+    let m; const re = /\.([A-Za-z_][\w-]*)/g;
+    while ((m = re.exec(selector)) && seen.size < 500) seen.add(m[1]);
+  });
+  return [...seen];
+}
+
+// CSS를 scope 선택자 아래로 재작성(리더 셸 보호). CBS는 이미 해석된 상태여야 함(중괄호).
+//   · 일반 규칙: 콤마 항목별로 클래스/아이디/속성([.#[)이 든 것만 scope 접두 — 순수 요소 선택자(p·div·body)는
+//     로그 전체를 물들이므로 통째 드롭(상태창 CSS는 클래스 기반이라 손실 미미).
+//   · @media류는 재귀 재작성, @keyframes/@font-face는 원문 보존(애니메이션 필요).
+function scopeCss(css, scope) {
+  const src = String(css || '');
+  let out = '';
+  let i = 0; const n = src.length;
+  while (i < n) {
+    const open = src.indexOf('{', i);
+    if (open < 0) break;
+    const sel = src.slice(i, open).trim();
+    if (sel.charAt(0) === '@') {
+      let depth = 1, j = open + 1;
+      while (j < n && depth) { const c = src.charAt(j); if (c === '{') depth++; else if (c === '}') depth--; j++; }
+      const inner = src.slice(open + 1, j - 1);
+      if (/^@(media|supports|container|layer|scope)\b/i.test(sel)) out += sel + '{' + scopeCss(inner, scope) + '}\n';
+      else if (/^@(keyframes|-webkit-keyframes|font-face)\b/i.test(sel)) out += sel + '{' + inner + '}\n';
+      i = j;
+    } else {
+      const close = src.indexOf('}', open);
+      if (close < 0) break;
+      const kept = sel.split(',').map((x) => x.trim()).filter((x) => x && /[.#[]/.test(x)).map((x) => scope + ' ' + x);
+      if (kept.length) out += kept.join(', ') + '{' + src.slice(open + 1, close) + '}\n';
+      i = close + 1;
+    }
+  }
+  return out;
+}
+
+// 소스(parseCard 결과) → 카드 CSS 번들 {css(살균·CBS보존), vars, classes} 또는 null(CSS 없음).
+function extractCardCssBundle(parsed) {
+  const bodies = [];
+  for (const src of cardCssSources(parsed)) for (const b of styleBodies(src)) bodies.push(b);
+  if (!bodies.length) return null;
+  const css = sanitizeCardCss(bodies.join('\n'));
+  if (!css.trim()) return null;
+  let vars = {};
+  const data = (parsed && parsed.card && (parsed.card.data || parsed.card)) || null;
+  const risuai = data && data.extensions && data.extensions.risuai;
+  if (risuai && typeof risuai.defaultVariables === 'string') vars = parseVarsBlock(risuai.defaultVariables);
+  return { css, vars, classes: extractCssClasses(css) };
+}
+
+module.exports = { extractCssHide, extractHiddenClasses, stripCbs, styleBodies, parseVarsBlock, resolveCssCbs, sanitizeCardCss, extractCssClasses, scopeCss, extractCardCssBundle };
