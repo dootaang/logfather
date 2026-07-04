@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
-const { extractRegexScripts, expandCardRegex, buildRegex, sanitizeRegexOut, isCatastrophic } = require('./cardRegex.js');
+const { extractRegexScripts, expandCardRegex, buildRegex, sanitizeRegexOut, isCatastrophic, escapeRegexLiteral } = require('./cardRegex.js');
 const { resolveAssetCBS, convertText } = require('./convertText.js');
 const { parseRisumCard } = require('../card/risum.js');
 const { buildImageMappings, applyTagScheme } = require('../card/assets.js');
@@ -59,6 +59,16 @@ const ok = (cond, msg) => { assert.ok(cond, msg); console.log('  ✓ ' + msg); n
   ok(!isCatastrophic('(abc)+') && !isCatastrophic('<aoiimg src="(.*?)">'), 'ReDoS: 정상 패턴 통과');
   const guarded = expandCardRegex('aaaaaaaaaaaaaaaaaaaa!', [{ in: '(a+)+$', out: 'X', type: 'editdisplay' }]);
   ok(typeof guarded === 'string', 'ReDoS: 위험 패턴은 스킵되어 멈추지 않음');
+}
+
+// ── escapeRegexLiteral: 관리실 "내 숨김 규칙" 간단모드(문자열 그대로 숨김) ──
+{
+  const raw = '호감도 +5 (Elsie) [55/100] ❤.*$';   // 정규식 메타문자 잔뜩
+  const rule = { in: escapeRegexLiteral(raw), out: '', type: 'editdisplay' };
+  const out = expandCardRegex('앞 ' + raw + ' 뒤 ' + raw, [rule]);
+  ok(out === '앞  뒤 ', '간단모드: 메타문자 포함 문자열이 그대로(전부) 숨겨짐');
+  ok(expandCardRegex('호감도 +55', [rule]) === '호감도 +55', '간단모드: 부분 불일치는 안 건드림(이스케이프 확인)');
+  ok(new RegExp(escapeRegexLiteral('a\\b')).test('a\\b'), '백슬래시도 리터럴 매치');
 }
 
 // ── resolveAssetCBS: 알려진 에셋만 URL, {{img::}}는 보존 ──

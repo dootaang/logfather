@@ -8,6 +8,7 @@ import { icon } from './icons.js';
 import { isDesktop } from './desktopSync.js';   // 웹=정리규칙만 / 데스크탑=정리+에셋+보관 게이팅(C)
 import { kvLoad, kvSave, archiveSaveSource, archiveList, archiveGetFile, archiveDelete, idbSaveCard } from './store.js';
 import { extractSourceRegex, extractSourceInfo } from '../../core/card/sourceRegex.js';
+import { buildRegex, isCatastrophic, sanitizeRegexOut, escapeRegexLiteral } from '../../core/convert/cardRegex.js';   // 내 숨김 규칙(수동) 검증·이스케이프·살균
 import { parseCardAssets, cardAssetBytes } from '../../core/card/cardAssets.js';
 import { encodeJson, encodeCharx, encodePng, pickPngBase } from '../../core/card/cardEncode.js';   // C: 봇카드 포맷 변환(charx↔png↔json)
 import { assetDataUrl } from '../../core/card/assets.js';
@@ -24,6 +25,72 @@ const ruleCountFor = (id: string) => { const s = rules.sources.find((x) => x.id 
 // B: 소스별 개별 활성(기본 on=미설정/없음). 리더는 켜진 소스 규칙만 적용 → 프롬프트 충돌 시 끄면 됨.
 const isSrcEnabled = (id: string) => { const s = rules.sources.find((x) => x.id === id); return !s || s.enabled !== false; };
 const setSrcEnabled = (id: string, on: boolean) => { const s = rules.sources.find((x) => x.id === id); if (s) { s.enabled = !!on; persistRules(); } };
+
+// ── 내 숨김 규칙(수동) — 유저가 직접 추가하는 문자열/정규식 숨김. 각 규칙 = user:true 소스 1개로
+//    rules.sources에 합류 → 리더 적용(cleanupRules 평탄화)·개별 토글·기기 동기화(KV)가 기존 파이프라인 그대로.
+//    쓸모: 카드에 표시 정규식이 아예 없는 봇(숨김을 backgroundHTML CSS로 하는 상태창 봇 등)의 잔여 문자열 제거.
+const isUserSrc = (s: any) => !!(s && s.user === true);
+let userListEl: HTMLElement | null = null;
+
+function addUserRule(raw: string, outRep: string, advanced: boolean): string | null {   // 반환 = 오류 메시지(null=성공)
+  const src = raw.trim();
+  if (!src) return '숨길 문자열을 입력해주세요.';
+  const pattern = advanced ? src : escapeRegexLiteral(src);
+  if (advanced) {
+    try { buildRegex(pattern); } catch (e: any) { return '정규식 오류: ' + ((e && e.message) || '패턴을 확인해주세요.'); }
+    if (isCatastrophic(pattern)) return '위험한 패턴(중첩 수량자·ReDoS)이라 추가할 수 없어요.';
+  }
+  const rule = { in: pattern, out: advanced ? sanitizeRegexOut(outRep || '') : '', type: 'editdisplay', flag: '' };
+  if (rules.sources.some((s) => isUserSrc(s) && s.rules && s.rules[0] && s.rules[0].in === rule.in && s.rules[0].out === rule.out)) return '이미 있는 규칙이에요.';
+  rules.sources.push({ id: 'user-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), user: true, mode: advanced ? 'regex' : 'plain', name: src, rules: [rule], addedAt: Date.now(), enabled: true });
+  persistRules();
+  return null;
+}
+
+function renderUserList() {
+  if (!userListEl) return; userListEl.innerHTML = '';
+  const list = rules.sources.filter(isUserSrc);
+  if (!list.length) { userListEl.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '아직 없어요 — 위 칸에 문자열을 적고 추가하면 리더가 화면에서만 숨겨요(원본 보존).' })); return; }
+  for (const s of list) {
+    const row = document.createElement('div'); row.className = 'inbox-item';
+    const top = document.createElement('div'); top.className = 'inbox-item-top';
+    top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-name', textContent: String(s.name || ''), title: String(s.name || '') }));
+    const r0 = (s.rules && s.rules[0]) || {};
+    top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-meta', textContent: (s.mode === 'regex' ? '정규식' : '문자열') + (r0.out ? ' → 치환' : ' 숨김') }));
+    row.appendChild(top);
+    const acts = document.createElement('div'); acts.className = 'inbox-item-acts';
+    const tg = Object.assign(document.createElement('button'), { textContent: isSrcEnabled(s.id) ? '켜짐' : '꺼짐' }) as HTMLButtonElement;
+    if (isSrcEnabled(s.id)) tg.classList.add('primary');
+    tg.title = '이 규칙을 리더에 적용 켜기/끄기';
+    tg.onclick = () => { setSrcEnabled(s.id, !isSrcEnabled(s.id)); renderUserList(); };
+    acts.appendChild(tg);
+    const del = Object.assign(document.createElement('button'), { className: 'series-del', textContent: '삭제' });
+    del.onclick = () => { rules.sources = rules.sources.filter((x) => x.id !== s.id); persistRules(); renderUserList(); };
+    acts.appendChild(del); row.appendChild(acts); userListEl.appendChild(row);
+  }
+}
+
+function buildUserRules(wrap: HTMLElement) {
+  const head = document.createElement('div'); head.className = 'mgmt-listhead';
+  head.appendChild(Object.assign(document.createElement('span'), { textContent: '내 숨김 규칙' }));
+  const adv = document.createElement('label'); adv.className = 'mgmt-toggle';
+  const advCb = document.createElement('input'); advCb.type = 'checkbox';
+  adv.append(advCb, document.createTextNode(' 고급(정규식)')); head.appendChild(adv);
+  wrap.appendChild(head);
+  wrap.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '봇카드에 숨김 정규식이 없어도(CSS 방식 상태창 봇 등) 지우고 싶은 문자열을 직접 추가할 수 있어요. 리더 화면에서만 숨겨지고(원본 로그 보존·정리/원본 토글) 여러 기기에 동기화돼요.' }));
+  const row = document.createElement('div'); row.className = 'import-btns'; row.style.justifyContent = 'flex-start';
+  const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'archive-search'; inp.placeholder = '숨길 문자열 (예: 호감도 +5)';
+  const outInp = document.createElement('input'); outInp.type = 'text'; outInp.className = 'archive-search'; outInp.placeholder = '바꿀 내용(비우면 삭제)'; outInp.hidden = true; (outInp.style as any).flex = '0 1 200px';
+  advCb.onchange = () => { outInp.hidden = !advCb.checked; inp.placeholder = advCb.checked ? '정규식 (예: 호감도\\s*[+-]?\\d+ 또는 /패턴/gi)' : '숨길 문자열 (예: 호감도 +5)'; };
+  const addB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '추가' });
+  const doAdd = () => { const err = addUserRule(inp.value, outInp.value, advCb.checked); if (err) { setStatus(err); return; } inp.value = ''; outInp.value = ''; setStatus('숨김 규칙 추가 — 리더에 바로 적용돼요.'); renderUserList(); };
+  addB.onclick = doAdd;
+  inp.addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') doAdd(); });
+  outInp.addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') doAdd(); });
+  row.append(inp, outInp, addB); wrap.appendChild(row);
+  userListEl = document.createElement('div'); userListEl.className = 'inbox-list'; wrap.appendChild(userListEl);
+  renderUserList();
+}
 
 let cat: any[] = [];        // 보관 카탈로그(archiveList)
 let cur: any = null;        // 현재 상세 연 소스 {entry, parsed, assets}
@@ -84,7 +151,8 @@ async function onDrop(files: File[]) {
     } catch (e) { failed++; console.warn('[관리실] 보관 실패', f.name, e); }
   }
   await refreshGrid();
-  setStatus(`보관 ${saved}개${dup ? ` · 이미 있음 ${dup}개` : ''} · 규칙 ${totR} · 에셋 ${totA}` + (failed ? ` · 실패 ${failed}` : ''));
+  setStatus(`보관 ${saved}개${dup ? ` · 이미 있음 ${dup}개` : ''} · 규칙 ${totR} · 에셋 ${totA}` + (failed ? ` · 실패 ${failed}` : '')
+    + ((saved + dup) > 0 && totR === 0 && !failed ? ' — 표시 정규식이 없는 소스예요(CSS로 숨기는 상태창 봇 등). 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨길 수 있어요.' : ''));
 }
 
 async function refreshGrid() { cat = await archiveList(); renderGrid(); }
@@ -257,6 +325,7 @@ function buildArchiveRoom(wrap: HTMLElement) {
   wrap.appendChild(archiveToolbar());
   wrap.appendChild(rulesToggle('보관 소스'));
   gridEl = document.createElement('div'); gridEl.className = 'mgmt-grid'; wrap.appendChild(gridEl);
+  buildUserRules(wrap);   // 내 숨김 규칙(수동) — 소스에 정규식이 없는 봇(CSS 숨김 상태창류) 대응
   renderGrid(); refreshGrid();
 }
 
@@ -277,12 +346,13 @@ async function onDropWeb(files: File[]) {
     } catch (e) { failed++; console.warn('[관리실 웹] 규칙 추출 실패', f.name, e); }
   }
   renderRulesList();
-  setStatus(added ? `정리 규칙 ${totR}개 추출 (소스 ${added}개)` + (empty ? ` · 표시규칙 없음 ${empty}` : '') : empty ? '이 소스엔 화면 정리 규칙이 없어요.' : '소스를 읽지 못했어요(.charx · .png · .json · .risum · .risup).');
+  setStatus(added ? `정리 규칙 ${totR}개 추출 (소스 ${added}개)` + (empty ? ` · 표시규칙 없음 ${empty}` : '') : empty ? '이 소스엔 표시 정규식이 아예 없어요 — CSS로 숨기는 봇(상태창류)이 그래요. 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨겨보세요.' : '소스를 읽지 못했어요(.charx · .png · .json · .risum · .risup).');
 }
 function renderRulesList() {
   if (!rulesListEl) return; rulesListEl.innerHTML = '';
-  if (!rules.sources.length) { const e = document.createElement('div'); e.className = 'inbox-empty'; const art = document.createElement('div'); art.className = 'empty-art'; art.innerHTML = icon('broom'); e.appendChild(art); e.appendChild(Object.assign(document.createElement('div'), { innerHTML: '등록된 정리 규칙이 없어요.<br>프롬프트·봇카드·모듈을 올리면 화면 정리 규칙이 잡혀 리더에 적용돼요.' })); rulesListEl.appendChild(e); return; }
-  for (const s of rules.sources) {
+  const srcs = rules.sources.filter((s) => !isUserSrc(s));   // 내 숨김 규칙(수동)은 자기 섹션에서 — 여긴 소스에서 추출한 규칙만
+  if (!srcs.length) { const e = document.createElement('div'); e.className = 'inbox-empty'; const art = document.createElement('div'); art.className = 'empty-art'; art.innerHTML = icon('broom'); e.appendChild(art); e.appendChild(Object.assign(document.createElement('div'), { innerHTML: '등록된 정리 규칙이 없어요.<br>프롬프트·봇카드·모듈을 올리면 화면 정리 규칙이 잡혀 리더에 적용돼요.' })); rulesListEl.appendChild(e); return; }
+  for (const s of srcs) {
     const row = document.createElement('div'); row.className = 'inbox-item';
     const top = document.createElement('div'); top.className = 'inbox-item-top';
     top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-name', textContent: String(s.name || '소스') }));
@@ -306,6 +376,7 @@ function buildRulesOnly(wrap: HTMLElement) {
   wrap.appendChild(rulesToggle('정리 규칙'));
   rulesListEl = document.createElement('div'); rulesListEl.className = 'inbox-list'; wrap.appendChild(rulesListEl);
   renderRulesList();
+  buildUserRules(wrap);   // 내 숨김 규칙(수동) — 소스에 정규식이 없는 봇(CSS 숨김 상태창류) 대응
   wrap.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '에셋 추출기와 영구 보관실은 데스크탑 앱 전용이에요(큰 모듈 보관·에셋 내려받기·편집기 투입).' }));
 }
 

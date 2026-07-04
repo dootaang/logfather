@@ -51,6 +51,11 @@ function extractRegexScripts(parsed) {
   return found;
 }
 
+// 유저 입력 문자열을 "그대로" 매칭하는 정규식 소스로(관리실 내 숨김 규칙 간단모드). 메타문자 전부 이스케이프.
+function escapeRegexLiteral(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // RisuAI in 문자열 → JS RegExp. "/pattern/flags" 형식 또는 raw 패턴 모두 지원. 전역(g) 기본.
 function buildRegex(inStr, flagHint) {
   let pattern = inStr, flags = flagHint || '';
@@ -88,4 +93,4 @@ function expandCardRegex(text, scripts) {
   return out;
 }
 
-module.exports = { extractRegexScripts, expandCardRegex, buildRegex, sanitizeRegexOut, isCatastrophic, DISPLAY_TYPES };
+module.exports = { extractRegexScripts, expandCardRegex, buildRegex, sanitizeRegexOut, isCatastrophic, escapeRegexLiteral, DISPLAY_TYPES };
