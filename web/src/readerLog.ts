@@ -52,6 +52,30 @@ const CLEANUP_KEY = 'pro2-cleanup-rules';
 function cleanupRules(): any[] {   // 전역 enabled + ★소스별 enabled(개별 활성)인 것만 평탄화. 0개·꺼짐 = [](무동작).
   try { const r = kvLoad(CLEANUP_KEY); if (!r || r.enabled === false || !Array.isArray(r.sources)) return []; const out: any[] = []; for (const s of r.sources) if (s && s.enabled !== false && Array.isArray(s.rules)) for (const x of s.rules) out.push(x); return out; } catch (_) { return []; }
 }
+// ★CSS 숨김 클래스(2단계) — 관리실이 카드 backgroundHTML CSS에서 감지한 "기본 숨김" 클래스(예: .info-tooltip{opacity:0}).
+//   리스는 그 CSS가 가려주지만 리더엔 CSS가 없어 노출 → 정리 시 해당 클래스 요소를 DOM에서 제거(호버 안 한 리스 기본 화면과 동일).
+function cleanupCssHide(): string[] {
+  try {
+    const r = kvLoad(CLEANUP_KEY); if (!r || r.enabled === false || !Array.isArray(r.sources)) return [];
+    const seen = new Set<string>(); const out: string[] = [];
+    for (const s of r.sources) if (s && s.enabled !== false && Array.isArray(s.cssHide))
+      for (const c of s.cssHide) if (typeof c === 'string' && /^[A-Za-z_][\w-]*$/.test(c) && !seen.has(c)) { seen.add(c); out.push(c); }
+    return out;
+  } catch (_) { return []; }
+}
+// 텍스트 슬롯(원시 로그 = 상태창 HTML 포함)에서 숨김 클래스 요소 제거. 실제 지운 게 없으면 원문 그대로(직렬화 정규화 노이즈 방지).
+function removeHiddenClassEls(text: string, classes: string[]): string {
+  if (!classes.length || !text || text.indexOf('class') < 0) return text;
+  if (!classes.some((c) => text.indexOf(c) >= 0)) return text;   // 싼 사전 필터
+  try {
+    const doc = new DOMParser().parseFromString('<div id="__ch">' + text + '</div>', 'text/html');
+    const root = doc.getElementById('__ch'); if (!root) return text;
+    const els = root.querySelectorAll(classes.map((c) => '.' + c).join(','));   // 클래스명은 위 정규식 검증됨(이스케이프 불요)
+    if (!els.length) return text;
+    els.forEach((e) => e.remove());
+    return root.innerHTML;
+  } catch (_) { return text; }
+}
 // ★per-log 정리 규칙 — 가져올 때 챗에 동봉된 rec.cleanupRegex(외부 유입). ★out 살균 + 모양 정규화(표시타입·ReDoS 필터는 expandCardRegex가 보장). 관리실 글로벌과 합성·멱등.
 function perLogCleanup(rec: any): any[] {
   const arr = rec && rec.cleanupRegex;
@@ -60,13 +84,14 @@ function perLogCleanup(rec: any): any[] {
   for (const r of arr) if (r && typeof r.in === 'string' && typeof r.out === 'string') out.push({ in: r.in, out: sanitizeRegexOut(r.out), type: r.type || 'editdisplay', flag: r.flag || r.flags || '' });
   return out;
 }
-function cleanupChanges(rec: any, rules: any[]): boolean {   // 이 레코드 텍스트를 바꾸나?(재렌더 없이 싸게 판정 — 토글 노출 여부)
-  try { const s = logTextSlots(clonej(rec)); for (const t of s.texts) if (expandCardRegex(t, rules) !== t) return true; } catch (_) {}
+function cleanupChanges(rec: any, rules: any[], cssHide?: string[]): boolean {   // 이 레코드 텍스트를 바꾸나?(재렌더 없이 싸게 판정 — 토글 노출 여부)
+  const ch = cssHide || [];
+  try { const s = logTextSlots(clonej(rec)); for (const t of s.texts) if (removeHiddenClassEls(expandCardRegex(t, rules), ch) !== t) return true; } catch (_) {}
   return false;
 }
-function renderCleaned(rec: any, rules: any[], displayAssets?: Record<string, string>): string {   // 비파괴 정리: 복제 → 텍스트 슬롯에 expandCardRegex → 재렌더(표시용 에셋 적용)
-  const c = clonej(rec); const s = logTextSlots(c);
-  for (let i = 0; i < s.texts.length; i++) s.set(i, expandCardRegex(s.texts[i], rules));
+function renderCleaned(rec: any, rules: any[], displayAssets?: Record<string, string>, cssHide?: string[]): string {   // 비파괴 정리: 복제 → 텍스트 슬롯에 expandCardRegex+CSS숨김 제거 → 재렌더(표시용 에셋 적용)
+  const c = clonej(rec); const s = logTextSlots(c); const ch = cssHide || [];
+  for (let i = 0; i < s.texts.length; i++) s.set(i, removeHiddenClassEls(expandCardRegex(s.texts[i], rules), ch));
   return rerenderLog(c, displayAssets);
 }
 
@@ -513,9 +538,10 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     const baseHtml = showOrig ? rerenderLog(origRecord(r), amap) : applyAssetMap(r.html, amap, r.char, r.displayRules);
     let displayHtml = baseHtml; let cleanSeg: HTMLElement | null = null;
     const cRules = papa ? [] : cleanupRules().concat(perLogCleanup(r));   // 관리실 글로벌 + per-log(가져온 챗 동봉) 정리 규칙 합성 (파파는 미적용)
-    if (cRules.length && cleanupChanges(baseRec, cRules)) {
+    const cCss = papa ? [] : cleanupCssHide();   // ★CSS 기본 숨김 클래스(관리실 2단계) — 규칙과 같은 토글로 합성
+    if ((cRules.length || cCss.length) && cleanupChanges(baseRec, cRules, cCss)) {
       const on = cleanView[r.id] !== false;
-      displayHtml = on ? renderCleaned(baseRec, cRules, amap) : baseHtml;
+      displayHtml = on ? renderCleaned(baseRec, cRules, amap, cCss) : baseHtml;
       cleanSeg = document.createElement('div'); cleanSeg.className = 'reader-seg';
       const cOn = document.createElement('button'); cOn.className = 'reader-iconbtn' + (on ? ' on' : ''); cOn.textContent = '정리';
       const cOff = document.createElement('button'); cOff.className = 'reader-iconbtn' + (on ? '' : ' on'); cOff.textContent = '원본';

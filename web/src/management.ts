@@ -7,7 +7,7 @@
 import { icon } from './icons.js';
 import { isDesktop } from './desktopSync.js';   // 웹=정리규칙만 / 데스크탑=정리+에셋+보관 게이팅(C)
 import { kvLoad, kvSave, archiveSaveSource, archiveList, archiveGetFile, archiveDelete, idbSaveCard } from './store.js';
-import { extractSourceRegex, extractSourceInfo } from '../../core/card/sourceRegex.js';
+import { extractSourceInfo } from '../../core/card/sourceRegex.js';
 import { buildRegex, isCatastrophic, sanitizeRegexOut, escapeRegexLiteral } from '../../core/convert/cardRegex.js';   // 내 숨김 규칙(수동) 검증·이스케이프·살균
 import { parseCardAssets, cardAssetBytes } from '../../core/card/cardAssets.js';
 import { encodeJson, encodeCharx, encodePng, pickPngBase } from '../../core/card/cardEncode.js';   // C: 봇카드 포맷 변환(charx↔png↔json)
@@ -22,6 +22,7 @@ function loadRules() { const r = kvLoad(RULES_KEY); return (r && typeof r === 'o
 let rules = loadRules();
 const persistRules = () => kvSave(RULES_KEY, rules);
 const ruleCountFor = (id: string) => { const s = rules.sources.find((x) => x.id === id); return (s && s.rules && s.rules.length) || 0; };
+const cssCountFor = (id: string) => { const s = rules.sources.find((x) => x.id === id); return (s && s.cssHide && s.cssHide.length) || 0; };   // 2단계: CSS 기본 숨김 클래스 수
 // B: 소스별 개별 활성(기본 on=미설정/없음). 리더는 켜진 소스 규칙만 적용 → 프롬프트 충돌 시 끄면 됨.
 const isSrcEnabled = (id: string) => { const s = rules.sources.find((x) => x.id === id); return !s || s.enabled !== false; };
 const setSrcEnabled = (id: string, on: boolean) => { const s = rules.sources.find((x) => x.id === id); if (s) { s.enabled = !!on; persistRules(); } };
@@ -131,28 +132,28 @@ function makeDrop(label: string, onFiles: (fs: File[]) => void): HTMLElement {
 
 // ── 드롭 = 보관 + 규칙 + 에셋 인덱스 (한 번에) ──
 async function onDrop(files: File[]) {
-  let saved = 0, totR = 0, totA = 0, dup = 0, failed = 0;
+  let saved = 0, totR = 0, totC = 0, totA = 0, dup = 0, failed = 0;
   setStatus('보관 중…');
   for (const f of files) {
     try {
       const bytes = new Uint8Array(await f.arrayBuffer());
       const fileName = f.name.replace(/\.[^.]+$/, '');
       let assetCount = 0; try { const p = parseCardAssets(bytes, f.name); assetCount = (p.assets || []).filter((a: any) => a && a.found !== false).length; } catch (_) {}
-      let info: any = { name: '', format: '', rules: [] }; try { info = await extractSourceInfo(bytes, f.name); } catch (_) {}
+      let info: any = { name: '', format: '', rules: [], cssHide: [] }; try { info = await extractSourceInfo(bytes, f.name); } catch (_) {}
       const name = info.name || fileName;   // ★소스 내부 표시 이름(D) — 봇카드 data.name·모듈 module.name·.risup preset.name, 없으면 파일명
-      const rs = info.rules || [];
+      const rs = info.rules || []; const ch = info.cssHide || [];   // ★ch = backgroundHTML CSS 기본 숨김 클래스(2단계)
       const entry = await archiveSaveSource(bytes, { name, format: info.format || '', assetCount, ruleCount: rs.length });
       // 규칙 KV 연결(id=파일해시) — 재보관이면 교체
       rules.sources = rules.sources.filter((s) => s.id !== entry.id);
-      if (rs.length) rules.sources.push({ id: entry.id, name, rules: rs, addedAt: entry.addedAt });
+      if (rs.length || ch.length) rules.sources.push({ id: entry.id, name, rules: rs, cssHide: ch, addedAt: entry.addedAt });
       persistRules();
       if (entry.existed) dup++; else saved++;
-      totR += rs.length; totA += assetCount;
+      totR += rs.length; totC += ch.length; totA += assetCount;
     } catch (e) { failed++; console.warn('[관리실] 보관 실패', f.name, e); }
   }
   await refreshGrid();
-  setStatus(`보관 ${saved}개${dup ? ` · 이미 있음 ${dup}개` : ''} · 규칙 ${totR} · 에셋 ${totA}` + (failed ? ` · 실패 ${failed}` : '')
-    + ((saved + dup) > 0 && totR === 0 && !failed ? ' — 표시 정규식이 없는 소스예요(CSS로 숨기는 상태창 봇 등). 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨길 수 있어요.' : ''));
+  setStatus(`보관 ${saved}개${dup ? ` · 이미 있음 ${dup}개` : ''} · 규칙 ${totR}${totC ? ` · CSS숨김 ${totC}` : ''} · 에셋 ${totA}` + (failed ? ` · 실패 ${failed}` : '')
+    + ((saved + dup) > 0 && totR === 0 && totC === 0 && !failed ? ' — 표시 정규식·CSS 숨김이 없는 소스예요. 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨길 수 있어요.' : ''));
 }
 
 async function refreshGrid() { cat = await archiveList(); renderGrid(); }
@@ -173,10 +174,10 @@ function srcCard(e: any): HTMLElement {
   c.appendChild(cover);
   c.appendChild(Object.assign(document.createElement('div'), { className: 'home-card-name', textContent: e.name || '소스' }));
   const meta = document.createElement('div'); meta.className = 'home-card-meta';
-  meta.innerHTML = `<span class="src-badge">${TYPE_LABEL[typeOf(e.format)] || '소스'}</span> 에셋 ${e.assetCount || 0} · 규칙 ${ruleCountFor(e.id)}`;
+  meta.innerHTML = `<span class="src-badge">${TYPE_LABEL[typeOf(e.format)] || '소스'}</span> 에셋 ${e.assetCount || 0} · 규칙 ${ruleCountFor(e.id)}${cssCountFor(e.id) ? ` · CSS숨김 ${cssCountFor(e.id)}` : ''}`;
   c.appendChild(meta);
-  // 개별 활성 토글(규칙 있는 소스만, 우상단). 카드 클릭=상세라 stopPropagation.
-  if (ruleCountFor(e.id) > 0) {
+  // 개별 활성 토글(규칙/CSS숨김 있는 소스만, 우상단). 카드 클릭=상세라 stopPropagation.
+  if (ruleCountFor(e.id) > 0 || cssCountFor(e.id) > 0) {
     const on = isSrcEnabled(e.id);
     const tg = document.createElement('button'); tg.className = 'src-toggle' + (on ? ' on' : ''); tg.textContent = on ? '정리 켜짐' : '정리 꺼짐'; tg.title = '이 소스의 정리 규칙을 리더에 적용 켜기/끄기';
     tg.onclick = (ev) => { ev.stopPropagation(); setSrcEnabled(e.id, !isSrcEnabled(e.id)); renderGrid(); };
@@ -238,7 +239,8 @@ async function downloadAll() {
 async function openDetail(entry: any) {
   const ov = document.createElement('div'); ov.className = 'import-modal'; const card = document.createElement('div'); card.className = 'import-card adv-card src-detail';
   card.appendChild(Object.assign(document.createElement('div'), { className: 'import-title', textContent: entry.name || '소스' }));
-  const info = Object.assign(document.createElement('div'), { className: 'import-info', textContent: `${fmtBadge(entry.format)} · ${(entry.size / 1024).toFixed(0)}KB · 규칙 ${ruleCountFor(entry.id)}개 · 불러오는 중…` }); card.appendChild(info);
+  const cssMeta = () => (cssCountFor(entry.id) ? ` · CSS숨김 ${cssCountFor(entry.id)}개` : '');
+  const info = Object.assign(document.createElement('div'), { className: 'import-info', textContent: `${fmtBadge(entry.format)} · ${(entry.size / 1024).toFixed(0)}KB · 규칙 ${ruleCountFor(entry.id)}개${cssMeta()} · 불러오는 중…` }); card.appendChild(info);
   const acts = document.createElement('div'); acts.className = 'import-btns'; acts.style.justifyContent = 'flex-start';
   // ★편집기 투입(③): 보관 원본을 편집기 last 카드로 넣고 새 화 열기 → restoreLastCard→applyCard로 에셋·표시 regex 바로. 화마다 재드롭 0.
   const useB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '편집기에서 쓰기' }); useB.title = '이 소스의 카드·에셋을 편집기에 올려 다음 화에 바로 사용(applyCard 재사용)';
@@ -246,8 +248,8 @@ async function openDetail(entry: any) {
   const allB = Object.assign(document.createElement('button'), { textContent: '전체 내려받기 (zip)' }); allB.onclick = () => downloadAll();
   const reB = Object.assign(document.createElement('button'), { textContent: '재추출' }); reB.title = '보관된 원본에서 규칙·에셋 다시 추출';
   const delB = Object.assign(document.createElement('button'), { className: 'series-del', textContent: '삭제' });
-  let togB: HTMLButtonElement | null = null;   // B: 이 소스 정리 적용 on/off
-  if (ruleCountFor(entry.id) > 0) {
+  let togB: HTMLButtonElement | null = null;   // B: 이 소스 정리 적용 on/off (규칙 또는 CSS숨김 보유 시)
+  if (ruleCountFor(entry.id) > 0 || cssCountFor(entry.id) > 0) {
     togB = Object.assign(document.createElement('button'), { textContent: isSrcEnabled(entry.id) ? '정리 켜짐' : '정리 꺼짐' }) as HTMLButtonElement;
     togB.title = '이 소스의 정리 규칙을 리더에 적용 켜기/끄기';
     if (isSrcEnabled(entry.id)) togB.classList.add('primary');
@@ -282,13 +284,13 @@ async function openDetail(entry: any) {
     const assets = (parsed.assets || []).filter((a: any) => a && a.found !== false);
     cur = { entry, parsed, assets };
     const imgs = assets.filter((a: any) => /^image\//.test(a.mime || '')).length;
-    info.textContent = `${fmtBadge(entry.format)} · ${(entry.size / 1024).toFixed(0)}KB · 에셋 ${assets.length}개(이미지 ${imgs}) · 규칙 ${ruleCountFor(entry.id)}개`;
+    info.textContent = `${fmtBadge(entry.format)} · ${(entry.size / 1024).toFixed(0)}KB · 에셋 ${assets.length}개(이미지 ${imgs}) · 규칙 ${ruleCountFor(entry.id)}개${cssMeta()}`;
     for (const a of assets) grid.appendChild(assetCell(a));
   } catch (e) { info.textContent = '에셋을 읽지 못했어요.'; console.warn(e); }
 
   reB.onclick = async () => {
     reB.disabled = true; reB.textContent = '재추출 중…';
-    try { const bytes = await archiveGetFile(entry.id); if (bytes) { const rs = await extractSourceRegex(bytes, entry.name + '.' + (entry.format || '')); const parsed = parseCardAssets(bytes, entry.name + '.' + (entry.format || '')); const ac = (parsed.assets || []).filter((a: any) => a.found !== false).length; await archiveSaveSource(bytes, { name: entry.name, format: entry.format, assetCount: ac, ruleCount: rs.length }); rules.sources = rules.sources.filter((s) => s.id !== entry.id); if (rs.length) rules.sources.push({ id: entry.id, name: entry.name, rules: rs, addedAt: entry.addedAt }); persistRules(); setStatus(`“${entry.name}” 재추출 — 규칙 ${rs.length} · 에셋 ${ac}`); } }
+    try { const bytes = await archiveGetFile(entry.id); if (bytes) { const inf = await extractSourceInfo(bytes, entry.name + '.' + (entry.format || '')); const rs = inf.rules || []; const ch = inf.cssHide || []; const parsed = parseCardAssets(bytes, entry.name + '.' + (entry.format || '')); const ac = (parsed.assets || []).filter((a: any) => a.found !== false).length; await archiveSaveSource(bytes, { name: entry.name, format: entry.format, assetCount: ac, ruleCount: rs.length }); rules.sources = rules.sources.filter((s) => s.id !== entry.id); if (rs.length || ch.length) rules.sources.push({ id: entry.id, name: entry.name, rules: rs, cssHide: ch, addedAt: entry.addedAt }); persistRules(); setStatus(`“${entry.name}” 재추출 — 규칙 ${rs.length}${ch.length ? ` · CSS숨김 ${ch.length}` : ''} · 에셋 ${ac}`); } }
     catch (_) { setStatus('재추출 실패'); }
     ov.remove(); refreshGrid();
   };
@@ -332,21 +334,22 @@ function buildArchiveRoom(wrap: HTMLElement) {
 // ── 웹: 정리 규칙만(드롭→규칙 추출→동기화 KV). 에셋/보관은 데스크탑 전용. ──
 async function sha256Hex(b: Uint8Array): Promise<string> { const buf = await crypto.subtle.digest('SHA-256', b); return Array.from(new Uint8Array(buf)).map((x) => x.toString(16).padStart(2, '0')).join(''); }
 async function onDropWeb(files: File[]) {
-  let added = 0, totR = 0, empty = 0, failed = 0;
+  let added = 0, totR = 0, totC = 0, empty = 0, failed = 0;
   setStatus('규칙 추출 중…');
   for (const f of files) {
     try {
       const bytes = new Uint8Array(await f.arrayBuffer());
       const info = await extractSourceInfo(bytes, f.name);
-      if (!info.rules.length) { empty++; continue; }
+      const ch = info.cssHide || [];   // ★backgroundHTML CSS 기본 숨김 클래스(2단계) — 정규식 0개여도 정리 가능
+      if (!info.rules.length && !ch.length) { empty++; continue; }
       const id = await sha256Hex(bytes);   // 콘텐츠 해시 = dedup(같은 소스 재드롭 1벌)
       rules.sources = rules.sources.filter((s) => s.id !== id);
-      rules.sources.push({ id, name: info.name || f.name.replace(/\.[^.]+$/, ''), rules: info.rules, addedAt: Date.now() });
-      persistRules(); added++; totR += info.rules.length;
+      rules.sources.push({ id, name: info.name || f.name.replace(/\.[^.]+$/, ''), rules: info.rules, cssHide: ch, addedAt: Date.now() });
+      persistRules(); added++; totR += info.rules.length; totC += ch.length;
     } catch (e) { failed++; console.warn('[관리실 웹] 규칙 추출 실패', f.name, e); }
   }
   renderRulesList();
-  setStatus(added ? `정리 규칙 ${totR}개 추출 (소스 ${added}개)` + (empty ? ` · 표시규칙 없음 ${empty}` : '') : empty ? '이 소스엔 표시 정규식이 아예 없어요 — CSS로 숨기는 봇(상태창류)이 그래요. 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨겨보세요.' : '소스를 읽지 못했어요(.charx · .png · .json · .risum · .risup).');
+  setStatus(added ? `정리 규칙 ${totR}개${totC ? ` · CSS숨김 ${totC}개` : ''} 추출 (소스 ${added}개)` + (empty ? ` · 표시규칙 없음 ${empty}` : '') : empty ? '이 소스엔 표시 정규식·CSS 숨김이 아예 없어요. 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨겨보세요.' : '소스를 읽지 못했어요(.charx · .png · .json · .risum · .risup).');
 }
 function renderRulesList() {
   if (!rulesListEl) return; rulesListEl.innerHTML = '';
@@ -356,7 +359,7 @@ function renderRulesList() {
     const row = document.createElement('div'); row.className = 'inbox-item';
     const top = document.createElement('div'); top.className = 'inbox-item-top';
     top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-name', textContent: String(s.name || '소스') }));
-    top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-meta', textContent: `규칙 ${(s.rules && s.rules.length) || 0}개` }));
+    top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-meta', textContent: `규칙 ${(s.rules && s.rules.length) || 0}개${s.cssHide && s.cssHide.length ? ` · CSS숨김 ${s.cssHide.length}개` : ''}` }));
     row.appendChild(top);
     const acts = document.createElement('div'); acts.className = 'inbox-item-acts';
     const tg = Object.assign(document.createElement('button'), { textContent: isSrcEnabled(s.id) ? '정리 켜짐' : '정리 꺼짐' }) as HTMLButtonElement;   // B: 개별 활성

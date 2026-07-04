@@ -2234,11 +2234,12 @@ async function archiveFromEditor(bytes: Uint8Array, fileName: string) {
     let assetCount = 0; try { const p = parseCardAssets(bytes, fileName); assetCount = (p.assets || []).filter((a: any) => a && a.found !== false).length; } catch (_) {}
     const name = info.name || fileName.replace(/\.[^.]+$/, '');
     const entry = await archiveSaveSource(bytes, { name, format: info.format || '', assetCount, ruleCount: (info.rules || []).length });
-    if (info.rules && info.rules.length) {
+    const cssHide = (info as any).cssHide || [];   // ★backgroundHTML CSS 기본 숨김 클래스(관리실 2단계)
+    if ((info.rules && info.rules.length) || cssHide.length) {
       const r: any = kvLoad('pro2-cleanup-rules');
       const rr = (r && typeof r === 'object') ? { enabled: r.enabled !== false, sources: Array.isArray(r.sources) ? r.sources : [] } : { enabled: true, sources: [] };
       rr.sources = rr.sources.filter((s: any) => s.id !== entry.id);
-      rr.sources.push({ id: entry.id, name, rules: info.rules, addedAt: entry.addedAt });
+      rr.sources.push({ id: entry.id, name, rules: info.rules || [], cssHide, addedAt: entry.addedAt });
       kvSave('pro2-cleanup-rules', rr);
     }
   } catch (e) { console.warn('[편집기→관리실] 자동 보관 실패', e); }
