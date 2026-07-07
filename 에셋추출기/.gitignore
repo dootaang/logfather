@@ -1,0 +1,2 @@
+# 빌드 산출물(웹 번들·패키징) — node_modules/·release/는 루트 .gitignore가 커버
+web/dist/

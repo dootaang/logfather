@@ -1,0 +1,43 @@
+{
+  "name": "logpapa-asset-extractor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "로그파파 에셋추출기 — 봇카드·모듈 안의 에셋을 꺼내는 독립 도구",
+  "author": "dootaang",
+  "license": "GPL-3.0-or-later",
+  "type": "commonjs",
+  "main": "electron/main.js",
+  "scripts": {
+    "web:build": "esbuild web/src/main.ts --bundle --format=iife --outfile=web/dist/main.js",
+    "app": "npm run web:build && electron .",
+    "dist": "npm run web:build && electron-builder --win"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.28.1"
+  },
+  "build": {
+    "appId": "app.logpapa.assetextractor",
+    "productName": "LogPapa-AssetExtractor",
+    "files": [
+      "electron/**/*",
+      "web/**/*",
+      "!web/src/**/*",
+      "package.json",
+      "LICENSE"
+    ],
+    "extraMetadata": { "main": "electron/main.js" },
+    "directories": { "output": "release" },
+    "win": {
+      "target": ["portable"],
+      "icon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "LogPapa-AssetExtractor-${version}.${ext}"
+    }
+  }
+}
