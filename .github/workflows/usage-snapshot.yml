@@ -1,0 +1,23 @@
+# Firebase 무료쿼터 사용량 스냅샷 — 매일 1회 Cloud Monitoring에서 긁어 Firestore stats/usage에 기록.
+# 앱의 관리자 패널이 이 문서를 읽는다. 시크릿 GCP_SA_KEY(서비스 계정 JSON)가 없으면 스크립트가 조용히 생략.
+# 설정 절차 = ADMIN_PANEL_SETUP.md
+name: usage-snapshot
+on:
+  schedule:
+    - cron: '15 15 * * *'   # 매일 15:15 UTC = 00:15 KST (하루 마감치에 가깝게)
+  workflow_dispatch: {}      # 수동 실행(테스트용)
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install deps (없는 것만, lockfile 안 건드림)
+        run: npm install --no-save firebase-admin@^13 @google-cloud/monitoring@^5
+      - name: Snapshot usage → Firestore stats/usage
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: node scripts/usage-snapshot.mjs

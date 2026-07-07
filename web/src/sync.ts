@@ -13,6 +13,7 @@
 import { watchAuth } from './auth.js';
 import { setBackend, LocalBackend, READ_KEY, RDR_KEY, PRESET_LIB_KEY, AUTOSAVE_KEY, logContentKey, hasUnpushed } from './store.js';
 import { isLocalFirst, isDesktop, getWebSyncMode, getSyncMode, pullFromCloud, pushToCloud } from './desktopSync.js';   // 로컬-퍼스트 게이트 + 웹 자동 일괄 동기화용 pull/push
+import { bumpDauOnce } from './adminStats.js';   // 일일 접속 카운터(로그인 시 하루 1회, 내부 dedup·fire-and-forget)
 // firebaseBackend(=firestore+storage, 무거움)는 "로그인된 순간"에만 동적 import → 로그아웃 사용자는 안 받음.
 
 const KV_KEYS = [AUTOSAVE_KEY, PRESET_LIB_KEY, READ_KEY, RDR_KEY];
@@ -128,6 +129,7 @@ export function initSync(onBackendChange: (kind: string, user: any) => void, onD
   if (isLocalFirst()) {
     watchAuth((user: any) => {
       try { onBackendChange('local', user); } catch (_) {}
+      if (user) bumpDauOnce(user);   // 접속 카운터(하루 1회, 내부 dedup — await 안 함)
       startAutoBatch(user, onDataChange);   // 로그인 시 자동 일괄 시작 / 로그아웃 시 정리(내부에서 게이트)
     });
     return;
@@ -145,6 +147,7 @@ export function initSync(onBackendChange: (kind: string, user: any) => void, onD
   try { window.addEventListener('online', () => { if (fbRef && fbRef.flushPending) fbRef.flushPending(); }); } catch (_) {}
   watchAuth(async (user: any) => {
     if (user) {
+      bumpDauOnce(user);   // 접속 카운터(하루 1회, 내부 dedup — await 안 함)
       try {
         const { createFirebaseBackend } = await import('./firebaseBackend.js');  // 무거운 SDK는 여기서 로드
         const fb = createFirebaseBackend(user.uid);

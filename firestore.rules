@@ -49,5 +49,26 @@ service cloud.firestore {
       allow read, delete: if request.auth != null && request.auth.uid == resource.data.uid;
       allow update: if false;
     }
+
+    // ── 어드민 사용량 통계(stats) — top-level 컬렉션 ──────────────────────────────
+    //   daily-YYYY-MM-DD: 일일 접속 카운터. 로그인 사용자가 opens를 +1만(다른 필드·다른 증분 불가,
+    //     기기당 하루 1회는 클라이언트가 dedup — 규칙은 모양만 강제). 개인 식별 없음(집계 숫자 하나).
+    //   usage: Firebase 쿼터 스냅샷 — GitHub Actions 크론이 Admin SDK로 씀(규칙 미적용), 클라이언트 쓰기 차단.
+    //   읽기 = 관리자(사장님 계정)만. ★ADMIN_UID_TBD는 자리표시자 — 실제 uid로 바꾸기 전엔 아무도 못 읽음(안전).
+    function isAdmin() {
+      return request.auth != null && request.auth.uid == 'ADMIN_UID_TBD';
+    }
+    match /stats/{docId} {
+      allow read: if isAdmin();
+      allow create: if request.auth != null
+        && docId.matches('^daily-\\d{4}-\\d{2}-\\d{2}$')
+        && request.resource.data.keys().hasOnly(['opens'])
+        && request.resource.data.opens == 1;
+      allow update: if request.auth != null
+        && docId.matches('^daily-\\d{4}-\\d{2}-\\d{2}$')
+        && request.resource.data.keys().hasOnly(['opens'])
+        && request.resource.data.opens == resource.data.opens + 1;
+      allow delete: if false;
+    }
   }
 }

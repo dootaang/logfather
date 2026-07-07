@@ -13,6 +13,7 @@ import { kvLoad, kvSave, logsAll, logsAdd, metaAll, metaSet, clearLibraryLocal, 
 import { buildBackup, openBackup, isZip } from '../../core/preset/backupZip.js';
 import { fontsSupported, getFontList, addFontFiles, removeFont, getUiFont, applyUiFont, refreshFonts } from './fonts.js';
 import { isDesktop, getWebSyncMode, setWebSyncMode, getDesktopSyncMode, setDesktopSyncMode } from './desktopSync.js';   // 동기화 모드(자동/수동) 토글용(웹·데스크탑)
+import { injectAdminButton } from './adminPanel.js';   // 관리자 사용량 패널(관리자 uid만 노출 — 진짜 벽은 보안규칙)
 
 const APP_ID = 'log-jejogi-pro2';
 const DESIGN_IDS = ['card', 'log-diary', 'custom-css'];
@@ -38,6 +39,7 @@ export function mountSettingsMenu(opts: { setStatus: (m: string) => void; getUse
   wireBackup(setStatus, opts.refresh);
   injectRisuConnect(opts.getUser);
   injectAdvanced(setStatus, opts.getUser, opts.getAuthMod, opts.refresh);
+  injectAdminButton(opts.getUser, setStatus);
   // 메뉴 항목 클릭 시 드롭다운 닫기 + 바깥 클릭 닫기
   document.addEventListener('click', (e) => { document.querySelectorAll('details.menu[open]').forEach((d) => { if (!d.contains(e.target as Node)) (d as HTMLDetailsElement).open = false; }); });
   document.querySelectorAll('.menu-pop button').forEach((b) => b.addEventListener('click', () => { const d = b.closest('details.menu') as HTMLDetailsElement | null; if (d) d.open = false; }));
@@ -313,6 +315,12 @@ function openAdvancedSettings(setStatus: (m: string) => void, getUser: () => any
   section('앱 정보');
   const infoEl = Object.assign(document.createElement('div'), { className: 'adv-desc adv-info' }); card.appendChild(infoEl);
   (async () => { try { const d = (window as any).desktop; if (d && d.appInfo) { const i = await d.appInfo(); infoEl.textContent = `버전 ${i.appVersion} · 저장 위치: ${i.userDataPath}`; } else infoEl.textContent = '웹 앱 (브라우저 저장소에 보관)'; } catch (_) { infoEl.textContent = ''; } })();
+  // 내 UID 복사 — 관리자 게이트(보안규칙·adminStats.ADMIN_UID) 설정용. uid는 비밀 아님(규칙이 본인 확인).
+  if (getUser && getUser()) {
+    row('내 UID 복사', '이 계정의 고유 식별자(uid)를 복사합니다 — 관리자 지정 등 설정용.', async (b) => {
+      try { await navigator.clipboard.writeText(String(getUser().uid || '')); flash(b, '복사됨'); } catch (_) { flash(b, '복사 실패'); }
+    });
+  }
   // 동기화 방식(자동/수동) — 웹·데스크탑 공통. 기본: 웹=자동, 데스크탑=수동(무회귀). 동기화 거동 게이트 isLocalFirst가 이 모드를 따른다.
   {
     const dt = isDesktop();

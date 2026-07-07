@@ -214,6 +214,24 @@ button.danger:hover { background: color-mix(in srgb, var(--danger) 86%, black); 
 .adv-row > button:disabled { opacity: .5; cursor: default; }
 .adv-desc { font-size: 12px; color: var(--ink-2); line-height: 1.45; }
 .adv-info { font-family: 'JetBrains Mono', monospace; word-break: break-all; margin-bottom: 4px; }
+/* 관리자 사용량 패널 — 게이지(일간/월간 칩) + 14일 접속 미니바 */
+.adm-card { max-width: 620px; }
+.adm-body { display: flex; flex-direction: column; gap: 8px; }
+.adm-facts { display: flex; gap: 8px; flex-wrap: wrap; }
+.adm-fact { font: 600 12.5px/1 var(--font-sans); color: var(--ink); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 7px 10px; }
+.adm-mini { display: flex; align-items: flex-end; gap: 4px; height: 48px; padding: 2px 2px 0; }
+.adm-mini > i { flex: 1; max-width: 22px; background: var(--accent); border-radius: 3px 3px 0 0; opacity: .8; }
+.adm-mini > i.zero { background: var(--line-2); opacity: .6; }
+.adm-body .adm-row { display: flex; align-items: center; gap: 8px; margin: 0; }
+.adm-label { flex: none; width: 148px; font-size: 12.5px; color: var(--ink); }
+.adm-chip { flex: none; font: 600 10px/1 var(--font-mono); color: var(--muted); border: 1px solid var(--line-2); border-radius: 999px; padding: 3px 7px; }
+.adm-chip.day { color: var(--accent); border-color: var(--accent-line); }
+.adm-bar { flex: 1; height: 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.adm-fill { height: 100%; background: var(--accent); border-radius: 5px; }
+.adm-fill.warn { background: #d9a13c; }
+.adm-fill.over { background: var(--danger); }
+.adm-num { flex: none; min-width: 118px; text-align: right; font: 500 11px/1 var(--font-mono); color: var(--ink-2); }
+.adm-when { margin-top: 4px; color: var(--muted); }
 /* 내 폰트 목록 */
 .font-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; margin-top: 4px; }
 .font-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
