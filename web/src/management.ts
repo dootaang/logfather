@@ -114,15 +114,21 @@ function buildUserRules(wrap: HTMLElement) {
 
 let cat: any[] = [];        // 보관 카탈로그(archiveList)
 let cur: any = null;        // 현재 상세 연 소스 {entry, parsed, assets}
-let statusEl: HTMLElement, gridEl: HTMLElement, rulesListEl: HTMLElement;
+let statusEl: HTMLElement, gridEl: HTMLElement;
 const setStatus = (m: string) => { if (statusEl) statusEl.textContent = m || ''; };
 
 // A: 분류(타입)·검색·정렬. 타입 = .risup→프롬프트 · .risum→모듈 · charx/png/json→봇카드.
 let aFilter = 'all', aQuery = '', aSort = 'recent';
 const typeOf = (fmt: string) => { const f = String(fmt || '').toLowerCase(); return f === 'risup' ? 'prompt' : f === 'risum' ? 'module' : 'card'; };
 const TYPE_LABEL: any = { prompt: '프롬프트', card: '봇카드', module: '모듈' };
+// ★UX 2차(웹·데탑 화면 통일): 그리드가 그리는 "소스 뷰" — 데탑=보관 카탈로그(원본·에셋 있음) / 웹=규칙 KV 소스(가벼움).
+//   웹 항목은 web:true 표시 — 표지 지연로드·에셋 상세 대신 경량 상세로 분기.
+function srcViews(): any[] {
+  if (isDesktop()) return cat;
+  return rules.sources.filter((s) => !isUserSrc(s)).map((s) => ({ id: s.id, name: s.name, format: s.format || '', addedAt: s.addedAt || 0, web: true }));
+}
 function filteredCat(): any[] {
-  let r = cat.slice();
+  let r = srcViews().slice();
   if (aFilter !== 'all') r = r.filter((e) => typeOf(e.format) === aFilter);
   const q = aQuery.trim().toLowerCase();
   if (q) r = r.filter((e) => String(e.name || '').toLowerCase().indexOf(q) >= 0);
@@ -177,25 +183,28 @@ async function onDrop(files: File[]) {
     + ((saved + dup) > 0 && totR === 0 && totC === 0 && !failed ? ' — 표시 정규식·CSS 숨김이 없는 소스예요. 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨길 수 있어요.' : ''));
 }
 
-async function refreshGrid() { cat = await archiveList(); renderGrid(); }
+async function refreshGrid() { if (isDesktop()) cat = await archiveList(); renderGrid(); }   // 웹은 rules KV가 곧 목록(srcViews)
 
 const fmtBadge = (f: string) => (f || '?').toUpperCase();
 
 function srcCard(e: any): HTMLElement {
   const c = document.createElement('div'); c.className = 'home-card' + (isSrcEnabled(e.id) ? '' : ' src-off');
-  const cover = document.createElement('div'); cover.className = 'home-cover'; cover.textContent = fmtBadge(e.format);
-  // 표지 = 첫 이미지 에셋(지연: 보일 때만 원본 열어 디코드)
-  const io = new IntersectionObserver((ents) => {
-    for (const x of ents) if (x.isIntersecting) {
-      io.disconnect();
-      (async () => { try { const b = await archiveGetFile(e.id); if (!b) return; const p = parseCardAssets(b, e.name + '.' + (e.format || '')); const img = (p.assets || []).find((a: any) => /^image\//.test(a.mime || '') && a.found !== false); if (!img) return; const by = cardAssetBytes(p, img); if (by) { const el = document.createElement('img'); el.loading = 'lazy'; el.src = assetDataUrl(img); cover.innerHTML = ''; cover.appendChild(el); } } catch (_) {} })();
-    }
-  }, { rootMargin: '300px' });
-  io.observe(cover);
+  const cover = document.createElement('div'); cover.className = 'home-cover'; cover.textContent = e.format ? fmtBadge(e.format) : 'SRC';
+  if (!e.web) {
+    // 표지 = 첫 이미지 에셋(지연: 보일 때만 원본 열어 디코드) — 데탑만(웹은 원본 파일 미보관 → 타입 뱃지 표지)
+    const io = new IntersectionObserver((ents) => {
+      for (const x of ents) if (x.isIntersecting) {
+        io.disconnect();
+        (async () => { try { const b = await archiveGetFile(e.id); if (!b) return; const p = parseCardAssets(b, e.name + '.' + (e.format || '')); const img = (p.assets || []).find((a: any) => /^image\//.test(a.mime || '') && a.found !== false); if (!img) return; const by = cardAssetBytes(p, img); if (by) { const el = document.createElement('img'); el.loading = 'lazy'; el.src = assetDataUrl(img); cover.innerHTML = ''; cover.appendChild(el); } } catch (_) {} })();
+      }
+    }, { rootMargin: '300px' });
+    io.observe(cover);
+  }
   c.appendChild(cover);
   c.appendChild(Object.assign(document.createElement('div'), { className: 'home-card-name', textContent: e.name || '소스' }));
   const meta = document.createElement('div'); meta.className = 'home-card-meta';
-  meta.innerHTML = `<span class="src-badge">${TYPE_LABEL[typeOf(e.format)] || '소스'}</span> 에셋 ${e.assetCount || 0} · 규칙 ${ruleCountFor(e.id)}${cssCountFor(e.id) ? ` · CSS숨김 ${cssCountFor(e.id)}` : ''}${hasCardCss(e.id) ? ' · 카드CSS' : ''}`;
+  const tail = `규칙 ${ruleCountFor(e.id)}${cssCountFor(e.id) ? ` · CSS숨김 ${cssCountFor(e.id)}` : ''}${hasCardCss(e.id) ? ' · 카드CSS' : ''}`;
+  meta.innerHTML = `<span class="src-badge">${TYPE_LABEL[typeOf(e.format)] || '소스'}</span> ${e.web ? tail : `에셋 ${e.assetCount || 0} · ${tail}`}`;
   c.appendChild(meta);
   // 개별 활성 토글(규칙/CSS숨김 있는 소스만, 우상단). 카드 클릭=상세라 stopPropagation.
   if (ruleCountFor(e.id) > 0 || cssCountFor(e.id) > 0) {
@@ -204,18 +213,39 @@ function srcCard(e: any): HTMLElement {
     tg.onclick = (ev) => { ev.stopPropagation(); setSrcEnabled(e.id, !isSrcEnabled(e.id)); renderGrid(); };
     c.appendChild(tg);
   }
-  c.title = e.name + ' — 클릭하면 상세(에셋·규칙·내려받기)';
-  c.onclick = () => openDetail(e);
+  c.title = e.name + (e.web ? ' — 클릭하면 상세(규칙·리스 스타일·삭제)' : ' — 클릭하면 상세(에셋·규칙·내려받기)');
+  c.onclick = () => (e.web ? openWebDetail(e) : openDetail(e));
   return c;
+}
+
+// ★UX 2차: 웹 소스 상세(경량) — 원본 파일이 없으니 규칙 정보·토글·삭제만(에셋·보관·변환은 데탑 전용 안내).
+function openWebDetail(entry: any) {
+  const ov = document.createElement('div'); ov.className = 'import-modal'; const card = document.createElement('div'); card.className = 'import-card adv-card src-detail';
+  card.appendChild(Object.assign(document.createElement('div'), { className: 'import-title', textContent: entry.name || '소스' }));
+  const cssN = cssCountFor(entry.id);
+  card.appendChild(Object.assign(document.createElement('div'), { className: 'import-info', textContent: `${TYPE_LABEL[typeOf(entry.format)] || '소스'} · 규칙 ${ruleCountFor(entry.id)}개${cssN ? ` · CSS숨김 ${cssN}개` : ''}${hasCardCss(entry.id) ? ' · 카드CSS(이 기기)' : ''}` }));
+  const acts = document.createElement('div'); acts.className = 'import-btns'; acts.style.justifyContent = 'flex-start';
+  const togB = Object.assign(document.createElement('button'), { textContent: isSrcEnabled(entry.id) ? '정리 켜짐' : '정리 꺼짐' }) as HTMLButtonElement;
+  if (isSrcEnabled(entry.id)) togB.classList.add('primary');
+  togB.title = '이 소스의 정리 규칙을 리더에 적용 켜기/끄기';
+  togB.onclick = () => { setSrcEnabled(entry.id, !isSrcEnabled(entry.id)); const on = isSrcEnabled(entry.id); togB.textContent = on ? '정리 켜짐' : '정리 꺼짐'; togB.classList.toggle('primary', on); renderGrid(); };
+  const risuB = risuModeBtn(entry.id, () => renderGrid());
+  const delB = Object.assign(document.createElement('button'), { className: 'series-del', textContent: '삭제' });
+  delB.onclick = () => { rules.sources = rules.sources.filter((x) => x.id !== entry.id); persistRules(); deleteCardCss(entry.id); ov.remove(); setStatus(`“${entry.name}” 규칙 삭제`); renderGrid(); };
+  acts.append(togB, ...(risuB ? [risuB] : []), delB); card.appendChild(acts);
+  card.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '에셋 추출·원본 영구 보관·포맷 변환은 데스크탑 앱 전용이에요. 웹에는 리더 정리에 필요한 규칙·CSS만 저장돼요.' }));
+  const closeRow = document.createElement('div'); closeRow.className = 'import-btns'; const closeB = Object.assign(document.createElement('button'), { textContent: '닫기' }); closeB.onclick = () => ov.remove(); closeRow.append(closeB); card.appendChild(closeRow);
+  ov.appendChild(card); document.body.appendChild(ov); ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
 }
 
 function renderGrid() {
   if (!gridEl) return; gridEl.innerHTML = '';
   const list = filteredCat();
   if (!list.length) {
+    const total = srcViews().length;
     const e = document.createElement('div'); e.className = 'inbox-empty';
-    const art = document.createElement('div'); art.className = 'empty-art'; art.innerHTML = icon(cat.length ? 'broom' : 'folder'); e.appendChild(art);
-    e.appendChild(Object.assign(document.createElement('div'), { innerHTML: cat.length ? '조건에 맞는 소스가 없어요.' : '보관된 소스가 없어요.<br>봇카드·모듈·프롬프트를 올리면 영구 보관되고, 규칙·에셋이 함께 잡혀요.' }));
+    const art = document.createElement('div'); art.className = 'empty-art'; art.innerHTML = icon(total ? 'broom' : 'folder'); e.appendChild(art);
+    e.appendChild(Object.assign(document.createElement('div'), { innerHTML: total ? '조건에 맞는 소스가 없어요.' : (isDesktop() ? '보관된 소스가 없어요.<br>봇카드·모듈·프롬프트를 올리면 영구 보관되고, 규칙·에셋이 함께 잡혀요.' : '등록된 소스가 없어요.<br>봇카드·모듈·프롬프트를 올리면 정리 규칙·CSS가 잡혀 리더에 적용돼요.') }));
     gridEl.appendChild(e); return;
   }
   for (const e of list) gridEl.appendChild(srcCard(e));
@@ -385,45 +415,26 @@ async function onDropWeb(files: File[]) {
       if (!info.rules.length && !ch.length && !gotCss) { empty++; continue; }
       const prevMode = isRisuMode(id);   // 재드롭 시 리스 스타일 모드 보존
       rules.sources = rules.sources.filter((s) => s.id !== id);
-      rules.sources.push({ id, name, rules: info.rules, cssHide: ch, addedAt: Date.now(), ...(prevMode ? { cssMode: 'risu' } : {}) });
+      rules.sources.push({ id, name, format: info.format || '', rules: info.rules, cssHide: ch, addedAt: Date.now(), ...(prevMode ? { cssMode: 'risu' } : {}) });   // format=그리드 타입 분류·표지(UX 2차)
       persistRules(); added++; totR += info.rules.length; totC += ch.length;
     } catch (e) { failed++; console.warn('[관리실 웹] 규칙 추출 실패', f.name, e); }
   }
-  renderRulesList();
+  renderGrid();
   setStatus(added ? `정리 규칙 ${totR}개${totC ? ` · CSS숨김 ${totC}개` : ''}${totCss ? ` · 카드CSS ${totCss}개(리스 스타일 가능)` : ''} 추출 (소스 ${added}개)` + (empty ? ` · 표시규칙 없음 ${empty}` : '') : empty ? '이 소스엔 표시 정규식·CSS 숨김이 아예 없어요. 남는 문자열은 아래 "내 숨김 규칙"으로 직접 숨겨보세요.' : '소스를 읽지 못했어요(.charx · .png · .json · .risum · .risup).');
 }
-function renderRulesList() {
-  if (!rulesListEl) return; rulesListEl.innerHTML = '';
-  const srcs = rules.sources.filter((s) => !isUserSrc(s));   // 내 숨김 규칙(수동)은 자기 섹션에서 — 여긴 소스에서 추출한 규칙만
-  if (!srcs.length) { const e = document.createElement('div'); e.className = 'inbox-empty'; const art = document.createElement('div'); art.className = 'empty-art'; art.innerHTML = icon('broom'); e.appendChild(art); e.appendChild(Object.assign(document.createElement('div'), { innerHTML: '등록된 정리 규칙이 없어요.<br>프롬프트·봇카드·모듈을 올리면 화면 정리 규칙이 잡혀 리더에 적용돼요.' })); rulesListEl.appendChild(e); return; }
-  for (const s of srcs) {
-    const row = document.createElement('div'); row.className = 'inbox-item';
-    const top = document.createElement('div'); top.className = 'inbox-item-top';
-    top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-name', textContent: String(s.name || '소스') }));
-    top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-meta', textContent: `규칙 ${(s.rules && s.rules.length) || 0}개${s.cssHide && s.cssHide.length ? ` · CSS숨김 ${s.cssHide.length}개` : ''}${hasCardCss(s.id) ? ' · 카드CSS(이 기기)' : ''}` }));
-    row.appendChild(top);
-    const acts = document.createElement('div'); acts.className = 'inbox-item-acts';
-    const tg = Object.assign(document.createElement('button'), { textContent: isSrcEnabled(s.id) ? '정리 켜짐' : '정리 꺼짐' }) as HTMLButtonElement;   // B: 개별 활성
-    if (isSrcEnabled(s.id)) tg.classList.add('primary');
-    tg.title = '이 소스의 정리 규칙을 리더에 적용 켜기/끄기';
-    tg.onclick = () => { setSrcEnabled(s.id, !isSrcEnabled(s.id)); renderRulesList(); };
-    acts.appendChild(tg);
-    const rb = risuModeBtn(s.id, () => renderRulesList()); if (rb) acts.appendChild(rb);   // ★3단계: 카드 CSS 보유 소스만
-    const del = Object.assign(document.createElement('button'), { className: 'series-del', textContent: '삭제' });
-    del.onclick = () => { rules.sources = rules.sources.filter((x) => x.id !== s.id); persistRules(); deleteCardCss(s.id); renderRulesList(); };
-    acts.appendChild(del); row.appendChild(acts); rulesListEl.appendChild(row);
-  }
-}
+// ★UX 2차: 웹도 데탑과 같은 그리드 카드형(분류 탭·검색·정렬·소스 카드) — 렌더 경로 통일(srcViews가 데이터만 분기).
+//   구 inbox 리스트(renderRulesList)는 이 그리드로 대체. 에셋·보관·변환 등 원본 필요 기능만 데탑 게이팅.
 function buildRulesOnly(wrap: HTMLElement) {
-  wrap.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '프롬프트·봇카드·모듈(.charx · .png · .json · .risum · .risup)을 올리면 그 안의 “화면 정리 정규식”을 뽑아 저장해요. 리더가 군더더기(상태창·생각의 사슬·AI 슬롭 등)를 비파괴로 숨깁니다(정리/원본 토글). 여러 기기에 동기화돼요.' }));
+  wrap.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '프롬프트·봇카드·모듈(.charx · .png · .json · .risum · .risup)을 올리면 그 안의 “화면 정리 정규식”과 CSS 숨김을 뽑아 저장해요. 리더가 군더더기(상태창·생각의 사슬·AI 슬롭 등)를 비파괴로 숨깁니다(정리/원본 토글). 여러 기기에 동기화돼요.' }));
   buildSyncBadge(wrap);
   wrap.appendChild(makeDrop('정리 규칙 추출 (드롭 또는 클릭)', onDropWeb));
   statusEl = Object.assign(document.createElement('div'), { className: 'adv-desc mgmt-status' }); wrap.appendChild(statusEl);
+  wrap.appendChild(archiveToolbar());
   wrap.appendChild(rulesToggle('정리 규칙'));
-  rulesListEl = document.createElement('div'); rulesListEl.className = 'inbox-list'; wrap.appendChild(rulesListEl);
-  renderRulesList();
+  gridEl = document.createElement('div'); gridEl.className = 'mgmt-grid'; wrap.appendChild(gridEl);
   buildUserRules(wrap);   // 내 숨김 규칙(수동) — 소스에 정규식이 없는 봇(CSS 숨김 상태창류) 대응
   wrap.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '에셋 추출기와 영구 보관실은 데스크탑 앱 전용이에요(큰 모듈 보관·에셋 내려받기·편집기 투입).' }));
+  renderGrid();
 }
 
 // ── 페이지 셸 ──
