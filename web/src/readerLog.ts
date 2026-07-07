@@ -51,7 +51,7 @@ function applyOrig(r: any) { if (!r.orig) return; for (const k of ORIG_FIELDS) {
 // ── 관리실 정리 규칙(표시 정규식) — 리더 전역 비파괴 적용(원본 로그 불변·토글) ──
 const CLEANUP_KEY = 'pro2-cleanup-rules';
 function cleanupRules(): any[] {   // 전역 enabled + ★소스별 enabled(개별 활성)인 것만 평탄화. 0개·꺼짐 = [](무동작).
-  try { const r = kvLoad(CLEANUP_KEY); if (!r || r.enabled === false || !Array.isArray(r.sources)) return []; const out: any[] = []; for (const s of r.sources) if (s && s.enabled !== false && Array.isArray(s.rules)) for (const x of s.rules) out.push(x); return out; } catch (_) { return []; }
+  try { const r = kvLoad(CLEANUP_KEY); if (!r || r.enabled === false || !Array.isArray(r.sources)) return []; const out: any[] = []; for (const s of r.sources) if (s && s.enabled !== false && Array.isArray(s.rules)) for (const x of s.rules) { if (x && x.off === true) continue; out.push(x); } return out; } catch (_) { return []; }   // x.off=관리실 규칙별 끄기(UX 3차)
 }
 // ★CSS 숨김 클래스(2단계) — 관리실이 카드 backgroundHTML CSS에서 감지한 "기본 숨김" 클래스(예: .info-tooltip{opacity:0}).
 //   리스는 그 CSS가 가려주지만 리더엔 CSS가 없어 노출 → 정리 시 해당 클래스 요소를 DOM에서 제거(호버 안 한 리스 기본 화면과 동일).

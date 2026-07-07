@@ -2241,9 +2241,14 @@ async function archiveFromEditor(bytes: Uint8Array, fileName: string) {
     if ((info.rules && info.rules.length) || cssHide.length || gotCss) {
       const r: any = kvLoad('pro2-cleanup-rules');
       const rr = (r && typeof r === 'object') ? { enabled: r.enabled !== false, sources: Array.isArray(r.sources) ? r.sources : [] } : { enabled: true, sources: [] };
-      const prev = rr.sources.find((s: any) => s.id === entry.id);   // 리스 스타일 모드 보존
+      const prev = rr.sources.find((s: any) => s.id === entry.id);   // 리스 스타일 모드·규칙별 끄기(off) 보존
       rr.sources = rr.sources.filter((s: any) => s.id !== entry.id);
-      rr.sources.push({ id: entry.id, name, rules: info.rules || [], cssHide, addedAt: entry.addedAt, ...(prev && prev.cssMode === 'risu' ? { cssMode: 'risu' } : {}) });
+      const nextRules = info.rules || [];
+      if (prev && Array.isArray(prev.rules)) {   // 관리실 carryRuleOff와 동일 로직[동기 유지]: 같은 in+out 규칙에 off 이식
+        const offs = new Set(prev.rules.filter((r: any) => r && r.off === true).map((r: any) => r.in + ' ' + r.out));
+        for (const r of nextRules) if (r && offs.has(r.in + ' ' + r.out)) r.off = true;
+      }
+      rr.sources.push({ id: entry.id, name, rules: nextRules, cssHide, addedAt: entry.addedAt, ...(prev && prev.cssMode === 'risu' ? { cssMode: 'risu' } : {}) });
       kvSave('pro2-cleanup-rules', rr);
     }
   } catch (e) { console.warn('[편집기→관리실] 자동 보관 실패', e); }

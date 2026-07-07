@@ -1493,3 +1493,20 @@ button .ic, summary .ic { margin-right: .15em; }
 .mgmt-sync .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
 .mgmt-sync.on { color: var(--ink-2); }
 .mgmt-sync.on .dot { background: #2e9e5b; }
+
+/* ── 관리실 UX 3차: 상세 모달 규칙 목록(개별 토글)·before/after 미리보기 ── */
+.rule-details { margin: 4px 0 2px; }
+.rule-details > summary { cursor: pointer; font: 600 12.5px/1.4 var(--font-sans); color: var(--ink-2); padding: 6px 2px; }
+.rule-details > summary:hover { color: var(--accent); }
+.rule-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; margin-top: 4px; }
+.rule-row { display: flex; align-items: center; gap: 8px; padding: 5px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel-2); }
+.rule-row.off { opacity: .5; }
+.rule-row input { accent-color: var(--accent); cursor: pointer; margin: 0; flex-shrink: 0; }
+.rule-row .rule-pat { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11.5px/1.5 var(--font-mono); color: var(--ink-2); }
+.rule-row .rule-type { font: 600 10px/1 var(--font-sans); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 7px; flex-shrink: 0; }
+.rule-csschips { font: 500 11.5px/1.7 var(--font-mono); color: var(--muted); margin-top: 6px; word-break: break-all; }
+.prev-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+@media (max-width: 700px) { .prev-grid { grid-template-columns: 1fr; } }
+.prev-label { font: 600 11px/1 var(--font-sans); color: var(--muted); margin-bottom: 4px; }
+.prev-box { font: 500 11.5px/1.6 var(--font-mono); color: var(--ink-2); background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 8px 10px; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; }

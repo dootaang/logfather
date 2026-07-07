@@ -6,9 +6,9 @@
 // @ts-nocheck
 import { icon } from './icons.js';
 import { isDesktop } from './desktopSync.js';   // 웹=정리규칙만 / 데스크탑=정리+에셋+보관 게이팅(C)
-import { kvLoad, kvSave, archiveSaveSource, archiveList, archiveGetFile, archiveDelete, idbSaveCard } from './store.js';
+import { kvLoad, kvSave, archiveSaveSource, archiveList, archiveGetFile, archiveDelete, idbSaveCard, logsAll } from './store.js';
 import { extractSourceInfo } from '../../core/card/sourceRegex.js';
-import { buildRegex, isCatastrophic, sanitizeRegexOut, escapeRegexLiteral } from '../../core/convert/cardRegex.js';   // 내 숨김 규칙(수동) 검증·이스케이프·살균
+import { buildRegex, isCatastrophic, sanitizeRegexOut, escapeRegexLiteral, expandCardRegex } from '../../core/convert/cardRegex.js';   // 내 숨김 규칙(수동) 검증·이스케이프·살균 + 미리보기 적용
 import { saveCardCss, deleteCardCss, hasCardCss } from './cardCss.js';   // ★3단계 "리스 스타일": 카드 CSS 이 기기 보관(동기화 KV엔 모드 플래그만)
 import { authAvailable, watchAuth } from './auth.js';   // ★UX 1차: 동기화 상태 가시화(로그인=규칙 자동 동기화)
 import { parseCardAssets, cardAssetBytes } from '../../core/card/cardAssets.js';
@@ -168,11 +168,11 @@ async function onDrop(files: File[]) {
       const name = info.name || fileName;   // ★소스 내부 표시 이름(D) — 봇카드 data.name·모듈 module.name·.risup preset.name, 없으면 파일명
       const rs = info.rules || []; const ch = info.cssHide || [];   // ★ch = backgroundHTML CSS 기본 숨김 클래스(2단계)
       const entry = await archiveSaveSource(bytes, { name, format: info.format || '', assetCount, ruleCount: rs.length });
-      // 규칙 KV 연결(id=파일해시) — 재보관이면 교체(리스 스타일 모드는 보존)
-      const prevMode = isRisuMode(entry.id);
+      // 규칙 KV 연결(id=파일해시) — 재보관이면 교체(리스 스타일 모드·규칙별 끄기 보존)
+      const prevSrc = rules.sources.find((s) => s.id === entry.id); const prevMode = isRisuMode(entry.id);
       rules.sources = rules.sources.filter((s) => s.id !== entry.id);
       const gotCss = persistCardCss(entry.id, name, info.cssBundle); if (gotCss) totCss++;   // ★카드 CSS(3단계) 이 기기 보관
-      if (rs.length || ch.length || gotCss) rules.sources.push({ id: entry.id, name, rules: rs, cssHide: ch, addedAt: entry.addedAt, ...(prevMode ? { cssMode: 'risu' } : {}) });   // CSS만 있어도 등록(리스 스타일 토글 대상)
+      if (rs.length || ch.length || gotCss) rules.sources.push({ id: entry.id, name, rules: carryRuleOff(prevSrc && prevSrc.rules, rs), cssHide: ch, addedAt: entry.addedAt, ...(prevMode ? { cssMode: 'risu' } : {}) });   // CSS만 있어도 등록(리스 스타일 토글 대상)
       persistRules();
       if (entry.existed) dup++; else saved++;
       totR += rs.length; totC += ch.length; totA += assetCount;
@@ -233,6 +233,7 @@ function openWebDetail(entry: any) {
   const delB = Object.assign(document.createElement('button'), { className: 'series-del', textContent: '삭제' });
   delB.onclick = () => { rules.sources = rules.sources.filter((x) => x.id !== entry.id); persistRules(); deleteCardCss(entry.id); ov.remove(); setStatus(`“${entry.name}” 규칙 삭제`); renderGrid(); };
   acts.append(togB, ...(risuB ? [risuB] : []), delB); card.appendChild(acts);
+  const rsec = rulesSection(entry.id); if (rsec) card.appendChild(rsec);   // ★UX 3차: 규칙 목록·개별 토글·미리보기
   card.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '에셋 추출·원본 영구 보관·포맷 변환은 데스크탑 앱 전용이에요. 웹에는 리더 정리에 필요한 규칙·CSS만 저장돼요.' }));
   const closeRow = document.createElement('div'); closeRow.className = 'import-btns'; const closeB = Object.assign(document.createElement('button'), { textContent: '닫기' }); closeB.onclick = () => ov.remove(); closeRow.append(closeB); card.appendChild(closeRow);
   ov.appendChild(card); document.body.appendChild(ov); ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
@@ -324,6 +325,7 @@ async function openDetail(entry: any) {
     card.appendChild(conv);
     card.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '※ 포맷별 에셋 이식성이 달라요 — JSON=data:로 인라인 · CharX=전체 에셋 · PNG=아바타 위주(추가 에셋 일부 손실 가능). 카드 데이터(설명·로어북 등)는 보존.' }));
   }
+  { const rsec = rulesSection(entry.id); if (rsec) card.appendChild(rsec); }   // ★UX 3차: 규칙 목록·개별 토글·미리보기(웹 상세와 공용)
   const grid = document.createElement('div'); grid.className = 'mgmt-grid'; card.appendChild(grid);
   const closeRow = document.createElement('div'); closeRow.className = 'import-btns'; const closeB = Object.assign(document.createElement('button'), { textContent: '닫기' }); closeB.onclick = () => ov.remove(); closeRow.append(closeB); card.appendChild(closeRow);
   ov.appendChild(card); document.body.appendChild(ov); ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
@@ -342,7 +344,7 @@ async function openDetail(entry: any) {
 
   reB.onclick = async () => {
     reB.disabled = true; reB.textContent = '재추출 중…';
-    try { const bytes = await archiveGetFile(entry.id); if (bytes) { const inf = await extractSourceInfo(bytes, entry.name + '.' + (entry.format || '')); const rs = inf.rules || []; const ch = inf.cssHide || []; const parsed = parseCardAssets(bytes, entry.name + '.' + (entry.format || '')); const ac = (parsed.assets || []).filter((a: any) => a.found !== false).length; await archiveSaveSource(bytes, { name: entry.name, format: entry.format, assetCount: ac, ruleCount: rs.length }); const gotCss = persistCardCss(entry.id, entry.name, (inf as any).cssBundle); const prevMode = isRisuMode(entry.id); rules.sources = rules.sources.filter((s) => s.id !== entry.id); if (rs.length || ch.length || gotCss) rules.sources.push({ id: entry.id, name: entry.name, rules: rs, cssHide: ch, addedAt: entry.addedAt, ...(prevMode ? { cssMode: 'risu' } : {}) }); persistRules(); setStatus(`“${entry.name}” 재추출 — 규칙 ${rs.length}${ch.length ? ` · CSS숨김 ${ch.length}` : ''}${gotCss ? ' · 카드CSS 보관' : ''} · 에셋 ${ac}`); } }
+    try { const bytes = await archiveGetFile(entry.id); if (bytes) { const inf = await extractSourceInfo(bytes, entry.name + '.' + (entry.format || '')); const rs = inf.rules || []; const ch = inf.cssHide || []; const parsed = parseCardAssets(bytes, entry.name + '.' + (entry.format || '')); const ac = (parsed.assets || []).filter((a: any) => a.found !== false).length; await archiveSaveSource(bytes, { name: entry.name, format: entry.format, assetCount: ac, ruleCount: rs.length }); const gotCss = persistCardCss(entry.id, entry.name, (inf as any).cssBundle); const prevSrc = rules.sources.find((s) => s.id === entry.id); const prevMode = isRisuMode(entry.id); rules.sources = rules.sources.filter((s) => s.id !== entry.id); if (rs.length || ch.length || gotCss) rules.sources.push({ id: entry.id, name: entry.name, rules: carryRuleOff(prevSrc && prevSrc.rules, rs), cssHide: ch, addedAt: entry.addedAt, ...(prevMode ? { cssMode: 'risu' } : {}) }); persistRules(); setStatus(`“${entry.name}” 재추출 — 규칙 ${rs.length}${ch.length ? ` · CSS숨김 ${ch.length}` : ''}${gotCss ? ' · 카드CSS 보관' : ''} · 에셋 ${ac}`); } }
     catch (_) { setStatus('재추출 실패'); }
     ov.remove(); refreshGrid();
   };
@@ -362,6 +364,101 @@ function buildSyncBadge(wrap: HTMLElement) {
   };
   paint(null);
   try { if (authAvailable()) watchAuth((u) => paint(u)); } catch (_) { /* 미구성(오프라인 빌드 등) = 로컬 문구 유지 */ }
+}
+
+// ── UX 3차: 규칙 미리보기·규칙별 토글 + 내 로그 before/after (상세 모달 공용 섹션, 웹·데탑) ──────
+// 재드롭/재추출로 규칙 배열이 새로 와도 개별 끄기(off)를 보존: 같은 in+out 규칙에 off 이식.
+function carryRuleOff(prevRules: any[] | undefined, nextRules: any[]): any[] {
+  if (!Array.isArray(prevRules) || !prevRules.length) return nextRules;
+  const offs = new Set(prevRules.filter((r) => r && r.off === true).map((r) => r.in + ' ' + r.out));
+  for (const r of nextRules) if (r && offs.has(r.in + ' ' + r.out)) r.off = true;
+  return nextRules;
+}
+// 로그 레코드의 규칙 적용 대상 텍스트(원시) — readerLog.logTextSlots의 읽기전용 축약판 [모양 동기 유지].
+function logTexts(r: any): string[] {
+  const out: string[] = [];
+  if (r && r.chat && Array.isArray(r.chat.messages)) for (const m of r.chat.messages) out.push(String((m && m.text) || ''));
+  else if (r && r.webnovel && Array.isArray(r.webnovel.blocks)) for (const b of r.webnovel.blocks) out.push(String((b && b.content) || ''));
+  else if (r && r.cardCfg && Array.isArray(r.cardCfg.blocks)) for (const b of r.cardCfg.blocks) out.push(String((b && b.content) || ''));
+  else if (r && typeof r.input === 'string' && r.input) out.push(r.input);
+  else if (r && typeof r.html === 'string') out.push(r.html);
+  return out;
+}
+// CSS 숨김 클래스 요소 제거 — readerLog.removeHiddenClassEls와 동일 로직(미리보기용 사본) [동기 유지].
+function stripHiddenEls(text: string, classes: string[]): string {
+  if (!classes.length || !text || text.indexOf('class') < 0) return text;
+  if (!classes.some((c) => text.indexOf(c) >= 0)) return text;
+  try {
+    const doc = new DOMParser().parseFromString('<div id="__ph">' + text + '</div>', 'text/html');
+    const root = doc.getElementById('__ph'); if (!root) return text;
+    const els = root.querySelectorAll(classes.map((c) => '.' + c).join(','));
+    if (!els.length) return text;
+    els.forEach((e) => e.remove());
+    return root.innerHTML;
+  } catch (_) { return text; }
+}
+// 최근 보관 로그에서 이 소스가 실제로 바꾸는 첫 지점을 찾아 전/후 발췌 반환(못 찾으면 null).
+async function findRulePreview(s: any): Promise<{ before: string; after: string; title: string } | null> {
+  const active = (s.rules || []).filter((r: any) => r && r.off !== true);
+  const classes = (s.cssHide || []).filter((c: any) => typeof c === 'string' && /^[A-Za-z_][\w-]*$/.test(c));
+  if (!active.length && !classes.length) return null;
+  let logs: any[] = []; try { logs = await logsAll(); } catch (_) {}
+  logs.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  for (const r of logs.slice(0, 80)) {
+    for (const t of logTexts(r)) {
+      if (!t) continue;
+      let c = expandCardRegex(t, active);
+      if (classes.length) c = stripHiddenEls(c, classes);
+      if (c === t) continue;
+      let i = 0; const n = Math.min(t.length, c.length);
+      while (i < n && t.charAt(i) === c.charAt(i)) i++;   // 첫 차이 지점
+      const from = Math.max(0, i - 100);
+      const cut = (x: string) => (from > 0 ? '…' : '') + x.slice(from, from + 340) + (x.length > from + 340 ? '…' : '');
+      return { before: cut(t), after: c.trim() ? cut(c) : '(전부 숨겨짐)', title: (r.title ? r.title + ' · ' : '') + (r.char || '') };
+    }
+  }
+  return null;
+}
+function rulesSection(srcId: string): HTMLElement | null {
+  const s = rules.sources.find((x) => x.id === srcId);
+  if (!s || ((!s.rules || !s.rules.length) && (!s.cssHide || !s.cssHide.length))) return null;
+  const box = document.createElement('div');
+  const det = document.createElement('details'); det.className = 'rule-details';
+  const ruleN = (s.rules && s.rules.length) || 0;
+  det.appendChild(Object.assign(document.createElement('summary'), { textContent: `규칙 자세히 — 정규식 ${ruleN}개 개별 켜기/끄기${s.cssHide && s.cssHide.length ? ` · CSS숨김 ${s.cssHide.length}` : ''}` }));
+  const pvArea = document.createElement('div');   // 미리보기 결과(규칙 토글 시 비움 = 최신 상태만)
+  const list = document.createElement('div'); list.className = 'rule-list';
+  for (const r of (s.rules || [])) {
+    const row = document.createElement('label'); row.className = 'rule-row' + (r.off === true ? ' off' : '');
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = r.off !== true;
+    cb.onchange = () => { if (cb.checked) delete r.off; else r.off = true; persistRules(); row.classList.toggle('off', r.off === true); pvArea.innerHTML = ''; };
+    const label = (r.comment && String(r.comment).trim()) || String(r.in || '');   // 제작자 설명 우선, 없으면 패턴
+    row.appendChild(cb);
+    row.appendChild(Object.assign(document.createElement('span'), { className: 'rule-pat', textContent: label, title: `in: ${r.in}\nout: ${r.out || '(삭제)'}` }));
+    row.appendChild(Object.assign(document.createElement('span'), { className: 'rule-type', textContent: String(r.type || 'editdisplay') }));
+    list.appendChild(row);
+  }
+  if (list.childNodes.length) det.appendChild(list);
+  if (s.cssHide && s.cssHide.length) det.appendChild(Object.assign(document.createElement('div'), { className: 'rule-csschips', textContent: '숨김 클래스: ' + s.cssHide.join(' · ') }));
+  // ③ before/after — 최근 내 로그에서 이 소스가 실제 바꾸는 지점 발췌
+  const pvBtn = Object.assign(document.createElement('button'), { textContent: '내 로그로 미리보기' });
+  pvBtn.title = '최근 보관함에서 이 규칙이 실제로 바꾸는 화를 찾아 정리 전/후를 보여줘요(현재 켜진 규칙 기준).';
+  pvBtn.style.marginTop = '8px';
+  pvBtn.onclick = async () => {
+    pvBtn.disabled = true; pvBtn.textContent = '찾는 중…';
+    const r = await findRulePreview(s);
+    pvBtn.disabled = false; pvBtn.textContent = '내 로그로 미리보기';
+    pvArea.innerHTML = '';
+    if (!r) { pvArea.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '최근 보관함(80화)에서 이 규칙이 바꾸는 로그를 못 찾았어요 — 규칙이 전부 꺼져 있거나, 이 봇의 로그가 없을 수 있어요.' })); return; }
+    const grid = document.createElement('div'); grid.className = 'prev-grid';
+    const mk2 = (lab: string, body: string) => { const d = document.createElement('div'); d.appendChild(Object.assign(document.createElement('div'), { className: 'prev-label', textContent: lab })); d.appendChild(Object.assign(document.createElement('div'), { className: 'prev-box', textContent: body })); return d; };
+    grid.appendChild(mk2('원본' + (r.title ? ` — ${r.title}` : ''), r.before));
+    grid.appendChild(mk2('정리 후', r.after));
+    pvArea.appendChild(grid);
+  };
+  det.appendChild(pvBtn); det.appendChild(pvArea);
+  box.appendChild(det);
+  return box;
 }
 
 // 정리 토글(공용): 리더 적용 on/off.
@@ -413,9 +510,9 @@ async function onDropWeb(files: File[]) {
       const name = info.name || f.name.replace(/\.[^.]+$/, '');
       const gotCss = persistCardCss(id, name, info.cssBundle); if (gotCss) totCss++;   // ★카드 CSS(3단계) 이 기기 보관
       if (!info.rules.length && !ch.length && !gotCss) { empty++; continue; }
-      const prevMode = isRisuMode(id);   // 재드롭 시 리스 스타일 모드 보존
+      const prevSrc = rules.sources.find((s) => s.id === id); const prevMode = isRisuMode(id);   // 재드롭 시 리스 스타일 모드·규칙별 끄기 보존
       rules.sources = rules.sources.filter((s) => s.id !== id);
-      rules.sources.push({ id, name, format: info.format || '', rules: info.rules, cssHide: ch, addedAt: Date.now(), ...(prevMode ? { cssMode: 'risu' } : {}) });   // format=그리드 타입 분류·표지(UX 2차)
+      rules.sources.push({ id, name, format: info.format || '', rules: carryRuleOff(prevSrc && prevSrc.rules, info.rules), cssHide: ch, addedAt: Date.now(), ...(prevMode ? { cssMode: 'risu' } : {}) });   // format=그리드 타입 분류·표지(UX 2차)
       persistRules(); added++; totR += info.rules.length; totC += ch.length;
     } catch (e) { failed++; console.warn('[관리실 웹] 규칙 추출 실패', f.name, e); }
   }
