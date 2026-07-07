@@ -31,7 +31,7 @@
   "build": {
     "appId": "app.logpapa.desktop",
     "productName": "LogPapa",
-    "artifactName": "LogPapa-Setup-${version}.${ext}",
+    "artifactName": "LogPapa-Portable-${version}.${ext}",
     "files": [
       "electron/**/*",
       "web/**/*",
@@ -47,10 +47,11 @@
     "extraMetadata": { "main": "electron/main.js" },
     "directories": { "output": "release" },
     "win": {
-      "target": "nsis",
+      "target": ["nsis", "zip"],
       "icon": "build/icon.ico"
     },
     "nsis": {
+      "artifactName": "LogPapa-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,

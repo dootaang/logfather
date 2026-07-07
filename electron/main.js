@@ -550,6 +550,10 @@ function registerIpc() {
 // 사용자가 배너의 "재시작" 누르면 설치. autoInstallOnAppQuit=false라 모르게 설치 안 됨.
 function setupAutoUpdate(win) {
   if (!app.isPackaged) return;
+  // ★포터블(zip) 실행이면 자동업데이트 끔 — NSIS 설치본만 업데이트 대상. 설치본 판별=같은 폴더의
+  //   NSIS 언인스톨러 존재(커스텀 설치경로 포함, zip 풀기엔 없음). 포터블은 새 zip 수동 다운로드로 갱신.
+  //   (안 끄면 zip 유저가 배너의 "재시작"을 눌렀을 때 NSIS 설치기가 돌아 몰래 설치판으로 전환됨.)
+  try { if (!require('fs').existsSync(require('path').join(require('path').dirname(app.getPath('exe')), 'Uninstall LogPapa.exe'))) return; } catch (_) { return; }   // 이름=NSIS 'Uninstall ${productName}.exe' 고정(app.getName()은 pkg name이라 부정확)
   try {
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = false;
