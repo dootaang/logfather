@@ -98,32 +98,44 @@ const isMobileLib = () => /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.user
 //   전혀 안 변함 → "숨김이 스크롤을 일으켜 다시 토글"하던 피드백 루프(지진·맨위복귀)가 원천 차단된다.
 //   본문은 오버레이 아래로 스크롤되므로 숨길 때 그 공간이 실제로 회수된다(음수 margin 방식 폐기).
 //   로그 열람 리더(reader-scroll)는 자체 탭-토글이 있어 제외 — 호출처는 홈·작품 페이지뿐.
+//   ★스크롤 연동(크롬 주소줄식): 바를 이진 토글이 아니라 스크롤 델타에 1:1로 밀고, 멈추면 가까운 쪽으로 스냅.
+//   ★분리 버그 차단: 두 바가 "같은" 오프셋 하나로 움직임(각자 다른 거리·속도 폐기) → 바끼리 상대 이동이
+//   구조적으로 불가. 높이는 스냅샷이 아니라 ResizeObserver로 재계산(폰트 로드·회전·줄바꿈에도 불일치 없음).
 function autoHideBar(scroller: HTMLElement, bars: (HTMLElement | null)[]) {
   if (!isMobileLib()) return;
   const list = bars.filter(Boolean) as HTMLElement[];
   if (!list.length) return;
-  let offset = 0;                                            // 위에서부터 누적 top 오프셋
-  for (const b of list) {
-    b.classList.add('auto-hide-bar');
-    b.style.transform = '';                                  // 표시 상태로 시작(공유 .lib-topbar의 직전 숨김 잔재 리셋)
-    b.style.top = offset + 'px';
-    b.dataset.ahHide = (offset + b.offsetHeight) + '';       // 숨길 때 위로 밀 거리 = 자기 top + 높이(완전히 화면 밖)
-    offset += b.offsetHeight;
-  }
-  scroller.style.paddingTop = (offset + 10) + 'px';          // 합산 높이 + 약간의 여백("고정" 패딩 → 레이아웃 불변)
-  const setHidden = (hide: boolean) => { for (const b of list) b.style.transform = hide ? `translateY(-${b.dataset.ahHide}px)` : ''; };
-  let lastY = scroller.scrollTop, ticking = false;
+  const measure = () => {                                    // top 배치 + 스크롤러 고정 패딩 + 총 숨김 거리(호출 시점 재계산)
+    let h = 0;
+    for (const b of list) { b.style.top = h + 'px'; h += b.offsetHeight; }
+    scroller.style.paddingTop = (h + 10) + 'px';             // "고정" 패딩 → 레이아웃 불변(지진 루프 차단 유지)
+    return h;
+  };
+  for (const b of list) { b.classList.add('auto-hide-bar'); b.classList.remove('ah-snap'); b.style.transform = ''; }   // 표시 상태로 시작(공유 .lib-topbar 잔재 리셋)
+  let maxOff = measure();
+  let offset = 0;                                            // 공유 숨김 오프셋: 0=완전 표시 · maxOff=완전 숨김
+  const apply = () => { const t = offset ? `translateY(-${offset.toFixed(1)}px)` : ''; for (const b of list) b.style.transform = t; };
+  const setSnap = (on: boolean) => { for (const b of list) b.classList.toggle('ah-snap', on); };   // 드래그=1:1(전환 없음) / 스냅=짧은 전환
+  try {                                                      // 바 높이 변화 대응(transform은 레이아웃 크기를 안 바꿔 루프 없음)
+    const ro = new ResizeObserver(() => { maxOff = measure(); if (offset > maxOff) { offset = maxOff; apply(); } });
+    for (const b of list) ro.observe(b);
+  } catch (_) {}
+  let lastY = scroller.scrollTop, ticking = false, snapT: any = null;
   scroller.addEventListener('scroll', () => {
     if (ticking) return; ticking = true;
     requestAnimationFrame(() => {
       ticking = false;
       const y = scroller.scrollTop;
       const max = scroller.scrollHeight - scroller.clientHeight;
-      if (y <= 4) { setHidden(false); lastY = y; return; }   // 맨 위 = 항상 표시
-      if (y >= max - 4) { lastY = y; return; }               // 맨 아래 근처 = 토글 금지(clamp 가짜 스크롤 무시)
-      if (Math.abs(y - lastY) < 12) return;                  // 넉넉한 임계값(깜빡임 방지)
-      setHidden(y > lastY);                                  // 아래로 → 숨김 / 위로 → 표시
-      lastY = y;
+      const dy = y - lastY; lastY = y;
+      if (y <= 4) { if (offset) { offset = 0; setSnap(true); apply(); } return; }   // 맨 위 = 항상 표시
+      if (y >= max - 4) return;                              // 맨 아래 근처 = 변화 금지(clamp 가짜 스크롤 무시)
+      const next = Math.max(0, Math.min(maxOff, offset + dy));
+      if (next !== offset) { offset = next; setSnap(false); apply(); }
+      if (snapT) clearTimeout(snapT);
+      snapT = setTimeout(() => {                             // 스크롤 멈춤 → 어중간하면 가까운 쪽으로 마무리
+        if (offset > 0 && offset < maxOff) { offset = offset > maxOff / 2 ? maxOff : 0; setSnap(true); apply(); }
+      }, 140);
     });
   }, { passive: true });
 }
@@ -451,6 +463,14 @@ function renderHome() {
   tools.addEventListener('toggle', () => {
     if (tools.open) document.addEventListener('pointerdown', closeTools, true);
     else document.removeEventListener('pointerdown', closeTools, true);
+    // ★모바일 줄바꿈으로 버튼이 좌측에 오면 right:0 정렬 팝오버(min-width 232px)가 화면 왼쪽 밖으로 나감 →
+    //   열 때 이탈 측정해 좌측 정렬로 뒤집기. popIn 애니메이션이 transform을 쓰므로 rect 대신
+    //   버튼 rect + offsetWidth(transform 무관)로 계산.
+    if (tools.open) {
+      tpop.style.left = ''; tpop.style.right = '';   // 기본(right:0)으로 리셋 후 판정
+      const btnRight = tsum.getBoundingClientRect().right;
+      if (btnRight - tpop.offsetWidth < 8) { tpop.style.left = '0'; tpop.style.right = 'auto'; }
+    }
   });
   head.append(title, search, chatBtn, tools);
   // 전체 굳히기(서재 모든 로그의 외부 이미지 영구 박제) — 데스크탑 앱 전용.

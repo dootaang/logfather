@@ -670,7 +670,8 @@ iframe#preview {
 .archive-list { flex: 1; overflow: auto; padding: 18px 22px; overscroll-behavior: contain; }
 /* 모바일 서재 상단 헤더 자동 숨김(홈·작품): position:fixed 오버레이 + transform만(레이아웃 불변 → 루프 없음).
    top·transform은 JS가 인라인으로 줌. 데스크탑은 media 밖이라 position이 안 걸려 항상 흐름(표시) 유지. */
-.auto-hide-bar { transition: transform .25s ease; animation: none; }   /* paneIn(fill:both)의 retained transform:none이 인라인 transform을 덮지 않게 해제 */
+.auto-hide-bar { transition: none; animation: none; }   /* 스크롤 연동 1:1(전환 없음). animation:none=paneIn retained transform이 인라인 transform을 안 덮게 */
+.auto-hide-bar.ah-snap { transition: transform .18s ease; }   /* 스크롤 멈춤 후 가까운 쪽 스냅만 짧은 전환 */
 .archive-empty { color: var(--muted); text-align: center; padding: 48px 16px; line-height: 1.6; animation: paneIn .35s var(--ease) both; }
 /* 빈 화면 브랜드 마크: 라인 아이콘 한 점(불꽃 idiom) — 절제된 원형 배지(기존 아이콘 패밀리 톤). */
 .empty-art { display: grid; place-items: center; width: 56px; height: 56px; margin: 0 auto 14px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); animation: popIn .4s var(--ease) both; }
