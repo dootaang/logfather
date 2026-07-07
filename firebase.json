@@ -59,37 +59,6 @@
         }
       ],
       "target": "app"
-    },
-    {
-      "target": "extractor",
-      "public": "에셋추출기/web",
-      "ignore": [
-        "firebase.json",
-        "**/.*",
-        "**/node_modules/**",
-        "src/**"
-      ],
-      "headers": [
-        {
-          "comment": "고정이름 진입 파일(html·번들·css)은 빌드마다 내용이 바뀜 → 캐시 금지.",
-          "source": "**/*.@(html|css)",
-          "headers": [
-            {
-              "key": "Cache-Control",
-              "value": "no-cache, max-age=0, must-revalidate"
-            }
-          ]
-        },
-        {
-          "source": "/dist/main.js",
-          "headers": [
-            {
-              "key": "Cache-Control",
-              "value": "no-cache, max-age=0, must-revalidate"
-            }
-          ]
-        }
-      ]
     }
   ],
   "firestore": {

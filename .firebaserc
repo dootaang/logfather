@@ -1,20 +1,12 @@
 {
   "projects": {
-    "default": "logpapa",
-    "extractor": "asset-extractor-8544a"
+    "default": "logpapa"
   },
   "targets": {
     "logpapa": {
       "hosting": {
         "app": [
           "logpapa"
-        ]
-      }
-    },
-    "asset-extractor-8544a": {
-      "hosting": {
-        "extractor": [
-          "asset-extractor"
         ]
       }
     }

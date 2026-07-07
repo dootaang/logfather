@@ -26,12 +26,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run web:build
-      # 에셋추출기 웹 버전(assetextractor.web.app) 번들 — 독립 패키지라 별도 ci+build.
-      - run: npm ci
-        working-directory: 에셋추출기
-      - run: npm run web:build
-        working-directory: 에셋추출기
-      # 본체(target=app → logpapa.web.app)
+      # ※에셋추출기 웹은 독립 레포(dootaang/assetextractor2)가 자체 CI로 배포한다(2026-07-07 이주).
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
@@ -39,19 +34,6 @@ jobs:
           channelId: live
           projectId: logpapa
           target: app
-      # 에셋추출기 = 독립 프로젝트(asset-extractor-8544a → asset-extractor.web.app).
-      # 활성화: ①새 프로젝트 콘솔 → 프로젝트 설정 → 서비스 계정 → 새 비공개 키(JSON) 생성
-      #        ②GitHub 비밀값 FIREBASE_SERVICE_ACCOUNT_ASSET_EXTRACTOR 등록
-      #        ③repo 변수 ASSET_EXTRACTOR_HOSTING_ENABLED=true
-      # 그 전까지 스킵(수동 배포: firebase deploy --only hosting:extractor --project asset-extractor-8544a)
-      - uses: FirebaseExtended/action-hosting-deploy@v0
-        if: ${{ vars.ASSET_EXTRACTOR_HOSTING_ENABLED == 'true' }}
-        with:
-          repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_ASSET_EXTRACTOR }}
-          channelId: live
-          projectId: asset-extractor-8544a
-          target: extractor
       # action-hosting-deploy는 "호스팅만" 배포함 → Firestore 보안 규칙은 여기서 따로 올린다.
       # (안 하면 repo의 firestore.rules가 서버에 반영 안 돼 공유 생성 shares 쓰기가 막힘 = "공유 없음".)
       # ※ storage 규칙은 별도 배포(serviceusage 권한 필요)이고 이미 서버에 반영돼 있어 여기선 firestore만 올린다.
