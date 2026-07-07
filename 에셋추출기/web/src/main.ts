@@ -30,6 +30,10 @@ let trayAssets: any[] = [];
 let trayFilter: 'all' | 'icon' | 'emotion' = 'all';
 let trayQuery = '';
 let trayPage = 0;
+let traySort: 'order' | 'name' | 'size' = 'order';   // P2: 정렬(카드순/이름/큰것부터)
+let trayExt = 'all';                                  // P2: 확장자 필터
+let selected = new Set<any>();                        // P2: 체크박스 다중 선택(페이지 넘어도 유지)
+let selBarEl: HTMLElement | null = null;
 const TRAY_PAGE = 60;
 // ★버그 수정: 그리드/네비를 document.getElementById로 찾으면 "화면 부착 전 첫 렌더"가 조용히 실패
 //   (다음 버튼을 눌러야 뜨던 원인). 직접 참조로 보관한다.
@@ -60,6 +64,10 @@ const typeOf = (fmt: string) => { const f = String(fmt || '').toLowerCase(); ret
 const TYPE_LABEL: any = { prompt: '프롬프트', card: '봇카드', module: '모듈' };
 const isIconAsset = (a: any) => a.type === 'icon' || /icon/i.test(a.name || '');
 const isImage = (a: any) => /^image\//.test(a.mime || '');
+// P2: 오디오·비디오 미리듣기 — 코어 MIME 표는 이미지 전용이라 앱에서 보강.
+const AV_MIME: any = { mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/ogg', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', mp4: 'video/mp4', webm: 'video/webm' };
+const avMime = (a: any) => AV_MIME[(a.ext || '').toLowerCase()] || '';
+const mediaMime = (a: any) => (a.mime && a.mime !== 'application/octet-stream') ? a.mime : (avMime(a) || 'application/octet-stream');
 
 function downloadBlob(blob: Blob, filename: string) {
   try { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000); } catch (_) {}
@@ -78,7 +86,7 @@ let urlAssets: any[] = [];
 function urlOf(a: any): string {
   if (a._url) return a._url;
   const by = bytesOf(a); if (!by) return '';
-  a._url = URL.createObjectURL(new Blob([by], { type: a.mime || 'application/octet-stream' }));
+  a._url = URL.createObjectURL(new Blob([by], { type: mediaMime(a) }));
   urlAssets.push(a);
   return a._url;
 }
@@ -101,6 +109,24 @@ async function copyTag(name: string) {
   try { await navigator.clipboard.writeText(text); }
   catch (_) { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } catch (_) {} ta.remove(); }
   toast(`태그 복사됨 — ${text}`);
+}
+
+// P2: 이미지 자체를 클립보드로 — 디스코드·아카 편집기에 Ctrl+V. 클립보드는 PNG만 확실해서
+//     webp/gif 등은 캔버스 경유 PNG 변환(애니메이션은 첫 프레임).
+async function copyImage(a: any) {
+  const by = bytesOf(a);
+  if (!by || !isImage(a)) { toast('이미지가 아니라 복사할 수 없어요'); return; }
+  try {
+    let blob = new Blob([by], { type: a.mime });
+    if (a.mime !== 'image/png') {
+      const bmp = await createImageBitmap(blob);
+      const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height;
+      cv.getContext('2d')!.drawImage(bmp, 0, 0); bmp.close();
+      blob = await new Promise<Blob>((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('toBlob 실패'))), 'image/png'));
+    }
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    toast('이미지 복사됨 — Ctrl+V로 붙여넣기');
+  } catch (e) { console.warn('[에셋추출기] 이미지 복사 실패', e); toast('이미지 복사 실패'); }
 }
 
 // ── 토스트 ──────────────────────────────────────────────────────────────────
@@ -139,6 +165,7 @@ async function selectChip(id: string) {
   revokeUrls();   // 파일 전환: 이전 파일 썸네일 URL 회수(parsed는 GC)
   currentId = id; parsed = null; trayAssets = []; parseError = '';
   trayFilter = 'all'; trayQuery = ''; trayPage = 0;
+  traySort = 'order'; trayExt = 'all'; selected = new Set();
   renderChips(); renderBody();   // "읽는 중" 상태 먼저
   setStatus('읽는 중…'); await new Promise((r) => setTimeout(r, 16));   // 큰 파일도 UI 먼저 그림
   try {
@@ -190,11 +217,11 @@ function pickFiles() {
 // P1-③: 스트리밍 zip(store) + 진행률 + 틈틈이 UI 양보 — 동기 zipSync의 화면 정지 제거.
 //   파일을 zip에 넣는 즉시 lazy 복호 캐시를 해제해 피크 메모리 ≈ zip 결과물 + 파일 1개.
 let zipping = false;
-async function downloadAll() {
-  if (!parsed || !trayAssets.length || zipping) return;
+async function downloadAll(list: any[] = trayAssets, suffix = '') {
+  if (!parsed || !list.length || zipping) return;
   zipping = true;
   try {
-    const plan = planFilenames(trayAssets);
+    const plan = planFilenames(list);
     const chunks: Uint8Array[] = [];
     let zipErr: any = null;
     const zip = new Zip((err, dat) => { if (err) zipErr = err; else if (dat && dat.length) chunks.push(dat); });
@@ -210,7 +237,7 @@ async function downloadAll() {
     zip.end();
     if (zipErr) throw zipErr;
     if (!n) { setStatus('내려받을 에셋이 없어요.'); return; }
-    downloadBlob(new Blob(chunks, { type: 'application/zip' }), safeName(parsed.name || currentName()) + '_assets.zip');
+    downloadBlob(new Blob(chunks, { type: 'application/zip' }), safeName(parsed.name || currentName()) + suffix + '_assets.zip');
     setStatus(`에셋 ${n}개 추출 완료 (zip)`);
   } catch (e) { console.warn('[에셋추출기] 전체 내려받기 실패', e); setStatus('전체 내려받기 실패 — 개별 내려받기를 써보세요.'); }
   finally { zipping = false; }
@@ -218,12 +245,12 @@ async function downloadAll() {
 const currentName = () => { const c = chips.find((x) => x.id === currentId); return (c ? c.name : 'source').replace(/\.[^.]+$/, ''); };
 
 // 폴더로 추출: zip 없이 선택한 폴더에 바로 파일로. 한 개씩 IPC 저장 → 대형 모듈도 메모리 안 몰림.
-async function extractToFolder() {
-  if (!parsed || !trayAssets.length) return;
+async function extractToFolder(list: any[] = trayAssets) {
+  if (!parsed || !list.length) return;
   const ex = (window as any).extractor;
   if (!ex || !ex.pickFolder) { setStatus('폴더 추출을 쓸 수 없어요.'); return; }
   const dir = await ex.pickFolder(); if (!dir) return;
-  const plan = planFilenames(trayAssets);
+  const plan = planFilenames(list);
   let n = 0, failed = 0;
   for (const { a, fn } of plan) {
     const by = bytesOf(a); if (!by) { failed++; continue; }
@@ -279,10 +306,20 @@ function renderBody() {
   }
   main.appendChild(acts);
 
+  // P2: 구형(V2) PNG 카드 = 내장 에셋 배열이 없음 — 카드 그림 자체 저장을 제공.
+  if (parsed && parsed.format === 'png' && !trayAssets.length) {
+    const pngB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '카드 그림 저장' });
+    pngB.onclick = async () => { const c = chips.find((x) => x.id === currentId); if (!c) return; try { const by = await c.read(); downloadBytes(by, safeName(currentName()) + '.png', 'image/png'); toast('내려받기 시작'); } catch (_) { setStatus('저장 실패'); } };
+    acts.appendChild(pngB);
+  }
+
   statusEl = Object.assign(document.createElement('div'), { className: 'status' }); main.appendChild(statusEl);
 
   if (!parsed) { setStatus(parseError || '읽는 중…'); return; }
-  if (!trayAssets.length) { setStatus('이 파일엔 꺼낼 에셋이 없어요.'); return; }
+  if (!trayAssets.length) {
+    setStatus(parsed.format === 'png' ? '구형(V2) 카드라 내장 에셋이 없어요 — 카드 그림 자체는 저장할 수 있어요.' : '이 파일엔 꺼낼 에셋이 없어요.');
+    return;
+  }
   main.appendChild(buildTray());
   renderTrayGrid();   // ★화면 부착 후 첫 렌더(부착 전에 부르면 빈 트레이가 되던 버그)
 }
@@ -309,7 +346,22 @@ function buildTray(): HTMLElement {
     }
     top.appendChild(tabs);
   }
+  // P2: 정렬 + 확장자 필터(형식이 2종 이상일 때만)
+  const sort = document.createElement('select'); sort.className = 'tray-sel'; sort.title = '정렬';
+  ([['order', '카드순'], ['name', '이름순'], ['size', '큰것부터']] as Array<[string, string]>).forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sort.appendChild(o); });
+  sort.value = traySort; sort.onchange = () => { traySort = sort.value as any; trayPage = 0; renderTrayGrid(); };
+  top.appendChild(sort);
+  const exts = [...new Set(trayAssets.map((a) => (a.ext || '').toLowerCase()).filter(Boolean))].sort();
+  if (exts.length > 1) {
+    const ef = document.createElement('select'); ef.className = 'tray-sel'; ef.title = '형식 필터';
+    ef.appendChild(Object.assign(document.createElement('option'), { value: 'all', textContent: '모든 형식' }));
+    for (const e of exts) { const o = document.createElement('option'); o.value = e; o.textContent = `${e.toUpperCase()} ${trayAssets.filter((a) => (a.ext || '').toLowerCase() === e).length}`; ef.appendChild(o); }
+    ef.value = trayExt; ef.onchange = () => { trayExt = ef.value; trayPage = 0; renderTrayGrid(); };
+    top.appendChild(ef);
+  }
   tray.appendChild(top);
+  selBarEl = document.createElement('div'); selBarEl.className = 'sel-bar'; selBarEl.hidden = true; tray.appendChild(selBarEl);
+  updateSelBar();
   const grid = document.createElement('div'); grid.className = 'tray-grid'; tray.appendChild(grid);
   grid.style.setProperty('--cell', cellSize + 'px');
   trayGridEl = grid;
@@ -331,11 +383,37 @@ function buildTray(): HTMLElement {
   return tray;
 }
 
-// 현재 탭·검색을 적용한 에셋 목록 — 그리드와 라이트박스(이전/다음)가 같은 순서를 공유.
+// 현재 탭·검색·확장자·정렬을 적용한 에셋 목록 — 그리드와 라이트박스(이전/다음)가 같은 순서를 공유.
 function trayMatches(): any[] {
   const ql = trayQuery.trim().toLowerCase();
   const inFilter = (a: any) => trayFilter === 'all' || (trayFilter === 'icon' ? isIconAsset(a) : !isIconAsset(a));
-  return trayAssets.filter((a) => inFilter(a) && (!ql || (a.name && a.name.toLowerCase().includes(ql)) || (a.tag && a.tag.toLowerCase().includes(ql))));
+  let r = trayAssets.filter((a) => inFilter(a)
+    && (trayExt === 'all' || (a.ext || '').toLowerCase() === trayExt)
+    && (!ql || (a.name && a.name.toLowerCase().includes(ql)) || (a.tag && a.tag.toLowerCase().includes(ql))));
+  if (traySort === 'name') r = r.slice().sort((x, y) => String(x.name || '').localeCompare(String(y.name || '')));
+  else if (traySort === 'size') r = r.slice().sort((x, y) => (y.size || 0) - (x.size || 0));
+  return r;
+}
+
+// P2: 선택 막대 — 체크된 에셋 수·선택만 추출·해제. 0개면 숨김.
+function updateSelBar() {
+  if (!selBarEl) return;
+  const n = selected.size;
+  selBarEl.hidden = n === 0; selBarEl.innerHTML = '';
+  if (!n) return;
+  selBarEl.appendChild(Object.assign(document.createElement('span'), { textContent: `선택 ${n}개` }));
+  const zipB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '선택 추출 (zip)' });
+  zipB.onclick = () => downloadAll([...selected], '_선택');
+  selBarEl.appendChild(zipB);
+  const ex = (window as any).extractor;
+  if (ex && ex.pickFolder) {
+    const folB = Object.assign(document.createElement('button'), { textContent: '선택 폴더로' });
+    folB.onclick = () => extractToFolder([...selected]);
+    selBarEl.appendChild(folB);
+  }
+  const clrB = Object.assign(document.createElement('button'), { textContent: '선택 해제' });
+  clrB.onclick = () => { selected.clear(); updateSelBar(); renderTrayGrid(); };
+  selBarEl.appendChild(clrB);
 }
 
 function renderTrayGrid() {
@@ -375,6 +453,11 @@ function trayCell(a: any): HTMLElement {
     t.appendChild(Object.assign(document.createElement('div'), { className: 'file-ext', textContent: (a.ext || '?').toUpperCase() }));
   }
   t.appendChild(Object.assign(document.createElement('span'), { className: 'cap', textContent: a.tag || a.name }));
+  // P2: 다중 선택 체크박스(호버 시 노출, 체크되면 고정 표시)
+  const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'thumb-check'; cb.checked = selected.has(a); cb.title = '선택';
+  cb.onclick = (ev) => ev.stopPropagation();
+  cb.onchange = () => { if (cb.checked) selected.add(a); else selected.delete(a); updateSelBar(); };
+  t.appendChild(cb);
   t.onclick = () => openLightbox(a);
   // 네이티브 드래그 아웃: 썸네일을 잡아 탐색기·디스코드에 바로 놓기(메인이 임시파일+startDrag)
   t.draggable = true;
@@ -446,22 +529,28 @@ function openLightbox(a: any) {
   const cap = document.createElement('div'); cap.className = 'light-cap';
   const nm = Object.assign(document.createElement('span'), { className: 'nm' });
   const pos = Object.assign(document.createElement('span'), { className: 'pos' });
+  const imgB = Object.assign(document.createElement('button'), { textContent: '이미지 복사' });   // P2: 클립보드로
   const tagB = Object.assign(document.createElement('button'), { textContent: '태그 복사' });
   const dlB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '내려받기' });
-  cap.append(nm, pos, tagB, dlB); inner.appendChild(cap);
+  cap.append(nm, pos, imgB, tagB, dlB); inner.appendChild(cap);
 
   const show = (i: number) => {
     idx = Math.max(0, Math.min(list.length - 1, i));
     const cur = list[idx]; const by = bytesOf(cur);
-    media.innerHTML = '';
+    const av = avMime(cur);
+    media.innerHTML = '';   // 오디오·비디오는 요소 제거 = 재생 정지
     if (by && isImage(cur)) { const img = document.createElement('img'); img.src = urlOf(cur); media.appendChild(img); }
+    else if (by && av.startsWith('audio/')) { const au = document.createElement('audio'); au.controls = true; au.src = urlOf(cur); media.appendChild(au); }   // P2: 미리듣기
+    else if (by && av.startsWith('video/')) { const v = document.createElement('video'); v.controls = true; v.src = urlOf(cur); media.appendChild(v); }
     else media.appendChild(Object.assign(document.createElement('div'), { className: 'light-file', textContent: (cur.ext || '파일').toUpperCase() + (by ? ` · ${fmtKB(by.length)}` : ' · 읽기 실패') }));
     nm.textContent = cur.name + (by ? ` (${fmtKB(by.length)})` : ''); nm.title = cur.name;
     pos.textContent = `${idx + 1} / ${list.length}`;
+    imgB.style.display = isImage(cur) ? '' : 'none';
     prevB.disabled = idx <= 0; nextB.disabled = idx >= list.length - 1;
   };
   prevB.onclick = () => show(idx - 1);
   nextB.onclick = () => show(idx + 1);
+  imgB.onclick = () => copyImage(list[idx]);
   tagB.onclick = () => copyTag(list[idx].name);
   dlB.onclick = () => { const cur = list[idx]; const b2 = bytesOf(cur); if (b2) { downloadBytes(b2, assetFilename(cur), cur.mime); toast('내려받기 시작'); } };
   const onKey = (e: KeyboardEvent) => {
@@ -478,12 +567,20 @@ function openLightbox(a: any) {
   show(idx);
 }
 
+// ── P2: 다크 테마 토글(크림 브랜딩의 다크 변주) ─────────────────────────────
+const THEME_KEY = 'ax-theme';
+let theme = localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light';
+const applyTheme = () => { document.documentElement.dataset.theme = theme; };
+
 // ── 셸 ──────────────────────────────────────────────────────────────────────
 function render() {
   app.innerHTML = '';
   const bar = document.createElement('header'); bar.className = 'topbar';
   bar.appendChild(Object.assign(document.createElement('span'), { className: 'logo', innerHTML: ICON(20) + ' 에셋추출기' }));
   chipsEl = document.createElement('div'); chipsEl.className = 'chips'; bar.appendChild(chipsEl);
+  const themeB = Object.assign(document.createElement('button'), { textContent: theme === 'dark' ? '☀' : '🌙', title: '테마 전환' });
+  themeB.onclick = () => { theme = theme === 'dark' ? 'light' : 'dark'; try { localStorage.setItem(THEME_KEY, theme); } catch (_) {} applyTheme(); themeB.textContent = theme === 'dark' ? '☀' : '🌙'; };
+  bar.appendChild(themeB);
   const openB = Object.assign(document.createElement('button'), { textContent: '파일 열기' }); openB.onclick = () => pickFiles();
   bar.appendChild(openB);
   app.appendChild(bar);
@@ -503,4 +600,5 @@ document.addEventListener('drop', (e) => {
 // "연결 프로그램으로 열기"/두 번째 실행 → 메인 프로세스가 읽어 보내는 파일
 try { (window as any).extractor && (window as any).extractor.onOpenFile((f: any) => { if (f && f.bytes) addBytesFile(f.name || 'file', new Uint8Array(f.bytes)); }); } catch (_) {}
 
+applyTheme();
 render();

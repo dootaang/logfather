@@ -9,8 +9,27 @@
   --text: #4a2c1a;        /* 에스프레소 */
   --dim: #8a6a48;         /* 연한 브라운 */
   --accent: #4a2c1a;      /* 주 버튼 = 에스프레소 */
+  --accent-ink: #f9f1e0;  /* 주 버튼 글자 */
   --accent-soft: #b07d3f; /* 캐러멜 포인트 */
   --danger: #b3402a;
+  --imgbg: rgba(74, 44, 26, .07);   /* 썸네일 바탕 */
+  --overlay: rgba(58, 36, 20, .55); /* 라이트박스 뒷배경 */
+}
+/* P2: 다크 변주 — 에스프레소 다크(브랜딩 유지). 주 버튼은 다크에선 캐러멜. */
+:root[data-theme="dark"] {
+  --bg: #221a11;
+  --panel: #2b2115;
+  --panel2: #382b1a;
+  --line: #4d3c24;
+  --text: #eee2cd;
+  --dim: #b39877;
+  --accent: #c98a4b;
+  --accent-ink: #221a11;
+  --accent-soft: #c98a4b;
+  --danger: #e06c50;
+  --imgbg: rgba(0, 0, 0, .28);
+  --overlay: rgba(0, 0, 0, .6);
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -19,7 +38,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 'Seg
 
 button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit; }
 button:hover { border-color: var(--accent-soft); }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 button.primary:hover { filter: brightness(1.15); }
 button:disabled { opacity: .45; cursor: default; }
 input[type="search"], input[type="text"] { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font: inherit; outline: none; }
@@ -44,7 +63,7 @@ input:focus { border-color: var(--accent-soft); }
 .dropzone .big svg { display: inline-block; border-radius: 14px; box-shadow: 0 4px 16px rgba(74, 44, 26, .18); }
 .dropzone .tit { font-size: 17px; color: var(--text); margin-bottom: 6px; font-weight: 600; }
 .dropzone .ext { font-size: 12.5px; letter-spacing: .02em; }
-.dropzone.over, .dropzone:hover { border-color: var(--accent-soft); background: #fdf8ec; }
+.dropzone.over, .dropzone:hover { border-color: var(--accent-soft); background: var(--panel); }
 body.dragging .dropzone { border-color: var(--accent-soft); }
 
 /* ── 본문 ── */
@@ -61,6 +80,10 @@ body.dragging .dropzone { border-color: var(--accent-soft); }
 .tray { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
 .tray-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .tray-search { flex: 1 1 200px; min-width: 160px; }
+.tray-sel { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: inherit; font-size: 13px; }
+/* P2: 선택 막대(체크 0개면 숨김) */
+.sel-bar { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dim); padding: 2px 2px 0; }
+.sel-bar[hidden] { display: none; }
 .tray-tabs { display: flex; gap: 4px; }
 .tray-tab { padding: 5px 10px; border-radius: 8px; font-size: 13px; }
 .tray-tab.active { border-color: var(--accent); background: var(--bg); font-weight: 600; }
@@ -68,13 +91,16 @@ body.dragging .dropzone { border-color: var(--accent-soft); }
    공간 부족 시 최소 기여치까지 붕괴하는데, overflow:hidden 셀은 최소가 0 취급이라 행이 28px까지
    쪼그라들며 이미지를 잘랐다(크게 키울수록 잘리던 버그). max-content = 행은 항상 내용만큼. */
 .tray-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--cell, 104px), 1fr)); grid-auto-rows: max-content; gap: 8px; align-content: start; padding: 2px; }
-.thumb { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); cursor: pointer; }
+.thumb { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); cursor: pointer; }
 .thumb:hover { border-color: var(--accent-soft); }
+/* P2: 다중 선택 체크박스 — 호버 시 노출, 체크된 건 항상 표시 */
+.thumb-check { position: absolute; top: 7px; left: 7px; width: 17px; height: 17px; margin: 0; accent-color: var(--accent-soft); opacity: 0; transition: opacity .12s; cursor: pointer; z-index: 2; }
+.thumb:hover .thumb-check, .thumb-check:checked { opacity: 1; }
 /* 썸네일 = 세로형 3:4(봇 에셋은 대부분 세로 인물), 슬라이더 = --cell.
    ★높이는 반드시 확정 px(calc)로: width:100%+aspect-ratio로 하면 그리드 행 높이 계산에 이미지가
    반영되지 않아 셀이 낮게 잡히고 overflow가 이미지를 잘랐다(윗부분만 보이던 버그). */
-.thumb img { width: 100%; height: calc(var(--cell, 104px) * 1.33); object-fit: contain; border-radius: 6px; background: rgba(74, 44, 26, .07); }
-.thumb .file-ext { width: 100%; height: calc(var(--cell, 104px) * 1.33); display: flex; align-items: center; justify-content: center; border-radius: 6px; background: rgba(74, 44, 26, .07); color: var(--dim); font-weight: 700; font-size: 13px; }
+.thumb img { width: 100%; height: calc(var(--cell, 104px) * 1.33); object-fit: contain; border-radius: 6px; background: var(--imgbg); }
+.thumb .file-ext { width: 100%; height: calc(var(--cell, 104px) * 1.33); display: flex; align-items: center; justify-content: center; border-radius: 6px; background: var(--imgbg); color: var(--dim); font-weight: 700; font-size: 13px; }
 .thumb span.cap { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dim); }
 .tray-note { grid-column: 1 / -1; color: var(--dim); text-align: center; padding: 32px 0; }
 /* 하단 바: 가운데 페이지 네비 + 오른쪽 크기 슬라이더 */
@@ -88,23 +114,25 @@ body.dragging .dropzone { border-color: var(--accent-soft); }
 /* ── 호버 확대 미리보기 ── */
 .thumb-pop { position: fixed; z-index: 50; width: 216px; background: var(--panel); border: 1px solid var(--accent-soft); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 8px 28px rgba(74, 44, 26, .28); }
 .thumb-pop[hidden] { display: none; }
-.thumb-pop img { width: 100%; height: 190px; object-fit: contain; border-radius: 8px; background: rgba(74, 44, 26, .07); }
+.thumb-pop img { width: 100%; height: 190px; object-fit: contain; border-radius: 8px; background: var(--imgbg); }
 .thumb-pop span { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
 .pop-acts { display: flex; gap: 6px; }
 .pop-acts button { flex: 1; font-size: 12px; padding: 5px 4px; }
 
 /* ── 라이트박스 ── */
-.lightbox { position: fixed; inset: 0; z-index: 60; background: rgba(58, 36, 20, .55); display: flex; align-items: center; justify-content: center; }
+.lightbox { position: fixed; inset: 0; z-index: 60; background: var(--overlay); display: flex; align-items: center; justify-content: center; }
 .light-inner { max-width: min(920px, 94vw); max-height: 92vh; display: flex; flex-direction: column; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
 .light-stage { display: flex; align-items: center; gap: 10px; min-height: 0; }
 .light-nav { flex: 0 0 auto; font-size: 22px; line-height: 1; padding: 14px 12px; border-radius: 10px; }
 .light-media { flex: 1 1 auto; min-width: 300px; display: flex; align-items: center; justify-content: center; }
-.light-media img { max-width: 100%; max-height: 68vh; object-fit: contain; border-radius: 8px; background: rgba(74, 44, 26, .07); }
-.light-file { padding: 48px 64px; text-align: center; color: var(--dim); font-weight: 700; font-size: 18px; background: rgba(74, 44, 26, .07); border-radius: 8px; }
+.light-media img { max-width: 100%; max-height: 68vh; object-fit: contain; border-radius: 8px; background: var(--imgbg); }
+.light-media audio { width: min(480px, 80vw); }
+.light-media video { max-width: 100%; max-height: 68vh; border-radius: 8px; background: var(--imgbg); }
+.light-file { padding: 48px 64px; text-align: center; color: var(--dim); font-weight: 700; font-size: 18px; background: var(--imgbg); border-radius: 8px; }
 .light-cap { display: flex; align-items: center; gap: 10px; }
 .light-cap .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .light-cap .pos { color: var(--dim); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 
 /* ── 토스트 ── */
-.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 70; background: var(--accent); border: 1px solid var(--accent); color: var(--bg); border-radius: 10px; padding: 9px 16px; font-size: 13px; box-shadow: 0 6px 20px rgba(74, 44, 26, .35); opacity: 0; transition: opacity .18s; pointer-events: none; }
+.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 70; background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); border-radius: 10px; padding: 9px 16px; font-size: 13px; box-shadow: 0 6px 20px rgba(74, 44, 26, .35); opacity: 0; transition: opacity .18s; pointer-events: none; }
 .toast.show { opacity: 1; }
