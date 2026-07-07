@@ -608,5 +608,10 @@ document.addEventListener('drop', (e) => {
 // "연결 프로그램으로 열기"/두 번째 실행 → 메인 프로세스가 읽어 보내는 파일
 try { (window as any).extractor && (window as any).extractor.onOpenFile((f: any) => { if (f && f.bytes) addBytesFile(f.name || 'file', new Uint8Array(f.bytes)); }); } catch (_) {}
 
+// P4(PWA): 서비스워커 등록 — 웹(https)에서만. exe(일렉트론, file://)는 대상 아님.
+if (!isApp() && 'serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('sw.js').catch(() => { /* 미지원/실패해도 앱 동작엔 영향 없음 */ });
+}
+
 applyTheme();
 render();

@@ -11,4 +11,11 @@ const render = (size) =>
 
 writeFileSync(new URL('./icon.ico', import.meta.url), await pngToIco([256, 128, 64, 48, 32, 16].map(render)));
 writeFileSync(new URL('./drag.png', import.meta.url), render(32));   // 드래그 아웃 커서 아이콘(startDrag용)
-console.log('icons generated: build/icon.ico + build/drag.png');
+
+// P4(PWA): 웹 설치 아이콘 — 모서리 투명이 iOS에서 검게 나오므로 크림 배경을 채워 풀블리드로.
+const renderFull = (size) =>
+  Buffer.from(new Resvg(svg, { fitTo: { mode: 'width', value: size }, background: '#f9f1e0' }).render().asPng());
+writeFileSync(new URL('../web/icon-192.png', import.meta.url), renderFull(192));
+writeFileSync(new URL('../web/icon-512.png', import.meta.url), renderFull(512));
+writeFileSync(new URL('../web/apple-touch-icon.png', import.meta.url), renderFull(180));
+console.log('icons generated: build/icon.ico + build/drag.png + web/icon-{192,512}.png + apple-touch-icon.png');
