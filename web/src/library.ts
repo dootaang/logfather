@@ -10,7 +10,8 @@ import { richCopy } from './clipboard.js';         // 리치 복사(아카 붙�
 import { desktopAvailable, externalCount, bakeLogs } from './bake.js';   // 이미지 굳히기(데스크탑 전용)
 import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, openTranslateSettings, ensureTranslateReady } from './translate.js';   // 로그 번역(웹·데스크탑)
 import { cleanUnits, getCleanPrompt, setCleanPrompt, makeCleanFn, ensureCleanReady } from './cleanup.js';   // 가져온 로그 군더더기 정리(1차 결정론 + 2차 LLM·작품별 프롬프트)
-import { createReaderLog, fattenShareHtml, shareMissingNote } from './readerLog.js';   // 번역/정리 흐름 + 공유 fatten(이미지 임베드+내 입력 가리기) + 못 담긴 에셋 경고 공용
+import { createReaderLog, fattenShareHtml, shareMissingNote, logTextSlots } from './readerLog.js';   // 번역/정리 흐름 + 공유 fatten(이미지 임베드+내 입력 가리기) + 못 담긴 에셋 경고 공용 + 텍스트 슬롯(명대사 추출)
+import { todayKey } from './readStats.js';   // 오늘 날짜 키(명대사 날짜 시드·그날의 로그)
 import { popAutoClose } from './readerView.js';   // 공유 팝오버 바깥 탭=닫힘(리더 단일화 공유와 거동 통일)
 import { isLocalFirst, getSyncMode, shareBaseUrl, isDesktop } from './desktopSync.js';   // 로컬-퍼스트(데스크탑 OR 웹-수동) + 수동 동기화 상태 + 플랫폼
 import { mountUpdateBanner } from './updateBanner.js';   // 자동 업데이트 배너(데스크탑 전용)
@@ -317,6 +318,53 @@ function gachaPool(base: any[], mode: string): any[] {
   if (mode === 'unread') { const read = loadRead(); const u = eps(base).filter((e: any) => !read.readIds[e.id]); if (u.length) return u; }   // 다 읽었으면 전체로 폴백
   return eps(base);
 }
+// 오늘의 명대사 — 저장 로그의 대사(따옴표 구간)를 날짜 시드로 하루 1개 고정 추출(같은 날 = 같은 대사).
+//   입력 텍스트 슬롯에서만 찾고(HTML스러운 슬롯 제외), 후보 로그 몇 개만 스캔(전 서재 정독 안 함 — 가벼움).
+function daySeed(): number { let h = 0; for (const c of todayKey()) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
+function seededRand(seed: number): () => number {
+  let t = seed >>> 0;
+  return () => { t = (t + 0x6D2B79F5) >>> 0; let r = Math.imul(t ^ (t >>> 15), 1 | t); r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r; return ((r ^ (r >>> 14)) >>> 0) / 4294967296; };
+}
+function quotesFrom(rec: any): string[] {
+  let texts: any[] = [];
+  try { texts = logTextSlots(rec).texts || []; } catch (_) {}
+  const out: string[] = [];
+  for (const t of texts) {
+    const s = String(t || ''); if (!s || s.indexOf('<') >= 0) continue;   // 마크업 슬롯(papa 등) 제외
+    const scan = s.slice(0, 30000);   // 초대형 화 가드
+    for (const re of [/["“]([^"”\n]{8,120}?)["”]/g, /「([^」\n]{8,120}?)」/g, /『([^』\n]{8,120}?)』/g]) {
+      let m: any; while ((m = re.exec(scan))) { out.push(m[1].trim()); if (out.length >= 40) return out; }
+    }
+  }
+  return out;
+}
+let quoteCache: { day: string; pick: any } | null = null;   // 하루 1회만 계산(재렌더 재추출 방지)
+function pickDailyQuote(base: any[]): { rec: any; quote: string } | null {
+  const day = todayKey();
+  if (quoteCache && quoteCache.day === day) return quoteCache.pick;
+  const eps = base.flatMap((s: any) => s.eps).slice().sort((a: any, b: any) => String(a.id).localeCompare(String(b.id)));   // 결정론(저장 순서 무관)
+  const rnd = seededRand(daySeed());
+  let pick: any = null;
+  for (let i = 0; i < 12 && eps.length; i++) {
+    const idx = Math.floor(rnd() * eps.length);
+    const r = eps.splice(idx, 1)[0];
+    const qs = quotesFrom(r);
+    if (qs.length) { pick = { rec: r, quote: qs[Math.floor(rnd() * qs.length)] }; break; }
+  }
+  quoteCache = { day, pick };
+  return pick;
+}
+// 그날의 로그 — 정확히 1년 전(우선)/한 달 전 오늘 만든(date) 화가 있을 때만.
+function anniversaryPick(base: any[]): { rec: any; label: string } | null {
+  const eps = base.flatMap((s: any) => s.eps);
+  const now = new Date();
+  const y1 = new Date(now); y1.setFullYear(now.getFullYear() - 1);
+  const m1 = new Date(now); m1.setMonth(now.getMonth() - 1);
+  let r = eps.find((e: any) => e.date === todayKey(y1)); if (r) return { rec: r, label: '1년 전 오늘' };
+  r = eps.find((e: any) => e.date === todayKey(m1)); if (r) return { rec: r, label: '한 달 전 오늘' };
+  return null;
+}
+
 function todayShelfSection(base: any[]): HTMLElement {
   const sec = document.createElement('section'); sec.className = 'home-row today-shelf';
   const h = document.createElement('h2'); h.className = 'home-h'; h.textContent = '오늘의 서재'; sec.appendChild(h);
@@ -343,6 +391,32 @@ function todayShelfSection(base: any[]): HTMLElement {
   };
   card.append(die, txt, sel);
   track.appendChild(card);
+  const openEp = (r: any) => { location.href = 'reader.html#/log/' + encodeURIComponent(r.char) + '/' + encodeURIComponent(r.id); };
+  const nameIn = (char: string) => { const s = base.find((x: any) => x.char === char); return (s && s.name) || nameOf(char); };   // 선반과 같은 표시이름(workName 폴백 포함)
+  // 오늘의 명대사 — 하루 1개 고정(날짜 시드), 누르면 그 화로. 대사 없는 서재면 숨김.
+  const dq = pickDailyQuote(base);
+  if (dq) {
+    const qCard = document.createElement('button'); qCard.className = 'gacha-card quote-entry';
+    qCard.title = '오늘의 명대사 — 누르면 그 화로 이동';
+    const qIc = mk('span', 'gacha-die'); qIc.innerHTML = icon('message');
+    const qTx = mk('span', 'gacha-txt');
+    qTx.append(mk('span', 'gacha-title quote-line', '“' + dq.quote + '”'), mk('span', 'gacha-sub', '오늘의 명대사 · ' + nameIn(dq.rec.char)));
+    qCard.append(qIc, qTx);
+    qCard.onclick = () => openEp(dq.rec);
+    track.appendChild(qCard);
+  }
+  // 그날의 로그 — 1년 전/한 달 전 오늘 만든 화가 있을 때만 등장(재회 카드).
+  const an = anniversaryPick(base);
+  if (an) {
+    const aCard = document.createElement('button'); aCard.className = 'gacha-card';
+    aCard.title = an.label + ' 만든 화 — 누르면 다시 읽기';
+    const aIc = mk('span', 'gacha-die'); aIc.innerHTML = icon('bookmark');
+    const aTx = mk('span', 'gacha-txt');
+    aTx.append(mk('span', 'gacha-title', an.label), mk('span', 'gacha-sub', nameIn(an.rec.char) + (an.rec.title ? ' · ' + an.rec.title : '')));
+    aCard.append(aIc, aTx);
+    aCard.onclick = () => openEp(an.rec);
+    track.appendChild(aCard);
+  }
   // 내 기록 진입 카드 — 레벨(불꽃 칭호)·통계·결산(#/stats)
   const stCard = document.createElement('button'); stCard.className = 'gacha-card st-entry';
   stCard.title = '내 레벨·읽기 통계·결산 카드';
