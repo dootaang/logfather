@@ -111,21 +111,23 @@ body.dragging .dropzone { border-color: var(--accent-soft); }
 .tray-size { display: flex; align-items: center; justify-content: flex-end; gap: 7px; color: var(--dim); font-size: 12px; }
 .tray-size input[type="range"] { width: 130px; accent-color: var(--accent-soft); }
 
-/* ── 호버 확대 미리보기 ── */
-.thumb-pop { position: fixed; z-index: 50; width: 216px; background: var(--panel); border: 1px solid var(--accent-soft); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 8px 28px rgba(74, 44, 26, .28); }
-.thumb-pop[hidden] { display: none; }
-.thumb-pop img { width: 100%; height: 190px; object-fit: contain; border-radius: 8px; background: var(--imgbg); }
-.thumb-pop span { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
-.pop-acts { display: flex; gap: 6px; }
-.pop-acts button { flex: 1; font-size: 12px; padding: 5px 4px; }
+/* ── 스크롤바(로그파파 알약형 이식) — 얇은 썸·투명 트랙·호버 시 진해짐, 토큰이라 다크 자동 대응 ── */
+.tray-grid, .chips, .light-inner { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.tray-grid::-webkit-scrollbar, .chips::-webkit-scrollbar, .light-inner::-webkit-scrollbar { width: 10px; height: 10px; }
+.tray-grid::-webkit-scrollbar-thumb, .chips::-webkit-scrollbar-thumb, .light-inner::-webkit-scrollbar-thumb {
+  background: var(--line); border-radius: 999px; border: 3px solid transparent; background-clip: content-box;
+}
+.tray-grid::-webkit-scrollbar-thumb:hover, .chips::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: content-box; }
+.tray-grid::-webkit-scrollbar-track, .chips::-webkit-scrollbar-track, .light-inner::-webkit-scrollbar-track { background: transparent; }
 
 /* ── 라이트박스 ── */
 .lightbox { position: fixed; inset: 0; z-index: 60; background: var(--overlay); display: flex; align-items: center; justify-content: center; }
 .light-inner { max-width: min(920px, 94vw); max-height: 92vh; display: flex; flex-direction: column; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
 .light-stage { display: flex; align-items: center; gap: 10px; min-height: 0; }
 .light-nav { flex: 0 0 auto; font-size: 22px; line-height: 1; padding: 14px 12px; border-radius: 10px; }
-.light-media { flex: 1 1 auto; min-width: 300px; display: flex; align-items: center; justify-content: center; }
-.light-media img { max-width: 100%; max-height: 68vh; object-fit: contain; border-radius: 8px; background: var(--imgbg); }
+/* 휠 줌·팬: 확대 이미지는 스테이지 안에서만(overflow) + 터치 제스처는 핀치/팬 전용(touch-action) */
+.light-media { flex: 1 1 auto; min-width: 300px; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none; user-select: none; }
+.light-media img { max-width: 100%; max-height: 68vh; object-fit: contain; border-radius: 8px; background: var(--imgbg); transition: transform .06s linear; }
 .light-media audio { width: min(480px, 80vw); }
 .light-media video { max-width: 100%; max-height: 68vh; border-radius: 8px; background: var(--imgbg); }
 .light-file { padding: 48px 64px; text-align: center; color: var(--dim); font-weight: 700; font-size: 18px; background: var(--imgbg); border-radius: 8px; }
@@ -140,7 +142,6 @@ body.dragging .dropzone { border-color: var(--accent-soft); }
 /* ── P3: 웹(모바일·터치) 대응 ── */
 @media (hover: none) {
   .thumb-check { opacity: .85; }                 /* 호버가 없으니 체크박스 상시 노출 */
-  .thumb-pop { display: none !important; }       /* 호버 확대는 터치에서 무의미(크게보기가 주 동선) */
 }
 @media (max-width: 560px) {
   .topbar { padding: 8px 10px; gap: 8px; }

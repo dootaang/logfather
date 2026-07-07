@@ -453,8 +453,6 @@ function trayCell(a: any): HTMLElement {
     }, { rootMargin: '200px' });
     io.observe(img);
     t.appendChild(img);
-    t.addEventListener('mouseenter', () => { if (img.src) showThumbPop(img.src, a, t); });
-    t.addEventListener('mouseleave', scheduleHidePop);
   } else {
     t.appendChild(Object.assign(document.createElement('div'), { className: 'file-ext', textContent: (a.ext || '?').toUpperCase() }));
   }
@@ -469,7 +467,7 @@ function trayCell(a: any): HTMLElement {
   if (isApp()) {
     t.draggable = true;
     t.addEventListener('dragstart', (e) => {
-      e.preventDefault(); hideThumbPop();
+      e.preventDefault();
       const ex = (window as any).extractor;
       const by = bytesOf(a);
       if (ex && ex.dragOut && by) ex.dragOut(assetFilename(a), by);
@@ -478,53 +476,10 @@ function trayCell(a: any): HTMLElement {
   return t;
 }
 
-// ── 호버 확대(편집기 포팅) — 버튼은 편집기 종속(프로필/표지) 대신 [태그 복사][내려받기] ──
-let popEl: HTMLElement | null = null;
-let popAsset: any = null;
-let popHideTimer: any = null;
-function buildThumbPop(): HTMLElement {
-  const pop = document.createElement('div'); pop.className = 'thumb-pop'; pop.hidden = true;
-  const img = document.createElement('img'); img.alt = '';
-  const span = document.createElement('span');
-  const acts = document.createElement('div'); acts.className = 'pop-acts';
-  // 캡처한 에셋을 핸들러에 전달(hideThumbPop이 popAsset을 비우므로 — 편집기에서 잡은 그 버그 예방)
-  const mk = (label: string, fn: (a: any) => void) => {
-    const b = document.createElement('button'); b.type = 'button'; b.textContent = label;
-    b.addEventListener('click', (e) => { e.stopPropagation(); const a = popAsset; hideThumbPop(); if (a) fn(a); });
-    return b;
-  };
-  acts.appendChild(mk('태그 복사', (a) => copyTag(a.name)));
-  acts.appendChild(mk('내려받기', (a) => { const by = bytesOf(a); if (by) { downloadBytes(by, assetFilename(a), a.mime); toast('내려받기 시작'); } }));
-  pop.append(img, span, acts);
-  pop.addEventListener('mouseenter', () => { if (popHideTimer) { clearTimeout(popHideTimer); popHideTimer = null; } });
-  pop.addEventListener('mouseleave', hideThumbPop);
-  document.body.appendChild(pop);
-  return pop;
-}
-function showThumbPop(src: string, asset: any, anchor: HTMLElement) {
-  if (!src) return;
-  if (popHideTimer) { clearTimeout(popHideTimer); popHideTimer = null; }
-  if (!popEl) popEl = buildThumbPop();
-  popAsset = asset;
-  (popEl.querySelector('img') as HTMLImageElement).src = src;
-  (popEl.querySelector('span') as HTMLElement).textContent = asset.name;
-  popEl.hidden = false;
-  const r = anchor.getBoundingClientRect();
-  const pw = 216, ph = 280;
-  let x = r.right + 8; if (x + pw > window.innerWidth) x = r.left - pw - 8; if (x < 4) x = 4;
-  let y = r.top - 8; if (y + ph > window.innerHeight) y = window.innerHeight - ph - 4; if (y < 4) y = 4;
-  popEl.style.left = x + 'px'; popEl.style.top = y + 'px';
-}
-function scheduleHidePop() { if (popHideTimer) clearTimeout(popHideTimer); popHideTimer = setTimeout(hideThumbPop, 180); }
-function hideThumbPop() {
-  if (popHideTimer) { clearTimeout(popHideTimer); popHideTimer = null; }
-  if (popEl) popEl.hidden = true;
-  popAsset = null;
-}
+// (호버 확대창은 제거 — 편집기(58px 썸네일)에서 온 설계였고, 여기선 크기 슬라이더+라이트박스가 대체. 피드백 ③ A안)
 
 // ── 라이트박스: 이전/다음 + ←→·ESC 키보드 + "12/76" 위치 (그리드와 같은 필터·순서 공유) ──
 function openLightbox(a: any) {
-  hideThumbPop();
   const list = trayMatches(); if (!list.length) return;
   let idx = Math.max(0, list.indexOf(a));
   const ov = document.createElement('div'); ov.className = 'lightbox';
@@ -542,12 +497,42 @@ function openLightbox(a: any) {
   const dlB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '내려받기' });
   cap.append(nm, pos, imgB, tagB, dlB); inner.appendChild(cap);
 
+  // ── 휠 줌·팬(P5): 휠=확대(1~8배), 확대 중 드래그=이동, 더블클릭=원래대로, 터치=핀치. 에셋 넘기면 리셋. ──
+  let scale = 1, tx = 0, ty = 0;
+  const applyT = () => { const img = media.querySelector('img') as HTMLImageElement | null; if (img) { img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`; img.style.cursor = scale > 1 ? 'grab' : ''; } };
+  const resetT = () => { scale = 1; tx = 0; ty = 0; applyT(); };
+  media.addEventListener('wheel', (e) => {
+    if (!media.querySelector('img')) return;
+    e.preventDefault();
+    const ns = Math.min(8, Math.max(1, scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    if (ns === scale) return;
+    scale = ns; if (scale === 1) { tx = 0; ty = 0; }
+    applyT();
+  }, { passive: false });
+  const pts = new Map<number, { x: number; y: number }>();
+  let pinchD = 0;
+  media.addEventListener('pointerdown', (e) => { if (!media.querySelector('img')) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); try { media.setPointerCapture(e.pointerId); } catch (_) {} if (pts.size === 2) { const [p1, p2] = [...pts.values()]; pinchD = Math.hypot(p1.x - p2.x, p1.y - p2.y); } });
+  media.addEventListener('pointermove', (e) => {
+    const p = pts.get(e.pointerId); if (!p) return;
+    if (pts.size === 1 && scale > 1) { tx += e.clientX - p.x; ty += e.clientY - p.y; applyT(); }
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size === 2) {
+      const [p1, p2] = [...pts.values()]; const d = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+      if (pinchD > 0 && d > 0) { scale = Math.min(8, Math.max(1, scale * (d / pinchD))); if (scale === 1) { tx = 0; ty = 0; } applyT(); }
+      pinchD = d;
+    }
+  });
+  const endPt = (e: PointerEvent) => { pts.delete(e.pointerId); pinchD = 0; };
+  media.addEventListener('pointerup', endPt); media.addEventListener('pointercancel', endPt);
+  media.addEventListener('dblclick', () => resetT());
+
   const show = (i: number) => {
     idx = Math.max(0, Math.min(list.length - 1, i));
     const cur = list[idx]; const by = bytesOf(cur);
     const av = avMime(cur);
     media.innerHTML = '';   // 오디오·비디오는 요소 제거 = 재생 정지
-    if (by && isImage(cur)) { const img = document.createElement('img'); img.src = urlOf(cur); media.appendChild(img); }
+    scale = 1; tx = 0; ty = 0;   // 줌 리셋(새 에셋)
+    if (by && isImage(cur)) { const img = document.createElement('img'); img.src = urlOf(cur); img.draggable = false; img.title = '휠=확대 · 드래그=이동 · 더블클릭=원래대로'; media.appendChild(img); }
     else if (by && av.startsWith('audio/')) { const au = document.createElement('audio'); au.controls = true; au.src = urlOf(cur); media.appendChild(au); }   // P2: 미리듣기
     else if (by && av.startsWith('video/')) { const v = document.createElement('video'); v.controls = true; v.src = urlOf(cur); media.appendChild(v); }
     else media.appendChild(Object.assign(document.createElement('div'), { className: 'light-file', textContent: (cur.ext || '파일').toUpperCase() + (by ? ` · ${fmtKB(by.length)}` : ' · 읽기 실패') }));
@@ -584,13 +569,13 @@ const applyTheme = () => { document.documentElement.dataset.theme = theme; };
 function render() {
   app.innerHTML = '';
   const bar = document.createElement('header'); bar.className = 'topbar';
-  bar.appendChild(Object.assign(document.createElement('span'), { className: 'logo', innerHTML: ICON(20) + ' 에셋추출기' }));
+  // 로고는 웹/PWA 전용 — exe는 윈도우 타이틀바가 이미 앱 이름을 보여줘 이중(피드백 ①).
+  if (!isApp()) bar.appendChild(Object.assign(document.createElement('span'), { className: 'logo', innerHTML: ICON(20) + ' 에셋추출기' }));
   chipsEl = document.createElement('div'); chipsEl.className = 'chips'; bar.appendChild(chipsEl);
   const themeB = Object.assign(document.createElement('button'), { textContent: theme === 'dark' ? '☀' : '🌙', title: '테마 전환' });
   themeB.onclick = () => { theme = theme === 'dark' ? 'light' : 'dark'; try { localStorage.setItem(THEME_KEY, theme); } catch (_) {} applyTheme(); themeB.textContent = theme === 'dark' ? '☀' : '🌙'; };
   bar.appendChild(themeB);
-  const openB = Object.assign(document.createElement('button'), { textContent: '파일 열기' }); openB.onclick = () => pickFiles();
-  bar.appendChild(openB);
+  // '파일 열기'는 드롭존(빈 상태)·파일 추가(로드 상태)와 3중 중복이라 제거(피드백 ④).
   app.appendChild(bar);
   bodyEl = document.createElement('div'); bodyEl.style.cssText = 'flex:1 1 auto;min-height:0;display:flex;flex-direction:column;'; app.appendChild(bodyEl);
   renderChips(); renderBody();
