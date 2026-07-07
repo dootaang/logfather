@@ -24,9 +24,36 @@ async function sendFiles(paths) {
     try {
       const buf = await fs.readFile(p);
       win.webContents.send('open-file', { name: path.basename(p), bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) });
+      recentAdd({ path: p, name: path.basename(p), size: buf.length });
     } catch (e) { console.warn('[에셋추출기] 파일 열기 실패', p, e); }
   }
 }
+
+// ── 최근 파일(exe=경로만 기억, userData/recent.json) — 파일이 사라졌으면 열 때 목록에서 제거 ──
+const RECENT_MAX = 10;
+const recentFile = () => path.join(app.getPath('userData'), 'recent.json');
+async function recentRead() { try { const l = JSON.parse(await fs.readFile(recentFile(), 'utf8')); return Array.isArray(l) ? l : []; } catch (_) { return []; } }
+async function recentWrite(list) { try { await fs.writeFile(recentFile(), JSON.stringify(list.slice(0, RECENT_MAX))); } catch (_) {} }
+async function recentAdd(entry) {
+  if (!entry || !entry.path) return;
+  const list = (await recentRead()).filter((e) => e && e.path !== entry.path);
+  list.unshift({ path: entry.path, name: entry.name || path.basename(entry.path), size: entry.size || 0, at: Date.now() });
+  await recentWrite(list);
+}
+ipcMain.handle('recent-list', () => recentRead());
+ipcMain.handle('recent-add', (_e, entry) => recentAdd(entry));
+ipcMain.handle('recent-remove', async (_e, p) => recentWrite((await recentRead()).filter((x) => x && x.path !== p)));
+ipcMain.handle('recent-clear', () => recentWrite([]));
+ipcMain.handle('recent-open', async (_e, p) => {
+  try {
+    const buf = await fs.readFile(p);
+    await recentAdd({ path: p, name: path.basename(p), size: buf.length });
+    return { name: path.basename(p), bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) };
+  } catch (_) {
+    await recentWrite((await recentRead()).filter((x) => x && x.path !== p));   // 이동/삭제된 파일 = 목록 정리
+    return null;
+  }
+});
 
 function createWindow() {
   win = new BrowserWindow({

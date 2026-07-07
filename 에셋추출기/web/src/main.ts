@@ -141,6 +141,63 @@ function toast(msg: string) {
   toastTimer = setTimeout(() => toastEl && toastEl.classList.remove('show'), 1800);
 }
 
+// ── 최근 파일(P5) — exe=경로 기억(메인 recent.json) / 웹=IndexedDB 사본(개수·용량 상한 LRU) ──
+const RECENT_MAX = 10;
+const RECENT_BUDGET = 300 * 1024 * 1024;   // 웹 저장 총 300MB — 초과분은 오래된 것부터 정리
+function idbOpen(): Promise<IDBDatabase> {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('ax-extractor', 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('recent', { keyPath: 'id' }); };
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+}
+const idbReq = <T>(req: IDBRequest<T>) => new Promise<T>((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+async function webRecentAll(): Promise<any[]> {
+  const db = await idbOpen();
+  const all = await idbReq(db.transaction('recent').objectStore('recent').getAll());
+  return (all || []).sort((a: any, b: any) => (b.at || 0) - (a.at || 0));
+}
+async function webRecentAdd(f: File) {
+  if (f.size > RECENT_BUDGET) return;   // 감당 못 할 초대형은 세션 전용(저장 안 함)
+  try {
+    const db = await idbOpen();
+    const st = db.transaction('recent', 'readwrite').objectStore('recent');
+    st.put({ id: f.name + '|' + f.size, name: f.name, size: f.size, at: Date.now(), blob: f });
+    // LRU 정리: 개수·총 용량 상한
+    const all = await webRecentAll();
+    let total = 0; const dead: string[] = [];
+    all.forEach((e, i) => { total += e.size || 0; if (i >= RECENT_MAX || total > RECENT_BUDGET) dead.push(e.id); });
+    if (dead.length) { const st2 = db.transaction('recent', 'readwrite').objectStore('recent'); dead.forEach((id) => st2.delete(id)); }
+  } catch (_) { /* 저장 실패해도 열기엔 지장 없음 */ }
+}
+async function recentList(): Promise<any[]> {
+  try { return isApp() ? ((await (window as any).extractor.recentList()) || []) : await webRecentAll(); } catch (_) { return []; }
+}
+async function recentRemove(e: any) {
+  try {
+    if (isApp()) await (window as any).extractor.recentRemove(e.path);
+    else { const db = await idbOpen(); db.transaction('recent', 'readwrite').objectStore('recent').delete(e.id); }
+  } catch (_) {}
+}
+async function recentClear() {
+  try {
+    if (isApp()) await (window as any).extractor.recentClear();
+    else { const db = await idbOpen(); db.transaction('recent', 'readwrite').objectStore('recent').clear(); }
+  } catch (_) {}
+}
+async function openRecent(e: any) {
+  try {
+    if (isApp()) {
+      const f = await (window as any).extractor.recentOpen(e.path);
+      if (!f || !f.bytes) { toast('파일을 찾을 수 없어요 — 이동/삭제된 듯'); renderBody(); return; }
+      addBytesFile(f.name || e.name, new Uint8Array(f.bytes));
+    } else {
+      if (!e.blob) return;
+      addBytesFile(e.name, new Uint8Array(await e.blob.arrayBuffer()));
+    }
+  } catch (_) { toast('열기 실패'); }
+}
+
 // ── 파일 열기(드롭·선택·연결 프로그램) ──────────────────────────────────────
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 function addFiles(files: File[]) {
@@ -149,6 +206,12 @@ function addFiles(files: File[]) {
     const id = uid();
     chips.push({ id, name: f.name, size: f.size, read: () => f.arrayBuffer().then((b) => new Uint8Array(b)) });
     lastId = id;
+    // 최근 파일 기록 — exe는 실제 경로(webUtils), 웹은 IDB 사본
+    try {
+      const ex = (window as any).extractor;
+      if (ex && ex.pathFor) { const p = ex.pathFor(f); if (p) ex.recentAdd({ path: p, name: f.name, size: f.size }); }
+      else webRecentAdd(f);
+    } catch (_) {}
   }
   if (lastId) selectChip(lastId); else renderChips();
 }
@@ -203,11 +266,33 @@ function renderChips() {
 // ── 빈 상태(드롭존) ─────────────────────────────────────────────────────────
 function buildEmpty(): HTMLElement {
   const wrap = document.createElement('div'); wrap.className = 'empty';
+  const col = document.createElement('div'); col.className = 'empty-col'; wrap.appendChild(col);
   const dz = document.createElement('div'); dz.className = 'dropzone';
   dz.innerHTML = '<div class="big">' + ICON(64) + '</div><div class="tit">파일을 놓거나 클릭</div>'
     + '<div class="ext">.charx · .png · .json · .jpeg · .risum</div>';
   dz.onclick = () => pickFiles();
-  wrap.appendChild(dz);
+  col.appendChild(dz);
+  // 최근 파일(있을 때만) — 클릭=다시 열기, ✕=목록에서 제거
+  const box = document.createElement('div'); box.className = 'recent'; box.hidden = true; col.appendChild(box);
+  (async () => {
+    const list = await recentList(); if (!list.length) return;
+    box.hidden = false;
+    const head = document.createElement('div'); head.className = 'recent-head';
+    head.appendChild(Object.assign(document.createElement('span'), { textContent: '최근 파일' }));
+    const clr = Object.assign(document.createElement('button'), { className: 'recent-clear', textContent: '비우기' });
+    clr.onclick = async () => { await recentClear(); box.hidden = true; box.innerHTML = ''; };
+    head.appendChild(clr); box.appendChild(head);
+    for (const e of list.slice(0, RECENT_MAX)) {
+      const row = document.createElement('button'); row.className = 'recent-row'; row.title = e.path || e.name;
+      row.appendChild(Object.assign(document.createElement('span'), { className: 'nm', textContent: e.name }));
+      row.appendChild(Object.assign(document.createElement('span'), { className: 'mt', textContent: fmtKB(e.size || 0) }));
+      const x = Object.assign(document.createElement('span'), { className: 'x', textContent: '✕', title: '목록에서 제거' });
+      x.onclick = async (ev) => { ev.stopPropagation(); await recentRemove(e); row.remove(); if (!box.querySelector('.recent-row')) box.hidden = true; };
+      row.appendChild(x);
+      row.onclick = () => openRecent(e);
+      box.appendChild(row);
+    }
+  })();
   return wrap;
 }
 function pickFiles() {
