@@ -42,7 +42,8 @@ input:focus { border-color: var(--accent-soft); }
 .dropzone { width: min(560px, 90%); border: 2px dashed var(--line); border-radius: 16px; padding: 52px 32px; text-align: center; color: var(--dim); cursor: pointer; background: var(--panel); transition: border-color .15s, background .15s; }
 .dropzone .big { margin-bottom: 14px; }
 .dropzone .big svg { display: inline-block; border-radius: 14px; box-shadow: 0 4px 16px rgba(74, 44, 26, .18); }
-.dropzone .tit { font-size: 17px; color: var(--text); margin-bottom: 8px; font-weight: 600; }
+.dropzone .tit { font-size: 17px; color: var(--text); margin-bottom: 6px; font-weight: 600; }
+.dropzone .ext { font-size: 12.5px; letter-spacing: .02em; }
 .dropzone.over, .dropzone:hover { border-color: var(--accent-soft); background: #fdf8ec; }
 body.dragging .dropzone { border-color: var(--accent-soft); }
 
@@ -63,15 +64,21 @@ body.dragging .dropzone { border-color: var(--accent-soft); }
 .tray-tabs { display: flex; gap: 4px; }
 .tray-tab { padding: 5px 10px; border-radius: 8px; font-size: 13px; }
 .tray-tab.active { border-color: var(--accent); background: var(--bg); font-weight: 600; }
-.tray-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; align-content: start; padding: 2px; }
-.thumb { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); cursor: pointer; overflow: hidden; }
+.tray-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--cell, 104px), 1fr)); gap: 8px; align-content: start; padding: 2px; }
+.thumb { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); cursor: pointer; overflow: hidden; }
 .thumb:hover { border-color: var(--accent-soft); }
-.thumb img { width: 72px; height: 72px; object-fit: contain; border-radius: 6px; background: rgba(74, 44, 26, .07); }
-.thumb .file-ext { width: 72px; height: 72px; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: rgba(74, 44, 26, .07); color: var(--dim); font-weight: 700; font-size: 13px; }
+/* 썸네일 = 세로형 3:4(봇 에셋은 대부분 세로 인물) + 칸 폭에 따라 자동 스케일(슬라이더 = --cell) */
+.thumb img { width: 100%; aspect-ratio: 3 / 4; height: auto; object-fit: contain; border-radius: 6px; background: rgba(74, 44, 26, .07); }
+.thumb .file-ext { width: 100%; aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: rgba(74, 44, 26, .07); color: var(--dim); font-weight: 700; font-size: 13px; }
 .thumb span.cap { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dim); }
 .tray-note { grid-column: 1 / -1; color: var(--dim); text-align: center; padding: 32px 0; }
-.tray-nav { display: flex; align-items: center; justify-content: center; gap: 12px; flex: 0 0 auto; }
+/* 하단 바: 가운데 페이지 네비 + 오른쪽 크기 슬라이더 */
+.tray-foot { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.tray-foot .sp { flex: 1 1 0; min-width: 0; }
+.tray-nav { display: flex; align-items: center; justify-content: center; gap: 12px; }
 .tray-nav .tray-pos { color: var(--dim); font-size: 13px; }
+.tray-size { display: flex; align-items: center; justify-content: flex-end; gap: 7px; color: var(--dim); font-size: 12px; }
+.tray-size input[type="range"] { width: 130px; accent-color: var(--accent-soft); }
 
 /* ── 호버 확대 미리보기 ── */
 .thumb-pop { position: fixed; z-index: 50; width: 216px; background: var(--panel); border: 1px solid var(--accent-soft); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 8px 28px rgba(74, 44, 26, .28); }
@@ -92,6 +99,3 @@ body.dragging .dropzone { border-color: var(--accent-soft); }
 /* ── 토스트 ── */
 .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 70; background: var(--accent); border: 1px solid var(--accent); color: var(--bg); border-radius: 10px; padding: 9px 16px; font-size: 13px; box-shadow: 0 6px 20px rgba(74, 44, 26, .35); opacity: 0; transition: opacity .18s; pointer-events: none; }
 .toast.show { opacity: 1; }
-
-/* ── 푸터 ── */
-.foot { flex: 0 0 auto; padding: 4px 14px 8px; color: var(--dim); font-size: 11.5px; text-align: right; }

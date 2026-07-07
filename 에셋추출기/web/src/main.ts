@@ -31,6 +31,13 @@ let trayFilter: 'all' | 'icon' | 'emotion' = 'all';
 let trayQuery = '';
 let trayPage = 0;
 const TRAY_PAGE = 60;
+// ★버그 수정: 그리드/네비를 document.getElementById로 찾으면 "화면 부착 전 첫 렌더"가 조용히 실패
+//   (다음 버튼을 눌러야 뜨던 원인). 직접 참조로 보관한다.
+let trayGridEl: HTMLElement | null = null;
+let trayNavEl: HTMLElement | null = null;
+// 썸네일 크기(슬라이더, localStorage 기억) — CSS 변수 --cell 하나로 그리드 칸·썸네일 동시 스케일.
+const CELL_MIN = 64, CELL_MAX = 192;
+let cellSize = Math.min(CELL_MAX, Math.max(CELL_MIN, Number(localStorage.getItem('ax-cell')) || 104));
 
 let chipsEl: HTMLElement, bodyEl: HTMLElement, statusEl: HTMLElement | null = null;
 const setStatus = (m: string) => { if (statusEl) statusEl.textContent = m || ''; };
@@ -130,8 +137,8 @@ function renderChips() {
 function buildEmpty(): HTMLElement {
   const wrap = document.createElement('div'); wrap.className = 'empty';
   const dz = document.createElement('div'); dz.className = 'dropzone';
-  dz.innerHTML = '<div class="big">' + ICON(64) + '</div><div class="tit">봇카드·모듈을 놓으면 곱게 내려드려요</div>'
-    + '<div>.charx · .png · .json · .jpeg · .risum 안의 에셋을 추출해요<br>클릭해서 파일을 고를 수도 있어요</div>';
+  dz.innerHTML = '<div class="big">' + ICON(64) + '</div><div class="tit">파일을 놓거나 클릭</div>'
+    + '<div class="ext">.charx · .png · .json · .jpeg · .risum</div>';
   dz.onclick = () => pickFiles();
   wrap.appendChild(dz);
   return wrap;
@@ -163,7 +170,7 @@ const currentName = () => { const c = chips.find((x) => x.id === currentId); ret
 
 // ── 본문 ────────────────────────────────────────────────────────────────────
 function renderBody() {
-  if (!bodyEl) return; bodyEl.innerHTML = ''; statusEl = null;
+  if (!bodyEl) return; bodyEl.innerHTML = ''; statusEl = null; trayGridEl = null; trayNavEl = null;
   if (!currentId) { bodyEl.appendChild(buildEmpty()); return; }
 
   const main = document.createElement('div'); main.className = 'main'; bodyEl.appendChild(main);
@@ -181,7 +188,7 @@ function renderBody() {
 
   // 동작줄
   const acts = document.createElement('div'); acts.className = 'actions';
-  const allB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '전부 내리기 (zip)' });
+  const allB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '전체 추출 (zip)' });
   allB.disabled = !parsed || !trayAssets.length; allB.onclick = () => downloadAll();
   acts.appendChild(allB);
   const openB = Object.assign(document.createElement('button'), { textContent: '파일 추가' }); openB.onclick = () => pickFiles();
@@ -207,6 +214,7 @@ function renderBody() {
   if (!parsed) { setStatus(parseError || '읽는 중…'); return; }
   if (!trayAssets.length) { setStatus('이 파일엔 꺼낼 에셋이 없어요.'); return; }
   main.appendChild(buildTray());
+  renderTrayGrid();   // ★화면 부착 후 첫 렌더(부착 전에 부르면 빈 트레이가 되던 버그)
 }
 
 // ── 트레이(편집기 에셋트레이 포팅: 검색 + 아이콘/감정 탭 + 60개 페이지) ─────
@@ -232,17 +240,29 @@ function buildTray(): HTMLElement {
     top.appendChild(tabs);
   }
   tray.appendChild(top);
-  const grid = document.createElement('div'); grid.className = 'tray-grid'; grid.id = 'tray-grid'; tray.appendChild(grid);
-  const nav = document.createElement('div'); nav.className = 'tray-nav'; nav.id = 'tray-nav';
+  const grid = document.createElement('div'); grid.className = 'tray-grid'; tray.appendChild(grid);
+  grid.style.setProperty('--cell', cellSize + 'px');
+  trayGridEl = grid;
+  // 하단 바: 가운데=페이지 네비(1페이지면 숨김) · 오른쪽=썸네일 크기 슬라이더(항상 표시)
+  const foot = document.createElement('div'); foot.className = 'tray-foot';
+  foot.appendChild(Object.assign(document.createElement('span'), { className: 'sp' }));
+  const nav = document.createElement('div'); nav.className = 'tray-nav';
   nav.innerHTML = '<button class="tray-pg" data-d="-1">‹ 이전</button><span class="tray-pos"></span><button class="tray-pg" data-d="1">다음 ›</button>';
   nav.querySelectorAll('.tray-pg').forEach((b) => (b as HTMLButtonElement).onclick = () => { trayPage += Number((b as HTMLElement).dataset.d); renderTrayGrid(); });
-  tray.appendChild(nav);
-  renderTrayGrid();
+  trayNavEl = nav; foot.appendChild(nav);
+  const sizeBox = document.createElement('div'); sizeBox.className = 'tray-size sp';
+  const slider = document.createElement('input'); slider.type = 'range';
+  slider.min = String(CELL_MIN); slider.max = String(CELL_MAX); slider.step = '8'; slider.value = String(cellSize);
+  slider.title = '썸네일 크기';
+  slider.oninput = () => { cellSize = Number(slider.value); grid.style.setProperty('--cell', cellSize + 'px'); try { localStorage.setItem('ax-cell', String(cellSize)); } catch (_) {} };
+  sizeBox.append(Object.assign(document.createElement('span'), { textContent: '크기' }), slider);
+  foot.appendChild(sizeBox);
+  tray.appendChild(foot);
   return tray;
 }
 
 function renderTrayGrid() {
-  const grid = document.getElementById('tray-grid'); if (!grid) return; grid.innerHTML = '';
+  const grid = trayGridEl; if (!grid) return; grid.innerHTML = '';
   const ql = trayQuery.trim().toLowerCase();
   const inFilter = (a: any) => trayFilter === 'all' || (trayFilter === 'icon' ? isIconAsset(a) : !isIconAsset(a));
   const matches = trayAssets.filter((a) => inFilter(a) && (!ql || (a.name && a.name.toLowerCase().includes(ql)) || (a.tag && a.tag.toLowerCase().includes(ql))));
@@ -253,8 +273,8 @@ function renderTrayGrid() {
   for (const a of matches.slice(start, start + TRAY_PAGE)) grid.appendChild(trayCell(a));
   if (!total) { const m = document.createElement('div'); m.className = 'tray-note'; m.textContent = '일치하는 에셋 없음'; grid.appendChild(m); }
   grid.scrollTop = 0;
-  const nav = document.getElementById('tray-nav'); if (!nav) return;
-  (nav as HTMLElement).hidden = pages <= 1;
+  const nav = trayNavEl; if (!nav) return;
+  nav.style.visibility = pages <= 1 ? 'hidden' : '';   // hidden 대신 자리 유지(슬라이더 위치 안 흔들리게)
   const pos = nav.querySelector('.tray-pos'); if (pos) pos.textContent = total ? `${trayPage + 1} / ${pages}  ·  ${start + 1}–${Math.min(start + TRAY_PAGE, total)} / ${total}` : '0';
   const btns = nav.querySelectorAll('.tray-pg');
   (btns[0] as HTMLButtonElement).disabled = trayPage <= 0;
@@ -353,7 +373,6 @@ function render() {
   bar.appendChild(openB);
   app.appendChild(bar);
   bodyEl = document.createElement('div'); bodyEl.style.cssText = 'flex:1 1 auto;min-height:0;display:flex;flex-direction:column;'; app.appendChild(bodyEl);
-  app.appendChild(Object.assign(document.createElement('div'), { className: 'foot', textContent: '파일은 이 컴퓨터 밖으로 나가지 않아요 · GPL-3.0' }));
   renderChips(); renderBody();
 }
 
