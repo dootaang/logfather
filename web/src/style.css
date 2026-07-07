@@ -1566,3 +1566,14 @@ button .ic, summary .ic { margin-right: .15em; }
 .prev-label { font: 600 11px/1 var(--font-sans); color: var(--muted); margin-bottom: 4px; }
 .prev-box { font: 500 11.5px/1.6 var(--font-mono); color: var(--ink-2); background: var(--panel-2); border: 1px solid var(--line);
   border-radius: var(--r-sm); padding: 8px 10px; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+
+/* ── 모바일 가로 흔들림 수정: 리더 화면 가로 고정 + 본문 줄바꿈 ──
+   .reader-scroll이 overflow-y:auto만 지정해 가로가 사실상 auto로 승격(명세) → 긴 무공백 문자열·
+   인라인 고정폭 div(상태창 봇 width:550px류)·표가 폭을 뚫으면 화면째 좌우 스크롤이 생기던 문제.
+   파파모드(.reader-card-papa)는 "남의 디자인 그대로" 철학이라 제외(:has 미지원 구형 브라우저=현행 유지). */
+.reader-scroll:not(:has(.reader-card-papa)) { overflow-x: hidden; }
+.reader-card:not(.reader-card-papa) { overflow-wrap: anywhere; }              /* URL·괘선·영문 연속 강제 줄바꿈(min-content까지 축소) */
+.reader-card:not(.reader-card-papa) div { max-width: 100%; }                  /* 인라인 width:550px류 고정폭을 화면 안으로(max-width가 width를 이김) */
+.reader-card:not(.reader-card-papa) table { display: block; max-width: 100%; overflow-x: auto; }   /* 표는 잘림 대신 표 안에서만 밀어보기 */
+.reader-card:not(.reader-card-papa) pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+.reader-card:not(.reader-card-papa) [style*="nowrap"] { white-space: normal !important; }   /* 인라인 nowrap은 hidden에 잘리면 내용 손실 → 접게(시트 !important가 인라인을 이김) */
