@@ -38,6 +38,7 @@ const P: Record<string, string> = {
   inbox: '<path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1"/><path d="M4 13h3l3 3h4l3 -3h3"/>',
   check: '<path d="M5 12l5 5l10 -10"/>',
   tool: '<path d="M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5"/>',
+  dice: '<path d="M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z"/><path d="M8.5 8.5v.01"/><path d="M15.5 8.5v.01"/><path d="M12 12v.01"/><path d="M8.5 15.5v.01"/><path d="M15.5 15.5v.01"/>',
   help: '<path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M12 16v.01"/><path d="M12 13a2 2 0 0 0 .914 -3.782a1.98 1.98 0 0 0 -2.414 .483"/>',
 };
 /** 인라인 아이콘 SVG 문자열. 버튼 textContent 대신 innerHTML에 사용. */

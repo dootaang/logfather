@@ -663,6 +663,19 @@ iframe#preview {
 .studio-btn:hover { border-color: var(--accent-line); transform: translateY(-1px); }
 .studio-btn.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; }
 .studio-btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, black); border-color: transparent; box-shadow: var(--shadow-md); }
+/* ── 오늘의 서재(발견 층) — 랜덤 뽑기. 스트립 구조라 카드(명대사·그날의 로그) 추가로 확장 ── */
+.today-track { display: flex; gap: 12px; flex-wrap: wrap; }
+.gacha-card { display: flex; align-items: center; gap: 14px; padding: 13px 18px; border-radius: var(--r-lg); border: 1px solid var(--line-2); background: var(--panel); color: var(--ink); cursor: pointer; transition: .14s; box-shadow: var(--shadow-sm); text-align: left; }
+.gacha-card:hover { border-color: var(--accent-line); transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.gacha-die { display: inline-flex; color: var(--accent); flex: none; }
+.gacha-die .ic { width: 30px; height: 30px; }
+.gacha-card.rolling .gacha-die { animation: gachaRoll .5s var(--ease); }
+@keyframes gachaRoll { 0% { transform: rotate(0); } 30% { transform: rotate(-28deg) scale(1.12); } 60% { transform: rotate(24deg) scale(1.18); } 100% { transform: rotate(360deg); } }
+.gacha-txt { display: flex; flex-direction: column; gap: 3px; }
+.gacha-title { font: 700 15px/1.2 var(--font-display); color: var(--ink); }
+.gacha-sub { font-size: 12px; color: var(--muted); }
+.gacha-mode { font: 500 12px/1 var(--font-sans); padding: 7px 9px; border-radius: var(--r-sm); border: 1px solid var(--line-2); background: var(--panel-2); color: var(--ink-2); cursor: pointer; margin-left: 4px; }
+.gacha-mode:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 /* 빈 서재 CTA */
 .studio-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .studio-empty-h { font: 700 18px/1.3 var(--font-display); color: var(--ink); }

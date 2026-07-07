@@ -10,6 +10,7 @@ import { icon } from './icons.js';
 import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
 import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad, kvSave, resolveAssetRefs, resolveAssetShareUrls } from './store.js';
+import { bumpReadHistory } from './readStats.js';   // 읽기 이력 배관(내 기록·결산 원료) — saveRead 쓰기에 편승(추가 쓰기 0)
 import { isLocalFirst, getSyncMode } from './desktopSync.js';
 import { bakeLogs, externalCount, bakeAvailable } from './bake.js';   // 파파 하이브리드 이미지 굳히기(데스크탑 native / 웹 weserv 폴백)
 import { stripPapaCruft, papaCruftChanges } from '../../core/cleanup/papaCruft.js';   // 파파 보편 군더더기(CoT/번역분석 접기) 비파괴 제거
@@ -496,7 +497,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     }
     const rcfg = rdCfg();
     const wn = !papa && isWebnovel(r);
-    const rd = loadRead(); rd.readIds[r.id] = true; rd.lastByChar[char] = r.id; rd.lastReadAt = rd.lastReadAt || {}; rd.lastReadAt[char] = Date.now(); saveRead(rd);
+    const rd = loadRead(); const firstRead = !rd.readIds[r.id]; rd.readIds[r.id] = true; rd.lastByChar[char] = r.id; rd.lastReadAt = rd.lastReadAt || {}; rd.lastReadAt[char] = Date.now(); bumpReadHistory(rd, char, r.id, firstRead); saveRead(rd);
     app.innerHTML = '';
     const wnTh = (r.webnovel && r.webnovel.theme) || rcfg.wnTheme;
     const reader = document.createElement('div'); reader.className = 'reader' + (wn ? ' wn' : ''); reader.dataset.theme = wn ? wnTh : rcfg.theme;

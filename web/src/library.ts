@@ -305,6 +305,47 @@ function showCreateWorkModal() {
   setTimeout(() => { try { nameIn.focus(); } catch (_) {} }, 0);
 }
 
+// ── 오늘의 서재(발견 층) — 랜덤 뽑기 ─────────────────────────────────
+// 홈 선반(이어읽기·즐겨찾기·최근)은 전부 "기억 기반"이라, "뭐 읽지"를 대신 굴려주는 발견 층을 신설.
+// 스트립 구조 = 카드 추가로 확장 예정(오늘의 명대사·1년 전 오늘·내 기록 진입 — 백로그).
+// 데이터 전부 로컬(seriesBase) → Firebase 비용 0 · 오프라인 동작.
+const GACHA_MODE_KEY = 'pro2-gacha-mode';   // 뽑기 범위 = 기기 취향(리더 테마처럼 localStorage)
+function gachaPool(base: any[], mode: string): any[] {
+  const eps = (ss: any[]) => ss.flatMap((s: any) => s.eps);
+  if (mode === 'fav') { const f = eps(base.filter((s) => s.fav)); if (f.length) return f; }   // 즐겨찾기 0개면 전체로 폴백
+  if (mode === 'unread') { const read = loadRead(); const u = eps(base).filter((e: any) => !read.readIds[e.id]); if (u.length) return u; }   // 다 읽었으면 전체로 폴백
+  return eps(base);
+}
+function todayShelfSection(base: any[]): HTMLElement {
+  const sec = document.createElement('section'); sec.className = 'home-row today-shelf';
+  const h = document.createElement('h2'); h.className = 'home-h'; h.textContent = '오늘의 서재'; sec.appendChild(h);
+  const track = document.createElement('div'); track.className = 'today-track';
+  const card = document.createElement('button'); card.className = 'gacha-card';
+  card.title = '서재에서 무작위 한 화를 뽑아 바로 읽습니다';
+  const die = mk('span', 'gacha-die'); die.innerHTML = icon('dice');
+  const txt = mk('span', 'gacha-txt');
+  txt.append(mk('span', 'gacha-title', '랜덤 뽑기'), mk('span', 'gacha-sub', '운에 맡기고 아무 화나 읽기'));
+  const sel = document.createElement('select'); sel.className = 'gacha-mode'; sel.title = '뽑기 범위';
+  [['unread', '안 읽은 화 먼저'], ['all', '전체 랜덤'], ['fav', '즐겨찾기에서']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); });
+  let mode = 'unread'; try { mode = localStorage.getItem(GACHA_MODE_KEY) || 'unread'; } catch (_) {}
+  sel.value = ['unread', 'all', 'fav'].indexOf(mode) >= 0 ? mode : 'unread';
+  sel.onclick = (e) => e.stopPropagation();   // 범위 고르기가 뽑기를 발동하지 않게
+  sel.onchange = () => { try { localStorage.setItem(GACHA_MODE_KEY, sel.value); } catch (_) {} };
+  let rolling = false;
+  card.onclick = () => {
+    if (rolling) return;
+    const pool = gachaPool(base, sel.value);
+    if (!pool.length) { setStatus('뽑을 화가 없어요.'); return; }
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    rolling = true; card.classList.add('rolling');   // 주사위 굴림 연출 후 이동
+    setTimeout(() => { location.href = 'reader.html#/log/' + encodeURIComponent(pick.char) + '/' + encodeURIComponent(pick.id); }, 520);
+  };
+  card.append(die, txt, sel);
+  track.appendChild(card);
+  sec.appendChild(track);
+  return sec;
+}
+
 function renderHome() {
   app.innerHTML = '';
   const head = document.createElement('div'); head.className = 'archive-head';
@@ -313,12 +354,27 @@ function renderHome() {
   const chatBtn = document.createElement('button'); chatBtn.innerHTML = icon('message') + ' 채팅 가져오기';
   const expBtn = document.createElement('button'); expBtn.textContent = '전체 내보내기';
   const impBtn = document.createElement('button'); impBtn.textContent = '가져오기';
-  head.append(title, search, chatBtn, expBtn, impBtn);
+  // ★헤드 다이어트: 저빈도 유틸(내보내기/가져오기/전체 굳히기)은 "도구" 팝오버로 접음 —
+  //   고빈도(검색·채팅 가져오기)에 자리를 주고, 모바일 줄바꿈 혼잡 방지. 버튼 동작은 그대로(위치만 이동).
+  const tools = document.createElement('details'); tools.className = 'menu lib-tools';
+  const tsum = document.createElement('summary'); tsum.innerHTML = icon('dots') + ' 도구';
+  tsum.title = '전체 내보내기 · 가져오기' + (desktopAvailable() ? ' · 전체 굳히기' : '');
+  const tpop = document.createElement('div'); tpop.className = 'menu-pop';
+  tools.append(tsum, tpop);
+  tpop.append(expBtn, impBtn);
+  // 바깥 클릭 닫기(열려 있을 때만 리스너 — renderHome 재실행 누적 방지).
+  const closeTools = (e: Event) => { if (!tools.contains(e.target as Node)) tools.open = false; };
+  tools.addEventListener('toggle', () => {
+    if (tools.open) document.addEventListener('pointerdown', closeTools, true);
+    else document.removeEventListener('pointerdown', closeTools, true);
+  });
+  head.append(title, search, chatBtn, tools);
   // 전체 굳히기(서재 모든 로그의 외부 이미지 영구 박제) — 데스크탑 앱 전용.
   if (desktopAvailable()) {
     const bakeAllBtn = document.createElement('button'); bakeAllBtn.innerHTML = icon('flame') + ' 전체 굳히기';
     bakeAllBtn.title = '서재 전체 로그의 외부 링크 이미지를 한 번에 영구 박제(원본 화질)';
     bakeAllBtn.onclick = async () => {
+      tools.open = false;
       const total = allLogs.reduce((n, r) => n + externalCount(r.html || ''), 0);
       if (!total) { setStatus('굳힐 외부 이미지가 없습니다 — 서재 전체가 이미 영구 보관 상태예요.'); return; }
       if (!(await confirmModal(`서재 전체에서 외부(핫링크) 이미지 ${total}장을 받아 영구 박제할까요?\n시간이 걸릴 수 있고, 죽은 링크는 그대로 남습니다.`, { okText: '굳히기' }))) return;
@@ -326,7 +382,7 @@ function renderHome() {
       await runBakeFlow(allLogs.slice(), '서재 전체');
       renderHome();
     };
-    head.append(bakeAllBtn);
+    tpop.append(bakeAllBtn);
   }
   app.appendChild(head);
 
@@ -349,13 +405,14 @@ function renderHome() {
 
   chatBtn.onclick = () => importChatLog();
   expBtn.onclick = async () => {
+    tools.open = false;
     let metas: any[] = []; try { metas = await metaAll(); } catch (_) {}   // 작품 표지·소개도 함께(예전엔 빠졌음)
     const data = { app: 'log-jejogi-pro2', kind: 'log-archive', version: 2, logs: allLogs, meta: metas };
     // ★zip 한 파일(이미지 분리). 로그 html의 data:이미지가 많아도 안 부풀고 안 멈춤. 실패 시 json 폴백.
     try { downloadBytes('log-archive.zip', buildBackup(data), 'application/zip'); }
     catch (_) { download('log-archive.json', JSON.stringify(data, null, 2)); }
   };
-  impBtn.onclick = () => importLogs();
+  impBtn.onclick = () => { tools.open = false; importLogs(); };
   search.oninput = () => { archiveQuery = search.value; renderBody(); };
   autoHideBar(body, [document.querySelector('.lib-topbar'), head]);   // 모바일: 전역 헤더 + 검색바를 오버레이 스택으로 통째 숨김
 
@@ -397,6 +454,7 @@ function renderHome() {
     body.appendChild(makeStudio());   // 만들기 존 = 스크롤러 첫 항목(모바일 상단바 안 가림·이어읽기 위)
     if (archiveQuery.trim()) { body.appendChild(fullListSection(false)); return; } // 검색 = 결과 목록만
     const base = seriesBase();
+    if (base.some((s) => s.count > 0)) body.appendChild(todayShelfSection(base));   // 발견 층 — 화가 1개라도 있을 때만
     const cont = base.filter((s) => s.readIdx >= 0).sort((a, b) => b.lastReadAt - a.lastReadAt);
     const favs = base.filter((s) => s.fav).sort((a, b) => b.lastReadAt - a.lastReadAt || (b.latest.date || '').localeCompare(a.latest.date || ''));
     const recent = [...base].sort((a, b) => (b.latest.date || '').localeCompare(a.latest.date || '') || (b.latest.id || '').localeCompare(a.latest.id || '')).slice(0, 12);
