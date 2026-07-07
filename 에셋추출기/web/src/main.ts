@@ -5,9 +5,9 @@
 //   무상태 도구: 보관·규칙·동기화 없음. 열고 → 탐색(검색·탭·호버확대) → 꺼내고(개별/전체 zip·변환) 끝.
 // @ts-nocheck
 import { parseCardAssets, cardAssetBytes } from '../../../core/card/cardAssets.js';
-import { applyTagScheme, assetDataUrl } from '../../../core/card/assets.js';
+import { applyTagScheme } from '../../../core/card/assets.js';
 import { encodeJson, encodeCharx, encodePng, pickPngBase } from '../../../core/card/cardEncode.js';
-import { zipSync } from 'fflate';
+import { Zip, ZipPassThrough } from 'fflate';
 
 const app = document.getElementById('app');
 const ACCEPT = '.charx,.png,.json,.jpeg,.risum,.risup';
@@ -61,13 +61,39 @@ const TYPE_LABEL: any = { prompt: '프롬프트', card: '봇카드', module: '�
 const isIconAsset = (a: any) => a.type === 'icon' || /icon/i.test(a.name || '');
 const isImage = (a: any) => /^image\//.test(a.mime || '');
 
+function downloadBlob(blob: Blob, filename: string) {
+  try { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000); } catch (_) {}
+}
 function downloadBytes(bytes: Uint8Array, filename: string, mime: string) {
-  try { const blob = new Blob([bytes], { type: mime || 'application/octet-stream' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000); } catch (_) {}
+  downloadBlob(new Blob([bytes], { type: mime || 'application/octet-stream' }), filename);
 }
 
-// 에셋 바이트/데이터URL — 지연 복호(cardAssetBytes가 포맷별 on-demand + 캐시).
+// 에셋 바이트 — 지연 복호(cardAssetBytes가 포맷별 on-demand + 캐시).
 const bytesOf = (a: any) => { try { return cardAssetBytes(parsed, a); } catch (_) { return null; } };
-const urlOf = (a: any) => { bytesOf(a); return assetDataUrl(a) || ''; };
+
+// ── P1-① Blob URL 썸네일 ──────────────────────────────────────────────────
+// base64 데이터 URL(원본+33%가 문자열로 DOM에 상주) 대신 Blob URL(참조만) — 대형 모듈 메모리 절반↓.
+// 페이지·파일 전환 때 revoke로 회수. a._url에 캐시해 셀·호버·라이트박스가 같은 URL 공유.
+let urlAssets: any[] = [];
+function urlOf(a: any): string {
+  if (a._url) return a._url;
+  const by = bytesOf(a); if (!by) return '';
+  a._url = URL.createObjectURL(new Blob([by], { type: a.mime || 'application/octet-stream' }));
+  urlAssets.push(a);
+  return a._url;
+}
+function revokeUrls() {
+  for (const a of urlAssets) { try { URL.revokeObjectURL(a._url); } catch (_) {} delete a._url; }
+  urlAssets = [];
+}
+
+// ── P1-② 페이지 밖 복호 캐시 해제 ─────────────────────────────────────────
+// 지연(lazy) 포맷(charx/risum)만: bytes=null로 되돌려도 필요 시 재복호됨(인덱스 _off/path 보존).
+// png/json 즉시 포맷은 그 바이트가 원본이라 해제 금지. 668MB 모듈을 완주해도 메모리 평탄.
+function pruneDecodedCache(keep: Set<any>) {
+  if (!parsed || !parsed.lazy) return;
+  for (const a of trayAssets) if (a.bytes && !keep.has(a)) a.bytes = null;
+}
 
 // 태그 복사: 리스AI 계열 도구들이 그대로 알아듣는 기본 이미지 토큰.
 async function copyTag(name: string) {
@@ -104,12 +130,13 @@ function addBytesFile(name: string, bytes: Uint8Array) {   // 메인 프로세�
 }
 function removeChip(id: string) {
   chips = chips.filter((c) => c.id !== id);
-  if (currentId === id) { currentId = null; parsed = null; trayAssets = []; parseError = ''; if (chips.length) { selectChip(chips[chips.length - 1].id); return; } }
+  if (currentId === id) { revokeUrls(); currentId = null; parsed = null; trayAssets = []; parseError = ''; if (chips.length) { selectChip(chips[chips.length - 1].id); return; } }
   renderChips(); renderBody();
 }
 
 async function selectChip(id: string) {
   const chip = chips.find((c) => c.id === id); if (!chip) return;
+  revokeUrls();   // 파일 전환: 이전 파일 썸네일 URL 회수(parsed는 GC)
   currentId = id; parsed = null; trayAssets = []; parseError = '';
   trayFilter = 'all'; trayQuery = ''; trayPage = 0;
   renderChips(); renderBody();   // "읽는 중" 상태 먼저
@@ -160,16 +187,33 @@ function pickFiles() {
 }
 
 // ── 전체 내려받기(zip) — 관리실 downloadAll 포팅(파일명 충돌 _2 처리 포함) ──
+// P1-③: 스트리밍 zip(store) + 진행률 + 틈틈이 UI 양보 — 동기 zipSync의 화면 정지 제거.
+//   파일을 zip에 넣는 즉시 lazy 복호 캐시를 해제해 피크 메모리 ≈ zip 결과물 + 파일 1개.
+let zipping = false;
 async function downloadAll() {
-  if (!parsed || !trayAssets.length) return;
-  setStatus('압축 중… (큰 모듈은 시간이 걸려요)'); await new Promise((r) => setTimeout(r, 16));
+  if (!parsed || !trayAssets.length || zipping) return;
+  zipping = true;
   try {
-    const files: Record<string, Uint8Array> = {}; let n = 0;
-    for (const { a, fn } of planFilenames(trayAssets)) { const by = bytesOf(a); if (!by) continue; files[fn] = by; n++; }
+    const plan = planFilenames(trayAssets);
+    const chunks: Uint8Array[] = [];
+    let zipErr: any = null;
+    const zip = new Zip((err, dat) => { if (err) zipErr = err; else if (dat && dat.length) chunks.push(dat); });
+    let n = 0;
+    for (const { a, fn } of plan) {
+      const by = bytesOf(a); if (!by) continue;
+      const f = new ZipPassThrough(fn);
+      zip.add(f); f.push(by, true);
+      if (parsed.lazy && !a._url) a.bytes = null;   // 방금 넣은 캐시 즉시 해제(썸네일이 안 쓰는 것만)
+      n++;
+      if (n % 8 === 0) { setStatus(`압축 중… ${n}/${plan.length}`); await new Promise((r) => setTimeout(r, 0)); }
+    }
+    zip.end();
+    if (zipErr) throw zipErr;
     if (!n) { setStatus('내려받을 에셋이 없어요.'); return; }
-    downloadBytes(zipSync(files, { level: 0 }), safeName(parsed.name || currentName()) + '_assets.zip', 'application/zip');
+    downloadBlob(new Blob(chunks, { type: 'application/zip' }), safeName(parsed.name || currentName()) + '_assets.zip');
     setStatus(`에셋 ${n}개 추출 완료 (zip)`);
   } catch (e) { console.warn('[에셋추출기] 전체 내려받기 실패', e); setStatus('전체 내려받기 실패 — 개별 내려받기를 써보세요.'); }
+  finally { zipping = false; }
 }
 const currentName = () => { const c = chips.find((x) => x.id === currentId); return (c ? c.name : 'source').replace(/\.[^.]+$/, ''); };
 
@@ -184,6 +228,7 @@ async function extractToFolder() {
   for (const { a, fn } of plan) {
     const by = bytesOf(a); if (!by) { failed++; continue; }
     try { await ex.saveFile(fn, by); n++; } catch (_) { failed++; }
+    if (parsed.lazy && !a._url) a.bytes = null;   // P1-②와 동일: 저장 즉시 캐시 해제
     if (n % 10 === 0) setStatus(`폴더로 추출 중… ${n}/${plan.length}`);
   }
   setStatus(`에셋 ${n}개 폴더 추출 완료${failed ? ` · 실패 ${failed}` : ''} — ${dir}`);
@@ -300,7 +345,10 @@ function renderTrayGrid() {
   const pages = Math.max(1, Math.ceil(total / TRAY_PAGE));
   if (trayPage < 0) trayPage = 0; if (trayPage > pages - 1) trayPage = pages - 1;
   const start = trayPage * TRAY_PAGE;
-  for (const a of matches.slice(start, start + TRAY_PAGE)) grid.appendChild(trayCell(a));
+  const pageAssets = matches.slice(start, start + TRAY_PAGE);
+  revokeUrls();                              // P1-①: 이전 페이지 썸네일 Blob URL 회수
+  pruneDecodedCache(new Set(pageAssets));    // P1-②: 페이지 밖 lazy 복호 캐시 해제
+  for (const a of pageAssets) grid.appendChild(trayCell(a));
   if (!total) { const m = document.createElement('div'); m.className = 'tray-note'; m.textContent = '일치하는 에셋 없음'; grid.appendChild(m); }
   grid.scrollTop = 0;
   const nav = trayNavEl; if (!nav) return;
@@ -406,7 +454,7 @@ function openLightbox(a: any) {
     idx = Math.max(0, Math.min(list.length - 1, i));
     const cur = list[idx]; const by = bytesOf(cur);
     media.innerHTML = '';
-    if (by && isImage(cur)) { const img = document.createElement('img'); img.src = assetDataUrl(cur); media.appendChild(img); }
+    if (by && isImage(cur)) { const img = document.createElement('img'); img.src = urlOf(cur); media.appendChild(img); }
     else media.appendChild(Object.assign(document.createElement('div'), { className: 'light-file', textContent: (cur.ext || '파일').toUpperCase() + (by ? ` · ${fmtKB(by.length)}` : ' · 읽기 실패') }));
     nm.textContent = cur.name + (by ? ` (${fmtKB(by.length)})` : ''); nm.title = cur.name;
     pos.textContent = `${idx + 1} / ${list.length}`;
