@@ -56,7 +56,7 @@ service cloud.firestore {
     //   usage: Firebase 쿼터 스냅샷 — GitHub Actions 크론이 Admin SDK로 씀(규칙 미적용), 클라이언트 쓰기 차단.
     //   읽기 = 관리자(사장님 계정)만. ★ADMIN_UID_TBD는 자리표시자 — 실제 uid로 바꾸기 전엔 아무도 못 읽음(안전).
     function isAdmin() {
-      return request.auth != null && request.auth.uid == 'ADMIN_UID_TBD';
+      return request.auth != null && request.auth.uid == 'KjPRmdoN5xgSn4Kv341vlUYNM032';
     }
     match /stats/{docId} {
       allow read: if isAdmin();

@@ -11,7 +11,7 @@
 // @ts-nocheck
 import { todayKey } from './readStats.js';
 
-export const ADMIN_UID = 'ADMIN_UID_TBD';   // ★사장님 계정 uid로 교체(firestore.rules isAdmin()과 한 쌍)
+export const ADMIN_UID = 'KjPRmdoN5xgSn4Kv341vlUYNM032';   // 사장님 계정 uid(firestore.rules isAdmin()과 한 쌍)
 
 export function isAdminUser(user: any): boolean {
   return !!(user && user.uid && user.uid === ADMIN_UID && ADMIN_UID !== 'ADMIN_UID_TBD');
