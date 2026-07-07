@@ -45,6 +45,16 @@ const setStatus = (m: string) => { if (statusEl) statusEl.textContent = m || '';
 // ── 공용 유틸(관리실 포팅) ──────────────────────────────────────────────────
 const safeName = (s: string) => String(s || 'source').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120);
 const assetFilename = (a: any) => { const n = safeName(a.name || 'asset'); const e = (a.ext || '').toLowerCase(); return (e && !n.toLowerCase().endsWith('.' + e)) ? n + '.' + e : n; };
+// 파일명 충돌 처리(_2, _3…) — zip·폴더 추출 공용 계획표
+function planFilenames(assets: any[]): Array<{ a: any; fn: string }> {
+  const used: Record<string, number> = {}; const out: Array<{ a: any; fn: string }> = [];
+  for (const a of assets) {
+    let fn = assetFilename(a);
+    if (used[fn]) { const m = /^(.*?)(\.[^.]+)?$/.exec(fn) || [fn, fn, '']; let i = 2, cand; do { cand = m[1] + '_' + (i++) + (m[2] || ''); } while (used[cand]); fn = cand; }
+    used[fn] = 1; out.push({ a, fn });
+  }
+  return out;
+}
 const fmtKB = (n: number) => (n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + 'MB' : Math.max(1, Math.round(n / 1024)) + 'KB');
 const typeOf = (fmt: string) => { const f = String(fmt || '').toLowerCase(); return f === 'risup' ? 'prompt' : f === 'risum' ? 'module' : 'card'; };
 const TYPE_LABEL: any = { prompt: '프롬프트', card: '봇카드', module: '모듈' };
@@ -154,19 +164,30 @@ async function downloadAll() {
   if (!parsed || !trayAssets.length) return;
   setStatus('압축 중… (큰 모듈은 시간이 걸려요)'); await new Promise((r) => setTimeout(r, 16));
   try {
-    const files: Record<string, Uint8Array> = {}; const used: Record<string, number> = {}; let n = 0;
-    for (const a of trayAssets) {
-      const by = bytesOf(a); if (!by) continue;
-      let fn = assetFilename(a);
-      if (used[fn]) { const m = /^(.*?)(\.[^.]+)?$/.exec(fn) || [fn, fn, '']; let i = 2, cand; do { cand = m[1] + '_' + (i++) + (m[2] || ''); } while (used[cand]); fn = cand; }
-      used[fn] = 1; files[fn] = by; n++;
-    }
+    const files: Record<string, Uint8Array> = {}; let n = 0;
+    for (const { a, fn } of planFilenames(trayAssets)) { const by = bytesOf(a); if (!by) continue; files[fn] = by; n++; }
     if (!n) { setStatus('내려받을 에셋이 없어요.'); return; }
     downloadBytes(zipSync(files, { level: 0 }), safeName(parsed.name || currentName()) + '_assets.zip', 'application/zip');
     setStatus(`에셋 ${n}개 추출 완료 (zip)`);
   } catch (e) { console.warn('[에셋추출기] 전체 내려받기 실패', e); setStatus('전체 내려받기 실패 — 개별 내려받기를 써보세요.'); }
 }
 const currentName = () => { const c = chips.find((x) => x.id === currentId); return (c ? c.name : 'source').replace(/\.[^.]+$/, ''); };
+
+// 폴더로 추출: zip 없이 선택한 폴더에 바로 파일로. 한 개씩 IPC 저장 → 대형 모듈도 메모리 안 몰림.
+async function extractToFolder() {
+  if (!parsed || !trayAssets.length) return;
+  const ex = (window as any).extractor;
+  if (!ex || !ex.pickFolder) { setStatus('폴더 추출을 쓸 수 없어요.'); return; }
+  const dir = await ex.pickFolder(); if (!dir) return;
+  const plan = planFilenames(trayAssets);
+  let n = 0, failed = 0;
+  for (const { a, fn } of plan) {
+    const by = bytesOf(a); if (!by) { failed++; continue; }
+    try { await ex.saveFile(fn, by); n++; } catch (_) { failed++; }
+    if (n % 10 === 0) setStatus(`폴더로 추출 중… ${n}/${plan.length}`);
+  }
+  setStatus(`에셋 ${n}개 폴더 추출 완료${failed ? ` · 실패 ${failed}` : ''} — ${dir}`);
+}
 
 // ── 본문 ────────────────────────────────────────────────────────────────────
 function renderBody() {
@@ -191,6 +212,10 @@ function renderBody() {
   const allB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '전체 추출 (zip)' });
   allB.disabled = !parsed || !trayAssets.length; allB.onclick = () => downloadAll();
   acts.appendChild(allB);
+  const folB = Object.assign(document.createElement('button'), { textContent: '폴더로 추출' });
+  folB.title = 'zip으로 묶지 않고 선택한 폴더에 에셋을 바로 저장';
+  folB.disabled = !parsed || !trayAssets.length; folB.onclick = () => extractToFolder();
+  acts.appendChild(folB);
   const openB = Object.assign(document.createElement('button'), { textContent: '파일 추가' }); openB.onclick = () => pickFiles();
   acts.appendChild(openB);
   // 봇카드만 포맷 변환(관리실 포팅) — risum(모듈)·risup(프롬프트) 제외.
@@ -261,11 +286,16 @@ function buildTray(): HTMLElement {
   return tray;
 }
 
-function renderTrayGrid() {
-  const grid = trayGridEl; if (!grid) return; grid.innerHTML = '';
+// 현재 탭·검색을 적용한 에셋 목록 — 그리드와 라이트박스(이전/다음)가 같은 순서를 공유.
+function trayMatches(): any[] {
   const ql = trayQuery.trim().toLowerCase();
   const inFilter = (a: any) => trayFilter === 'all' || (trayFilter === 'icon' ? isIconAsset(a) : !isIconAsset(a));
-  const matches = trayAssets.filter((a) => inFilter(a) && (!ql || (a.name && a.name.toLowerCase().includes(ql)) || (a.tag && a.tag.toLowerCase().includes(ql))));
+  return trayAssets.filter((a) => inFilter(a) && (!ql || (a.name && a.name.toLowerCase().includes(ql)) || (a.tag && a.tag.toLowerCase().includes(ql))));
+}
+
+function renderTrayGrid() {
+  const grid = trayGridEl; if (!grid) return; grid.innerHTML = '';
+  const matches = trayMatches();
   const total = matches.length;
   const pages = Math.max(1, Math.ceil(total / TRAY_PAGE));
   if (trayPage < 0) trayPage = 0; if (trayPage > pages - 1) trayPage = pages - 1;
@@ -298,6 +328,14 @@ function trayCell(a: any): HTMLElement {
   }
   t.appendChild(Object.assign(document.createElement('span'), { className: 'cap', textContent: a.tag || a.name }));
   t.onclick = () => openLightbox(a);
+  // 네이티브 드래그 아웃: 썸네일을 잡아 탐색기·디스코드에 바로 놓기(메인이 임시파일+startDrag)
+  t.draggable = true;
+  t.addEventListener('dragstart', (e) => {
+    e.preventDefault(); hideThumbPop();
+    const ex = (window as any).extractor;
+    const by = bytesOf(a);
+    if (ex && ex.dragOut && by) ex.dragOut(assetFilename(a), by);
+  });
   return t;
 }
 
@@ -345,22 +383,51 @@ function hideThumbPop() {
   popAsset = null;
 }
 
-// ── 라이트박스(관리실 previewAsset 포팅 + 태그 복사) ────────────────────────
+// ── 라이트박스: 이전/다음 + ←→·ESC 키보드 + "12/76" 위치 (그리드와 같은 필터·순서 공유) ──
 function openLightbox(a: any) {
   hideThumbPop();
-  const by = bytesOf(a);
+  const list = trayMatches(); if (!list.length) return;
+  let idx = Math.max(0, list.indexOf(a));
   const ov = document.createElement('div'); ov.className = 'lightbox';
   const inner = document.createElement('div'); inner.className = 'light-inner';
-  if (by && isImage(a)) { const img = document.createElement('img'); img.src = assetDataUrl(a); inner.appendChild(img); }
-  else inner.appendChild(Object.assign(document.createElement('div'), { className: 'light-file', textContent: (a.ext || '파일').toUpperCase() + (by ? ` · ${fmtKB(by.length)}` : ' · 읽기 실패') }));
+  const stage = document.createElement('div'); stage.className = 'light-stage';
+  const prevB = Object.assign(document.createElement('button'), { className: 'light-nav', textContent: '‹', title: '이전 (←)' }) as HTMLButtonElement;
+  const nextB = Object.assign(document.createElement('button'), { className: 'light-nav', textContent: '›', title: '다음 (→)' }) as HTMLButtonElement;
+  const media = document.createElement('div'); media.className = 'light-media';
+  stage.append(prevB, media, nextB); inner.appendChild(stage);
   const cap = document.createElement('div'); cap.className = 'light-cap';
-  cap.appendChild(Object.assign(document.createElement('span'), { className: 'nm', textContent: a.name + (by ? ` (${fmtKB(by.length)})` : ''), title: a.name }));
-  const tagB = Object.assign(document.createElement('button'), { textContent: '태그 복사' }); tagB.onclick = () => copyTag(a.name);
+  const nm = Object.assign(document.createElement('span'), { className: 'nm' });
+  const pos = Object.assign(document.createElement('span'), { className: 'pos' });
+  const tagB = Object.assign(document.createElement('button'), { textContent: '태그 복사' });
   const dlB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '내려받기' });
-  dlB.onclick = () => { const b2 = bytesOf(a); if (b2) { downloadBytes(b2, assetFilename(a), a.mime); toast('내려받기 시작'); } };
-  cap.append(tagB, dlB); inner.appendChild(cap);
+  cap.append(nm, pos, tagB, dlB); inner.appendChild(cap);
+
+  const show = (i: number) => {
+    idx = Math.max(0, Math.min(list.length - 1, i));
+    const cur = list[idx]; const by = bytesOf(cur);
+    media.innerHTML = '';
+    if (by && isImage(cur)) { const img = document.createElement('img'); img.src = assetDataUrl(cur); media.appendChild(img); }
+    else media.appendChild(Object.assign(document.createElement('div'), { className: 'light-file', textContent: (cur.ext || '파일').toUpperCase() + (by ? ` · ${fmtKB(by.length)}` : ' · 읽기 실패') }));
+    nm.textContent = cur.name + (by ? ` (${fmtKB(by.length)})` : ''); nm.title = cur.name;
+    pos.textContent = `${idx + 1} / ${list.length}`;
+    prevB.disabled = idx <= 0; nextB.disabled = idx >= list.length - 1;
+  };
+  prevB.onclick = () => show(idx - 1);
+  nextB.onclick = () => show(idx + 1);
+  tagB.onclick = () => copyTag(list[idx].name);
+  dlB.onclick = () => { const cur = list[idx]; const b2 = bytesOf(cur); if (b2) { downloadBytes(b2, assetFilename(cur), cur.mime); toast('내려받기 시작'); } };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowLeft') show(idx - 1);
+    else if (e.key === 'ArrowRight') show(idx + 1);
+    else return;
+    e.preventDefault();
+  };
+  const close = () => { document.removeEventListener('keydown', onKey); ov.remove(); };
+  document.addEventListener('keydown', onKey);
+  ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
   ov.appendChild(inner); document.body.appendChild(ov);
-  ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+  show(idx);
 }
 
 // ── 셸 ──────────────────────────────────────────────────────────────────────

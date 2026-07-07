@@ -10,4 +10,5 @@ const render = (size) =>
   Buffer.from(new Resvg(svg, { fitTo: { mode: 'width', value: size }, background: 'rgba(0,0,0,0)' }).render().asPng());
 
 writeFileSync(new URL('./icon.ico', import.meta.url), await pngToIco([256, 128, 64, 48, 32, 16].map(render)));
-console.log('icon generated: build/icon.ico');
+writeFileSync(new URL('./drag.png', import.meta.url), render(32));   // 드래그 아웃 커서 아이콘(startDrag용)
+console.log('icons generated: build/icon.ico + build/drag.png');

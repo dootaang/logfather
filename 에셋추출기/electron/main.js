@@ -5,9 +5,10 @@
 //   "연결 프로그램으로 열기"/두 번째 실행의 파일 인자를 렌더러로 전달(open-file IPC).
 //   저장은 렌더러 <a download>(일렉트론 기본 저장 다이얼로그) — 메인엔 저장 코드 불필요.
 'use strict';
-const { app, BrowserWindow, Menu } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, nativeImage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
+const fss = require('node:fs');   // 드래그 아웃은 dragstart 안에서 동기 기록이 필요
 
 let win = null;
 
@@ -43,6 +44,39 @@ function createWindow() {
   win.loadFile(path.join(__dirname, '..', 'web', 'index.html'));
   win.webContents.on('did-finish-load', () => sendFiles(fileArgs(process.argv)));
 }
+
+// ── 추출 IPC ────────────────────────────────────────────────────────────────
+const safeFileName = (s) => String(s || 'asset').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 150) || 'asset';
+
+// 네이티브 드래그 아웃: 썸네일을 탐색기·디스코드로 바로 끌어다 놓기.
+//   임시폴더에 파일을 쓰고 startDrag(로컬 파일만 지원) — 임시폴더는 종료 시 정리.
+const dragDir = () => path.join(app.getPath('temp'), 'asset-extractor-drag');
+ipcMain.on('drag-start', (e, f) => {
+  try {
+    if (!f || !f.name || !f.bytes) return;
+    fss.mkdirSync(dragDir(), { recursive: true });
+    const file = path.join(dragDir(), safeFileName(f.name));
+    fss.writeFileSync(file, Buffer.from(f.bytes));
+    const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'build', 'drag.png'));
+    e.sender.startDrag({ file, icon });
+  } catch (err) { console.warn('[에셋추출기] 드래그 아웃 실패', err); }
+});
+app.on('will-quit', () => { try { fss.rmSync(dragDir(), { recursive: true, force: true }); } catch (_) {} });
+
+// 폴더로 추출: 폴더는 메인이 기억(렌더러에 임의 경로 쓰기 권한을 안 줌) → save-file은 그 폴더에만.
+let extractDir = null;
+ipcMain.handle('pick-folder', async () => {
+  const r = await dialog.showOpenDialog(win, { title: '에셋을 추출할 폴더 선택', properties: ['openDirectory', 'createDirectory'] });
+  if (r.canceled || !r.filePaths[0]) return null;
+  extractDir = r.filePaths[0];
+  return extractDir;
+});
+ipcMain.handle('save-file', async (_e, name, bytes) => {
+  if (!extractDir) throw new Error('폴더를 먼저 선택하세요');
+  const file = path.join(extractDir, safeFileName(name));
+  await fs.writeFile(file, Buffer.from(bytes));
+  return true;
+});
 
 app.on('second-instance', (_e, argv) => {
   if (!win) return;

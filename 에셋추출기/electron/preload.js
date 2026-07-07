@@ -6,4 +6,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('extractor', {
   onOpenFile: (cb) => ipcRenderer.on('open-file', (_e, f) => { try { cb(f); } catch (_) {} }),
+  dragOut: (name, bytes) => ipcRenderer.send('drag-start', { name, bytes }),           // 썸네일 → 탐색기 드래그
+  pickFolder: () => ipcRenderer.invoke('pick-folder'),                                  // 추출 폴더 선택(메인이 기억)
+  saveFile: (name, bytes) => ipcRenderer.invoke('save-file', name, bytes),              // 선택된 폴더에 저장
 });

@@ -28,6 +28,7 @@
       "electron/**/*",
       "web/**/*",
       "!web/src/**/*",
+      "build/drag.png",
       "package.json",
       "LICENSE"
     ],
