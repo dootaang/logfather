@@ -1,5 +1,17 @@
 {
   "projects": {
     "default": "logpapa"
+  },
+  "targets": {
+    "logpapa": {
+      "hosting": {
+        "app": [
+          "logpapa"
+        ],
+        "extractor": [
+          "assetextractor"
+        ]
+      }
+    }
   }
 }

@@ -11,6 +11,9 @@ import { Zip, ZipPassThrough } from 'fflate';
 
 const app = document.getElementById('app');
 const ACCEPT = '.charx,.png,.json,.jpeg,.risum,.risup';
+// P3: 한 코드 = exe(일렉트론)·웹 겸용. 데스크탑 전용 기능(폴더 추출·드래그 아웃)은 브릿지 유무로 게이팅.
+const isApp = () => !!(window as any).extractor;
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 // 브랜드 아이콘(build/icon.svg와 동일 도형) — 상단바·드롭존에 인라인 렌더.
 const ICON = (s: number) => `<svg width="${s}" height="${s}" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">`
@@ -208,7 +211,8 @@ function buildEmpty(): HTMLElement {
   return wrap;
 }
 function pickFiles() {
-  const fin = document.createElement('input'); fin.type = 'file'; fin.accept = ACCEPT; fin.multiple = true;
+  const fin = document.createElement('input'); fin.type = 'file'; fin.multiple = true;
+  if (!isIOS()) fin.accept = ACCEPT;   // iOS 파일앱은 모르는 확장자를 accept로 거면 선택 자체가 막힘 → 제한 해제
   fin.onchange = () => { const fs = Array.from(fin.files || []); if (fs.length) addFiles(fs); };
   fin.click();
 }
@@ -284,10 +288,12 @@ function renderBody() {
   const allB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '전체 추출 (zip)' });
   allB.disabled = !parsed || !trayAssets.length; allB.onclick = () => downloadAll();
   acts.appendChild(allB);
-  const folB = Object.assign(document.createElement('button'), { textContent: '폴더로 추출' });
-  folB.title = 'zip으로 묶지 않고 선택한 폴더에 에셋을 바로 저장';
-  folB.disabled = !parsed || !trayAssets.length; folB.onclick = () => extractToFolder();
-  acts.appendChild(folB);
+  if (isApp()) {   // P3: 폴더 추출은 데스크탑 앱 전용(웹은 zip/개별 다운로드)
+    const folB = Object.assign(document.createElement('button'), { textContent: '폴더로 추출' });
+    folB.title = 'zip으로 묶지 않고 선택한 폴더에 에셋을 바로 저장';
+    folB.disabled = !parsed || !trayAssets.length; folB.onclick = () => extractToFolder();
+    acts.appendChild(folB);
+  }
   const openB = Object.assign(document.createElement('button'), { textContent: '파일 추가' }); openB.onclick = () => pickFiles();
   acts.appendChild(openB);
   // 봇카드만 포맷 변환(관리실 포팅) — risum(모듈)·risup(프롬프트) 제외.
@@ -459,14 +465,16 @@ function trayCell(a: any): HTMLElement {
   cb.onchange = () => { if (cb.checked) selected.add(a); else selected.delete(a); updateSelBar(); };
   t.appendChild(cb);
   t.onclick = () => openLightbox(a);
-  // 네이티브 드래그 아웃: 썸네일을 잡아 탐색기·디스코드에 바로 놓기(메인이 임시파일+startDrag)
-  t.draggable = true;
-  t.addEventListener('dragstart', (e) => {
-    e.preventDefault(); hideThumbPop();
-    const ex = (window as any).extractor;
-    const by = bytesOf(a);
-    if (ex && ex.dragOut && by) ex.dragOut(assetFilename(a), by);
-  });
+  // 네이티브 드래그 아웃: 썸네일을 잡아 탐색기·디스코드에 바로 놓기(메인이 임시파일+startDrag) — 데스크탑 앱 전용
+  if (isApp()) {
+    t.draggable = true;
+    t.addEventListener('dragstart', (e) => {
+      e.preventDefault(); hideThumbPop();
+      const ex = (window as any).extractor;
+      const by = bytesOf(a);
+      if (ex && ex.dragOut && by) ex.dragOut(assetFilename(a), by);
+    });
+  }
   return t;
 }
 

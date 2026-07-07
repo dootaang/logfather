@@ -1,38 +1,97 @@
 {
-  "hosting": {
-    "public": "web",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**",
-      "web/src/**"
-    ],
-    "headers": [
-      {
-        "comment": "HTML과 고정이름 진입 번들(main.js·library.js)은 내용이 빌드마다 바뀌므로 절대 캐시 금지 → 항상 최신 청크 해시를 참조(공유 청크 404 방지).",
-        "source": "**/*.html",
-        "headers": [{ "key": "Cache-Control", "value": "no-cache, max-age=0, must-revalidate" }]
-      },
-      {
-        "source": "/dist/main.js",
-        "headers": [{ "key": "Cache-Control", "value": "no-cache, max-age=0, must-revalidate" }]
-      },
-      {
-        "source": "/dist/library.js",
-        "headers": [{ "key": "Cache-Control", "value": "no-cache, max-age=0, must-revalidate" }]
-      },
-      {
-        "comment": "style.css도 고정이름인데 빌드마다 내용이 바뀜 → 캐시 금지(안 그러면 CSS 수정이 최대 1시간 캐시에 묻혀 JS 수정과 어긋남). 세 페이지가 ./src/style.css를 공유.",
-        "source": "/src/style.css",
-        "headers": [{ "key": "Cache-Control", "value": "no-cache, max-age=0, must-revalidate" }]
-      },
-      {
-        "comment": "해시 박힌 쪼갠 청크(chunk-/share-/sync-… = 이름에 '-' 포함)는 내용불변 → 영구 캐시.",
-        "source": "/dist/*-*.js",
-        "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
-      }
-    ]
-  },
+  "hosting": [
+    {
+      "public": "web",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**",
+        "web/src/**"
+      ],
+      "headers": [
+        {
+          "comment": "HTML과 고정이름 진입 번들(main.js·library.js)은 내용이 빌드마다 바뀌므로 절대 캐시 금지 → 항상 최신 청크 해시를 참조(공유 청크 404 방지).",
+          "source": "**/*.html",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, max-age=0, must-revalidate"
+            }
+          ]
+        },
+        {
+          "source": "/dist/main.js",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, max-age=0, must-revalidate"
+            }
+          ]
+        },
+        {
+          "source": "/dist/library.js",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, max-age=0, must-revalidate"
+            }
+          ]
+        },
+        {
+          "comment": "style.css도 고정이름인데 빌드마다 내용이 바뀜 → 캐시 금지(안 그러면 CSS 수정이 최대 1시간 캐시에 묻혀 JS 수정과 어긋남). 세 페이지가 ./src/style.css를 공유.",
+          "source": "/src/style.css",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, max-age=0, must-revalidate"
+            }
+          ]
+        },
+        {
+          "comment": "해시 박힌 쪼갠 청크(chunk-/share-/sync-… = 이름에 '-' 포함)는 내용불변 → 영구 캐시.",
+          "source": "/dist/*-*.js",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "public, max-age=31536000, immutable"
+            }
+          ]
+        }
+      ],
+      "target": "app"
+    },
+    {
+      "target": "extractor",
+      "public": "에셋추출기/web",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**",
+        "src/**"
+      ],
+      "headers": [
+        {
+          "comment": "고정이름 진입 파일(html·번들·css)은 빌드마다 내용이 바뀜 → 캐시 금지.",
+          "source": "**/*.@(html|css)",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, max-age=0, must-revalidate"
+            }
+          ]
+        },
+        {
+          "source": "/dist/main.js",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, max-age=0, must-revalidate"
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "firestore": {
     "rules": "firestore.rules"
   },

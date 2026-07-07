@@ -34,7 +34,7 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 'Segoe UI', 'Malgun Gothic', system-ui, sans-serif; }
-#app { height: 100vh; display: flex; flex-direction: column; }
+#app { height: 100vh; height: 100dvh; display: flex; flex-direction: column; }   /* dvh = 모바일 사파리 주소창 대응 */
 
 button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit; }
 button:hover { border-color: var(--accent-soft); }
@@ -104,7 +104,7 @@ body.dragging .dropzone { border-color: var(--accent-soft); }
 .thumb span.cap { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dim); }
 .tray-note { grid-column: 1 / -1; color: var(--dim); text-align: center; padding: 32px 0; }
 /* 하단 바: 가운데 페이지 네비 + 오른쪽 크기 슬라이더 */
-.tray-foot { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.tray-foot { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; flex-wrap: wrap; }
 .tray-foot .sp { flex: 1 1 0; min-width: 0; }
 .tray-nav { display: flex; align-items: center; justify-content: center; gap: 12px; }
 .tray-nav .tray-pos { color: var(--dim); font-size: 13px; }
@@ -136,3 +136,20 @@ body.dragging .dropzone { border-color: var(--accent-soft); }
 /* ── 토스트 ── */
 .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 70; background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); border-radius: 10px; padding: 9px 16px; font-size: 13px; box-shadow: 0 6px 20px rgba(74, 44, 26, .35); opacity: 0; transition: opacity .18s; pointer-events: none; }
 .toast.show { opacity: 1; }
+
+/* ── P3: 웹(모바일·터치) 대응 ── */
+@media (hover: none) {
+  .thumb-check { opacity: .85; }                 /* 호버가 없으니 체크박스 상시 노출 */
+  .thumb-pop { display: none !important; }       /* 호버 확대는 터치에서 무의미(크게보기가 주 동선) */
+}
+@media (max-width: 560px) {
+  .topbar { padding: 8px 10px; gap: 8px; }
+  .main { padding: 8px 10px; gap: 8px; }
+  .dropzone { padding: 36px 20px; }
+  .infobar .name { font-size: 15px; }
+  .tray { padding: 8px; }
+  .tray-foot .sp:first-child { display: none; }  /* 좁으면 스페이서 제거(네비·슬라이더 줄바꿈 허용) */
+  .tray-size input[type="range"] { width: 96px; }
+  .light-inner { padding: 10px; }
+  .light-nav { padding: 12px 10px; }
+}
