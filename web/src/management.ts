@@ -10,6 +10,7 @@ import { kvLoad, kvSave, archiveSaveSource, archiveList, archiveGetFile, archive
 import { extractSourceInfo } from '../../core/card/sourceRegex.js';
 import { buildRegex, isCatastrophic, sanitizeRegexOut, escapeRegexLiteral } from '../../core/convert/cardRegex.js';   // 내 숨김 규칙(수동) 검증·이스케이프·살균
 import { saveCardCss, deleteCardCss, hasCardCss } from './cardCss.js';   // ★3단계 "리스 스타일": 카드 CSS 이 기기 보관(동기화 KV엔 모드 플래그만)
+import { authAvailable, watchAuth } from './auth.js';   // ★UX 1차: 동기화 상태 가시화(로그인=규칙 자동 동기화)
 import { parseCardAssets, cardAssetBytes } from '../../core/card/cardAssets.js';
 import { encodeJson, encodeCharx, encodePng, pickPngBase } from '../../core/card/cardEncode.js';   // C: 봇카드 포맷 변환(charx↔png↔json)
 import { assetDataUrl } from '../../core/card/assets.js';
@@ -194,7 +195,7 @@ function srcCard(e: any): HTMLElement {
   c.appendChild(cover);
   c.appendChild(Object.assign(document.createElement('div'), { className: 'home-card-name', textContent: e.name || '소스' }));
   const meta = document.createElement('div'); meta.className = 'home-card-meta';
-  meta.innerHTML = `<span class="src-badge">${TYPE_LABEL[typeOf(e.format)] || '소스'}</span> 에셋 ${e.assetCount || 0} · 규칙 ${ruleCountFor(e.id)}${cssCountFor(e.id) ? ` · CSS숨김 ${cssCountFor(e.id)}` : ''}`;
+  meta.innerHTML = `<span class="src-badge">${TYPE_LABEL[typeOf(e.format)] || '소스'}</span> 에셋 ${e.assetCount || 0} · 규칙 ${ruleCountFor(e.id)}${cssCountFor(e.id) ? ` · CSS숨김 ${cssCountFor(e.id)}` : ''}${hasCardCss(e.id) ? ' · 카드CSS' : ''}`;
   c.appendChild(meta);
   // 개별 활성 토글(규칙/CSS숨김 있는 소스만, 우상단). 카드 클릭=상세라 stopPropagation.
   if (ruleCountFor(e.id) > 0 || cssCountFor(e.id) > 0) {
@@ -318,6 +319,21 @@ async function openDetail(entry: any) {
   delB.onclick = async () => { try { await archiveDelete(entry.id); rules.sources = rules.sources.filter((s) => s.id !== entry.id); persistRules(); deleteCardCss(entry.id); } catch (_) {} ov.remove(); setStatus(`“${entry.name}” 보관 삭제`); refreshGrid(); };
 }
 
+// ★UX 1차: 동기화 상태 뱃지 — "규칙이 어디까지 가 있나"를 보여줘 '보내기 버튼' 찾는 혼란 제거.
+//   사실만 표기: 규칙·리스 스타일 모드=계정 동기화(KV) / 카드 CSS 원본·보관실 파일=이 기기 전용.
+function buildSyncBadge(wrap: HTMLElement) {
+  const el = document.createElement('div'); el.className = 'mgmt-sync';
+  const dot = document.createElement('span'); dot.className = 'dot';
+  const txt = document.createElement('span');
+  el.append(dot, txt); wrap.appendChild(el);
+  const paint = (u: any) => {
+    if (u) { el.classList.add('on'); txt.textContent = '동기화 켜짐 — 정리 규칙·내 숨김 규칙·리스 스타일 설정이 로그인된 기기들의 리더에 자동 적용돼요. 카드 CSS 원본과 보관실 파일은 이 기기에만 저장.'; }
+    else { el.classList.remove('on'); txt.textContent = '이 기기에만 저장 중 — 서재에서 로그인하면 정리 규칙이 기기 간 자동 동기화돼요(따로 보낼 필요 없음).'; }
+  };
+  paint(null);
+  try { if (authAvailable()) watchAuth((u) => paint(u)); } catch (_) { /* 미구성(오프라인 빌드 등) = 로컬 문구 유지 */ }
+}
+
 // 정리 토글(공용): 리더 적용 on/off.
 function rulesToggle(labelText: string): HTMLElement {
   const head = document.createElement('div'); head.className = 'mgmt-listhead';
@@ -343,6 +359,7 @@ function archiveToolbar(): HTMLElement {
 }
 function buildArchiveRoom(wrap: HTMLElement) {
   wrap.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '봇카드·모듈·프롬프트(.charx · .png · .json · .risum · .risup)를 올리면 ①원본 그대로 영구 보관(안 사라짐) ②화면 정리 정규식을 뽑아 리더에 적용(정리/원본 토글) ③안의 에셋을 꺼내 미리보기·내려받기. 큰 모듈도 지연 추출이라 안 멈춰요. 보관은 이 기기에만(동기화 안 함), 정리 규칙만 동기화돼 웹 리더에도 적용.' }));
+  buildSyncBadge(wrap);
   wrap.appendChild(makeDrop('소스 보관 (드롭 또는 클릭)', onDrop));
   statusEl = Object.assign(document.createElement('div'), { className: 'adv-desc mgmt-status' }); wrap.appendChild(statusEl);
   wrap.appendChild(archiveToolbar());
@@ -383,7 +400,7 @@ function renderRulesList() {
     const row = document.createElement('div'); row.className = 'inbox-item';
     const top = document.createElement('div'); top.className = 'inbox-item-top';
     top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-name', textContent: String(s.name || '소스') }));
-    top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-meta', textContent: `규칙 ${(s.rules && s.rules.length) || 0}개${s.cssHide && s.cssHide.length ? ` · CSS숨김 ${s.cssHide.length}개` : ''}` }));
+    top.appendChild(Object.assign(document.createElement('span'), { className: 'inbox-item-meta', textContent: `규칙 ${(s.rules && s.rules.length) || 0}개${s.cssHide && s.cssHide.length ? ` · CSS숨김 ${s.cssHide.length}개` : ''}${hasCardCss(s.id) ? ' · 카드CSS(이 기기)' : ''}` }));
     row.appendChild(top);
     const acts = document.createElement('div'); acts.className = 'inbox-item-acts';
     const tg = Object.assign(document.createElement('button'), { textContent: isSrcEnabled(s.id) ? '정리 켜짐' : '정리 꺼짐' }) as HTMLButtonElement;   // B: 개별 활성
@@ -399,6 +416,7 @@ function renderRulesList() {
 }
 function buildRulesOnly(wrap: HTMLElement) {
   wrap.appendChild(Object.assign(document.createElement('div'), { className: 'adv-desc', textContent: '프롬프트·봇카드·모듈(.charx · .png · .json · .risum · .risup)을 올리면 그 안의 “화면 정리 정규식”을 뽑아 저장해요. 리더가 군더더기(상태창·생각의 사슬·AI 슬롭 등)를 비파괴로 숨깁니다(정리/원본 토글). 여러 기기에 동기화돼요.' }));
+  buildSyncBadge(wrap);
   wrap.appendChild(makeDrop('정리 규칙 추출 (드롭 또는 클릭)', onDropWeb));
   statusEl = Object.assign(document.createElement('div'), { className: 'adv-desc mgmt-status' }); wrap.appendChild(statusEl);
   wrap.appendChild(rulesToggle('정리 규칙'));

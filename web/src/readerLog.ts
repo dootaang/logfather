@@ -9,7 +9,7 @@ import { mountReaderBody, rdCfg, isWebnovel, isPapa, popAutoClose, mk } from './
 import { icon } from './icons.js';
 import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
-import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad, resolveAssetRefs, resolveAssetShareUrls } from './store.js';
+import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad, kvSave, resolveAssetRefs, resolveAssetShareUrls } from './store.js';
 import { isLocalFirst, getSyncMode } from './desktopSync.js';
 import { bakeLogs, externalCount, bakeAvailable } from './bake.js';   // 파파 하이브리드 이미지 굳히기(데스크탑 native / 웹 weserv 폴백)
 import { stripPapaCruft, papaCruftChanges } from '../../core/cleanup/papaCruft.js';   // 파파 보편 군더더기(CoT/번역분석 접기) 비파괴 제거
@@ -17,7 +17,7 @@ import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, ensur
 import { cleanUnits } from './cleanup.js';
 import { defaultSettings } from '../../core/preset/bundle.js';
 import { convertText } from '../../core/convert/convertText.js';
-import { expandCardRegex, sanitizeRegexOut } from '../../core/convert/cardRegex.js';   // 관리실 정리 규칙(표시 정규식) 적용 + 외부 규칙 out 살균
+import { expandCardRegex, sanitizeRegexOut, escapeRegexLiteral } from '../../core/convert/cardRegex.js';   // 관리실 정리 규칙(표시 정규식) 적용 + 외부 규칙 out 살균 + 드래그→숨기기 이스케이프
 import { processImageTags, stripUnresolvedAssetImages, countUnresolvedAssetRefs } from '../../core/convert/processImageTags.js';   // 가져온 에셋 맵 재적용 + 미해결 에셋명 <img> 숨김(엑박 방지) + 못 담긴 에셋 수(공유 경고)
 import { resolveAssetCBS } from '../../core/convert/prepareBody.js';
 import { resolveAssetMarkers } from '../../core/convert/risuMarkers.js';
@@ -102,6 +102,63 @@ function removeHiddenClassEls(text: string, classes: string[]): string {
     return root.innerHTML;
   } catch (_) { return text; }
 }
+// ── 리더 드래그→숨기기(관리실 UX 1차) — 선택한 문자열을 "내 숨김 규칙"으로 즉석 추가 ──────────────
+// 저장 모양 = management.ts addUserRule 간단모드와 동일(user:true 소스 1개) [두 곳 동기 유지].
+//   리더는 KV를 렌더마다 읽으므로(관리실처럼 상주 상태 없음) 직접 kvLoad→kvSave가 안전.
+function addUserHideRule(text: string): 'added' | 'dup' {
+  const pattern = escapeRegexLiteral(text);
+  const r = kvLoad(CLEANUP_KEY);
+  const rr = (r && typeof r === 'object') ? { enabled: r.enabled !== false, sources: Array.isArray(r.sources) ? r.sources : [] } : { enabled: true, sources: [] };
+  if (rr.sources.some((s: any) => s && s.user === true && s.rules && s.rules[0] && s.rules[0].in === pattern && !s.rules[0].out)) return 'dup';
+  rr.sources.push({ id: 'user-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), user: true, mode: 'plain', name: text, rules: [{ in: pattern, out: '', type: 'editdisplay', flag: '' }], addedAt: Date.now(), enabled: true });
+  kvSave(CLEANUP_KEY, rr);
+  return 'added';
+}
+// 이 화의 "원시" 텍스트에 선택 문자열이 그대로 있는지 — 리더에 보이는 건 변환 후 텍스트라 다를 수 있음(그럼 규칙이 무의미 → 안내만).
+function hideRuleMatches(rec: any, text: string): boolean {
+  try { const re = new RegExp(escapeRegexLiteral(text)); const s = logTextSlots(clonej(rec)); return s.texts.some((t) => re.test(t)); } catch (_) { return false; }
+}
+// 본문(scrollEl) 안 텍스트 선택 시 "이 문자열 숨기기" 팝오버. 비파괴(원본·복사물 불변), 규칙은 관리실에서 관리·동기화.
+//   onAdded = 추가 성공 시(호출부가 정리 토글 켜고 재렌더). notify = 토스트.
+function attachHideSelection(scrollEl: HTMLElement, rec: any, onAdded: () => void, notify: (m: string) => void) {
+  let pop: HTMLElement | null = null;
+  const dismiss = () => { if (pop) { pop.remove(); pop = null; } };
+  const show = () => {
+    dismiss();
+    let sel: Selection | null = null;
+    try { sel = window.getSelection(); } catch (_) { return; }
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const text = String(sel.toString() || '').trim();
+    if (text.length < 2 || text.length > 300 || text.indexOf('\n') >= 0) return;   // 한 줄 문자열만(여러 줄 = 원문 개행과 어긋나기 쉬움)
+    const range = sel.getRangeAt(0);
+    if (!scrollEl.contains(range.commonAncestorContainer)) return;   // 리더 본문 밖(상단바 등) 선택은 무시
+    const rect = range.getBoundingClientRect();
+    if (!rect || (!rect.width && !rect.height)) return;
+    pop = document.createElement('div'); pop.className = 'reader-hidepop';
+    const b = document.createElement('button');
+    b.innerHTML = icon('broom') + ' 이 문자열 숨기기';
+    b.title = '선택한 문자열을 리더 화면에서 숨겨요(비파괴 — 원본 로그·복사물 불변). 관리실 "내 숨김 규칙"에 저장되고 기기 간 동기화돼요.';
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const t = text; dismiss();
+      if (!hideRuleMatches(rec, t)) { notify('원문에서 그대로 찾지 못했어요(표시용으로 변환된 텍스트) — 관리실 "내 숨김 규칙"에서 직접 추가해 주세요.'); return; }
+      const res = addUserHideRule(t);
+      notify(res === 'dup' ? '이미 등록된 숨김 규칙이에요(관리실에서 관리).' : '숨김 규칙 추가 — 리더 전체에 적용돼요. 관리실에서 관리·해제할 수 있어요.');
+      if (res === 'added') onAdded();
+    };
+    pop.appendChild(b);
+    document.body.appendChild(pop);   // body 부착(★.section 등 backdrop-filter 컨테이너에 갇히지 않게 — 07-02 Pro1 패널 교훈)
+    const pw = pop.offsetWidth || 180;
+    pop.style.left = Math.max(8, Math.min(window.innerWidth - pw - 8, rect.left + rect.width / 2 - pw / 2)) + 'px';
+    pop.style.top = Math.min(window.innerHeight - 48, rect.bottom + 8) + 'px';
+  };
+  const onUp = () => setTimeout(show, 30);   // 선택 확정 뒤 읽기(mouseup 직후엔 selection이 아직 이전 값일 수 있음)
+  scrollEl.addEventListener('mouseup', onUp);
+  scrollEl.addEventListener('touchend', onUp);
+  scrollEl.addEventListener('scroll', dismiss, { passive: true });
+  window.addEventListener('hashchange', dismiss, { once: true });   // 화 이동 시 잔존 방지(리더는 렌더마다 새로 붙임)
+}
+
 // ★per-log 정리 규칙 — 가져올 때 챗에 동봉된 rec.cleanupRegex(외부 유입). ★out 살균 + 모양 정규화(표시타입·ReDoS 필터는 expandCardRegex가 보장). 관리실 글로벌과 합성·멱등.
 function perLogCleanup(rec: any): any[] {
   const arr = rec && rec.cleanupRegex;
@@ -596,10 +653,12 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     // 몰입 탭 토글·초기 상태·스크롤 리셋은 공용 mountReaderBody가 처리(일반·공유 리더 동일). 더보기 메뉴 닫힘도 거기서.
     // displayHtml = 원문/번역 토글(origView) + 정리/원본 토글(cleanView) 비파괴 합성(위에서 계산). ★저장은 안 바뀜.
     if (!papa) displayHtml = stripUnresolvedAssetImages(displayHtml);   // ★매핑 안 된 에셋명 <img>(AI가 지어낸 감정 등)는 표시에서 숨김 = 엑박 아이콘 방지. 파파는 남의 디자인 그대로(진짜 URL/data만) → 미적용
-    mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route, papa);
+    const mounted = mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route, papa);
     // ★3단계 "리스 스타일": 카드 CSS를 화 컨테이너(.reader-card) 스코프로 주입 — 리스처럼 툴팁은 가려지고 상태창은 꾸며짐.
     //   reader는 렌더마다 새로 만들어져 스타일 수명은 자동. 원본 토글이면 injectCss='' = 주입 없음.
     if (injectCss) { const st = document.createElement('style'); st.dataset.lpCardcss = '1'; st.textContent = injectCss; reader.appendChild(st); }
+    // ★드래그→숨기기(UX 1차): 본문 텍스트 선택 → "이 문자열 숨기기" 팝오버(파파·페이지넘김 모드 제외).
+    if (!papa && mounted && mounted.scroll) attachHideSelection(mounted.scroll, r, () => { cleanView[r.id] = true; route(); }, setStatus);
     // ★파파 = 받자마자(처음 볼 때) 자동 이미지 굳히기 시도 — 배경. 세션당 1회(죽은 링크 매번 두드리지 않게). 성공=blob 박제 후 재렌더, 실패=원본 유지("굳히기" 버튼으로 재시도).
     const online = typeof navigator === 'undefined' || navigator.onLine !== false;
     if (papa && online && bakeAvailable() && externalCount(r.html || '') && !r._papaBakeTried) {
