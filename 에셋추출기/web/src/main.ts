@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 dootaang — LogPapa. Licensed under GNU GPL v3 (see LICENSE).
-// 에셋추출기 렌더러 — 로그파파의 에셋추출기(관리실)와 에셋트레이(편집기)를 합친 독립 단일 화면.
+// Copyright (C) 2026 dootaang — 에셋추출기(Asset Extractor). Licensed under GNU GPL v3 (see LICENSE).
+// 에셋추출기 렌더러 — 독립 단일 화면(에스프레소 브랜딩: 카드를 놓으면 에셋을 곱게 내린다).
 //   파서는 본체 core/card를 그대로 번들(새 디코더 0): 전 포맷 지연 인덱스 → 누른 에셋만 복호.
 //   무상태 도구: 보관·규칙·동기화 없음. 열고 → 탐색(검색·탭·호버확대) → 꺼내고(개별/전체 zip·변환) 끝.
 // @ts-nocheck
@@ -11,6 +11,14 @@ import { zipSync } from 'fflate';
 
 const app = document.getElementById('app');
 const ACCEPT = '.charx,.png,.json,.jpeg,.risum,.risup';
+
+// 브랜드 아이콘(build/icon.svg와 동일 도형) — 상단바·드롭존에 인라인 렌더.
+const ICON = (s: number) => `<svg width="${s}" height="${s}" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">`
+  + `<defs><linearGradient id="axg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f9f1e0"/><stop offset="1" stop-color="#e9d3ae"/></linearGradient></defs>`
+  + `<rect width="128" height="128" rx="28" fill="url(#axg)" stroke="#e2cda4" stroke-width="3"/>`
+  + `<rect x="30" y="42" width="58" height="12" rx="6" fill="#4a2c1a"/><rect x="86" y="44" width="26" height="8" rx="4" fill="#4a2c1a"/>`
+  + `<path d="M40,54 L78,54 L71,70 L47,70 Z" fill="#4a2c1a"/>`
+  + `<path d="M59,78 q-6,9 0 14 q6,-5 0,-14" fill="#6b4226"/><path d="M59,97 q-5,8 0 12 q5,-4 0,-12" fill="#b07d3f"/></svg>`;
 
 // ── 세션 상태(저장 없음 — 창 닫으면 끝) ──────────────────────────────────────
 // chips: 이번 세션에 연 파일들. File 핸들만 들고 있다가 선택 시 다시 읽음 → 큰 모듈 여러 개도 메모리엔 현재 1개만.
@@ -44,7 +52,7 @@ function downloadBytes(bytes: Uint8Array, filename: string, mime: string) {
 const bytesOf = (a: any) => { try { return cardAssetBytes(parsed, a); } catch (_) { return null; } };
 const urlOf = (a: any) => { bytesOf(a); return assetDataUrl(a) || ''; };
 
-// 태그 복사: 로그파파 편집기·리더가 그대로 알아듣는 기본 토큰.
+// 태그 복사: 리스AI 계열 도구들이 그대로 알아듣는 기본 이미지 토큰.
 async function copyTag(name: string) {
   const text = `{{img::${name}}}`;
   try { await navigator.clipboard.writeText(text); }
@@ -122,8 +130,8 @@ function renderChips() {
 function buildEmpty(): HTMLElement {
   const wrap = document.createElement('div'); wrap.className = 'empty';
   const dz = document.createElement('div'); dz.className = 'dropzone';
-  dz.innerHTML = '<div class="big">🔥</div><div class="tit">봇카드·모듈을 여기에 드롭</div>'
-    + '<div>.charx · .png · .json · .jpeg · .risum 안의 에셋을 꺼내요<br>클릭해서 파일을 고를 수도 있어요</div>';
+  dz.innerHTML = '<div class="big">' + ICON(64) + '</div><div class="tit">봇카드·모듈을 놓으면 곱게 내려드려요</div>'
+    + '<div>.charx · .png · .json · .jpeg · .risum 안의 에셋을 추출해요<br>클릭해서 파일을 고를 수도 있어요</div>';
   dz.onclick = () => pickFiles();
   wrap.appendChild(dz);
   return wrap;
@@ -148,7 +156,7 @@ async function downloadAll() {
     }
     if (!n) { setStatus('내려받을 에셋이 없어요.'); return; }
     downloadBytes(zipSync(files, { level: 0 }), safeName(parsed.name || currentName()) + '_assets.zip', 'application/zip');
-    setStatus(`${n}개 에셋 zip 내려받기`);
+    setStatus(`에셋 ${n}개 추출 완료 (zip)`);
   } catch (e) { console.warn('[에셋추출기] 전체 내려받기 실패', e); setStatus('전체 내려받기 실패 — 개별 내려받기를 써보세요.'); }
 }
 const currentName = () => { const c = chips.find((x) => x.id === currentId); return (c ? c.name : 'source').replace(/\.[^.]+$/, ''); };
@@ -173,7 +181,7 @@ function renderBody() {
 
   // 동작줄
   const acts = document.createElement('div'); acts.className = 'actions';
-  const allB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '전체 내려받기 (zip)' });
+  const allB = Object.assign(document.createElement('button'), { className: 'primary', textContent: '전부 내리기 (zip)' });
   allB.disabled = !parsed || !trayAssets.length; allB.onclick = () => downloadAll();
   acts.appendChild(allB);
   const openB = Object.assign(document.createElement('button'), { textContent: '파일 추가' }); openB.onclick = () => pickFiles();
@@ -339,13 +347,13 @@ function openLightbox(a: any) {
 function render() {
   app.innerHTML = '';
   const bar = document.createElement('header'); bar.className = 'topbar';
-  bar.appendChild(Object.assign(document.createElement('span'), { className: 'logo', innerHTML: '🔥 <em>LogPapa</em> 에셋추출기' }));
+  bar.appendChild(Object.assign(document.createElement('span'), { className: 'logo', innerHTML: ICON(20) + ' 에셋추출기' }));
   chipsEl = document.createElement('div'); chipsEl.className = 'chips'; bar.appendChild(chipsEl);
   const openB = Object.assign(document.createElement('button'), { textContent: '파일 열기' }); openB.onclick = () => pickFiles();
   bar.appendChild(openB);
   app.appendChild(bar);
   bodyEl = document.createElement('div'); bodyEl.style.cssText = 'flex:1 1 auto;min-height:0;display:flex;flex-direction:column;'; app.appendChild(bodyEl);
-  app.appendChild(Object.assign(document.createElement('div'), { className: 'foot', textContent: '파일은 이 컴퓨터 밖으로 나가지 않아요 · GPL-3.0 · LogPapa' }));
+  app.appendChild(Object.assign(document.createElement('div'), { className: 'foot', textContent: '파일은 이 컴퓨터 밖으로 나가지 않아요 · GPL-3.0' }));
   renderChips(); renderBody();
 }
 

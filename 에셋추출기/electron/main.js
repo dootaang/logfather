@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 dootaang — LogPapa. Licensed under GNU GPL v3 (see LICENSE).
+// Copyright (C) 2026 dootaang — 에셋추출기(Asset Extractor). Licensed under GNU GPL v3 (see LICENSE).
 // 에셋추출기 — 독립 미니 일렉트론 셸.
 //   창 하나 + 보안 기본값(contextIsolation ON, nodeIntegration OFF, sandbox ON).
 //   "연결 프로그램으로 열기"/두 번째 실행의 파일 인자를 렌더러로 전달(open-file IPC).
@@ -30,7 +30,7 @@ async function sendFiles(paths) {
 function createWindow() {
   win = new BrowserWindow({
     width: 1120, height: 780, minWidth: 720, minHeight: 480,
-    backgroundColor: '#14100c',   // index.html 테마색과 동일 → 로드 전 흰 깜빡임 방지
+    backgroundColor: '#f9f1e0',   // index.html 테마색(크림)과 동일 → 로드 전 깜빡임 방지
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
