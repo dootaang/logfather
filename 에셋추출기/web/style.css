@@ -64,12 +64,17 @@ body.dragging .dropzone { border-color: var(--accent-soft); }
 .tray-tabs { display: flex; gap: 4px; }
 .tray-tab { padding: 5px 10px; border-radius: 8px; font-size: 13px; }
 .tray-tab.active { border-color: var(--accent); background: var(--bg); font-weight: 600; }
-.tray-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--cell, 104px), 1fr)); gap: 8px; align-content: start; padding: 2px; }
-.thumb { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); cursor: pointer; overflow: hidden; }
+/* ★grid-auto-rows: max-content 필수 — 그리드 높이가 화면에 묶여 있어(스크롤 컨테이너) auto 행은
+   공간 부족 시 최소 기여치까지 붕괴하는데, overflow:hidden 셀은 최소가 0 취급이라 행이 28px까지
+   쪼그라들며 이미지를 잘랐다(크게 키울수록 잘리던 버그). max-content = 행은 항상 내용만큼. */
+.tray-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--cell, 104px), 1fr)); grid-auto-rows: max-content; gap: 8px; align-content: start; padding: 2px; }
+.thumb { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); cursor: pointer; }
 .thumb:hover { border-color: var(--accent-soft); }
-/* 썸네일 = 세로형 3:4(봇 에셋은 대부분 세로 인물) + 칸 폭에 따라 자동 스케일(슬라이더 = --cell) */
-.thumb img { width: 100%; aspect-ratio: 3 / 4; height: auto; object-fit: contain; border-radius: 6px; background: rgba(74, 44, 26, .07); }
-.thumb .file-ext { width: 100%; aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: rgba(74, 44, 26, .07); color: var(--dim); font-weight: 700; font-size: 13px; }
+/* 썸네일 = 세로형 3:4(봇 에셋은 대부분 세로 인물), 슬라이더 = --cell.
+   ★높이는 반드시 확정 px(calc)로: width:100%+aspect-ratio로 하면 그리드 행 높이 계산에 이미지가
+   반영되지 않아 셀이 낮게 잡히고 overflow가 이미지를 잘랐다(윗부분만 보이던 버그). */
+.thumb img { width: 100%; height: calc(var(--cell, 104px) * 1.33); object-fit: contain; border-radius: 6px; background: rgba(74, 44, 26, .07); }
+.thumb .file-ext { width: 100%; height: calc(var(--cell, 104px) * 1.33); display: flex; align-items: center; justify-content: center; border-radius: 6px; background: rgba(74, 44, 26, .07); color: var(--dim); font-weight: 700; font-size: 13px; }
 .thumb span.cap { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dim); }
 .tray-note { grid-column: 1 / -1; color: var(--dim); text-align: center; padding: 32px 0; }
 /* 하단 바: 가운데 페이지 네비 + 오른쪽 크기 슬라이더 */

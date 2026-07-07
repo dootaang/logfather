@@ -37,12 +37,20 @@ for (const [f, name, n] of [['CharX File.charx', '타루', 76], ['Cheongwon Univ
   ok(p.assets.length === n && p.assets.every((a) => a.found), `${f}: ${n}/${n} 추출`);
 }
 
-// 3) 타로JPEG — 평문 JSON 추출(카드+에셋 목록은 복구, 에셋 바이트는 rpack 미해결)
+// 3) 타로JPEG — JPEG 폴리글랏(그림 뒤 charx zip). 구버전은 JSON만 긁고 "에셋 바이트 미해결"이었으나
+//    embeddedZipStart 도입 후 charx로 온전히 파싱 = 에셋 바이트까지 복호 가능(업그레이드).
 if (exists('타로JPEG.jpeg')) {
   const p = parseCard(read('타로JPEG.jpeg'), '타로JPEG.jpeg');
-  ok(p.format === 'jpeg' && p.spec === 'chara_card_v3' && p.name === '타루', `타로JPEG: jpeg / 카드 JSON 복구 (name ${p.name})`);
-  ok(p.assets.length === 76, `타로JPEG: 에셋 목록 76개 복구 (바이트는 rpack 미해결)`);
+  ok(p.format === 'charx' && p.spec === 'chara_card_v3' && p.name === '타루', `타로JPEG: 폴리글랏 → charx (name ${p.name})`);
+  ok(p.assets.length === 76 && p.assets.every((a) => a.found), `타로JPEG: 76/76 에셋 바이트 해결 (구버전 미해결이던 것)`);
 } else console.error('  - SKIP 타로JPEG.jpeg 없음');
+
+// 3.5) 또래상담부 — JPEG 폴리글랏(.charx 이름이지만 실체=JPEG 그림+charx zip 부착, 공유용 내보내기)
+if (exists('또래상담부 2.1.charx')) {
+  const p = parseCard(read('또래상담부 2.1.charx'), '또래상담부 2.1.charx', { lazy: true });
+  ok(p.format === 'charx' && p.spec === 'chara_card_v3', `또래상담부: JPEG 폴리글랏 → charx 인식 (${p.format})`);
+  ok(p.assets.length === 1327 && p.assets.every((a) => a.found), `또래상담부: 1327/1327 색인 (found ${p.assets.filter((a) => a.found).length})`);
+} else console.error('  - SKIP 또래상담부 2.1.charx 없음');
 
 // 4) 모듈봇 — .risum(RPack) + .module.charx(zip)
 const MOD = path.join(DIR, '모듈봇');
