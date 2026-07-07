@@ -19,6 +19,7 @@ import { fontsSupported, refreshFonts, getFontList } from './fonts.js';   // 커
 import { icon } from './icons.js';                 // 통일 라인 아이콘(currentColor) — 이모지 대체
 import { confirmModal } from './confirmModal.js';  // 공용 DOM 확인 모달(네이티브 confirm 대체 — Electron 포커스 버그 회피)
 import { mountSettingsMenu } from './settingsMenu.js';  // 앱-레벨 ⚙ 설정(서재 홈 단독 소유): 로그인·테마·스킨·화질·백업·Pro1·고급
+import { createStatsPage } from './statsPage.js';  // 내 기록(#/stats): 파생 레벨(불꽃 칭호)+통계+결산(Wrapped) 아카 카드
 // auth.js / sync.js(무거운 Firebase)는 첫 렌더 뒤 동적 import.
 import { convertText } from '../../core/convert/convertText.js';
 import { defaultSettings } from '../../core/preset/bundle.js';
@@ -342,6 +343,15 @@ function todayShelfSection(base: any[]): HTMLElement {
   };
   card.append(die, txt, sel);
   track.appendChild(card);
+  // 내 기록 진입 카드 — 레벨(불꽃 칭호)·통계·결산(#/stats)
+  const stCard = document.createElement('button'); stCard.className = 'gacha-card st-entry';
+  stCard.title = '내 레벨·읽기 통계·결산 카드';
+  const stIc = mk('span', 'gacha-die'); stIc.innerHTML = icon('chart');
+  const stTx = mk('span', 'gacha-txt');
+  stTx.append(mk('span', 'gacha-title', '내 기록'), mk('span', 'gacha-sub', '레벨 · 통계 · 결산 카드'));
+  stCard.append(stIc, stTx);
+  stCard.onclick = () => { location.hash = '#/stats'; };
+  track.appendChild(stCard);
   sec.appendChild(track);
   return sec;
 }
@@ -1398,10 +1408,12 @@ async function route() {
   //   옛 library.html#/share·#/log·#/read 링크가 전부 reader.html로 살아서 넘어간다. (신규 링크도 reader.html.)
   if (/^#\/(share|log|read)\//.test(h)) { location.replace('reader.html' + h); return; }
   document.body.classList.remove('lib-reading');   // 서재 화면(홈·작품)에선 고정 헤더 표시
+  if (h === '#/stats') { statsPage.render(); return; }   // 내 기록(레벨·통계·결산)
   const m = /^#\/series\/(.+)$/.exec(h);
   if (m) { renderSeries(decodeURIComponent(m[1])); return; }
   renderHome();
 }
+const statsPage = createStatsPage({ app, getAllLogs: () => allLogs, nameOf, setStatus });
 // 백그라운드(데이터 갱신성) 재렌더 전용 스크롤 보존.
 // ★타이밍 무관: 다시 그리기 전 위치를 pendingScrollY에 기억했다가, 새 화면이 다 자리잡은 "렌더 끝"에서
 //   복원한다 — renderHome(동기)·renderSeries(비동기) 각자 자기 끝에서 applyPendingScroll을 부른다.
