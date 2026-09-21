@@ -174,7 +174,7 @@ export function clearReadPos(key: string): void { setReadPos(key, 0, true); }
 try { window.addEventListener('pagehide', () => { if (posFlushT) { clearTimeout(posFlushT); posFlush(); } }); } catch (_) {}
 
 // 웹소설형 좌우 페이지 넘김(전자책식, 반응형+스와이프). posKey = 읽던 페이지 기억 키(없으면 기억 안 함).
-function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: string): { relayout: () => void; stage: HTMLElement; setAnim: (on: boolean) => void; goTo: (n: number) => void; getPage: () => number; getTotal: () => number } {
+function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: string): { relayout: () => void; stage: HTMLElement; doc: HTMLElement; setAnim: (on: boolean) => void; goTo: (n: number) => void; getPage: () => number; getTotal: () => number; pageOf: (el: HTMLElement) => number } {
   const pager = mk('div', 'reader-pager');
   const stage = mk('div', 'reader-pager-stage');
   const doc = mk('div', 'reader-card reader-pager-doc'); doc.innerHTML = sanitizeArchiveHtml(html);
@@ -185,6 +185,7 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
   const ind = mk('div', 'reader-page-ind', ''); ind.setAttribute('role', 'button'); ind.tabIndex = 0; ind.title = '페이지 이동 — 번호(예: 50) 또는 비율(예: 50%) 입력';
   pager.append(prev, next, ind); reader.appendChild(pager);
   let page = 0, total = 1, screenStep = 1;
+  let lastCols = 1, lastColStep = 1;   // 마지막 relayout의 컬럼 수·컬럼 간격(px) — 요소→페이지 환산(목차 점프)용
   let editing = false;   // 페이지 이동 팝오버(슬라이더+번호 입력)가 열린 상태
   let syncPop: (() => void) | null = null;   // 열린 팝오버의 슬라이더·입력을 현재 page/total에 맞춤(relayout·넘김 시)
   let touched = false;   // 사용자가 한 번이라도 넘겼나 — 그 전까진 relayout마다 저장된 비율로 페이지를 다시 잡음(이미지 늦게 로드돼 총 페이지가 바뀌어도 같은 지점)
@@ -212,7 +213,7 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
     const colStep = colW + GAP;
     const totalCols = Math.max(1, Math.round((doc.scrollWidth + GAP) / colStep));
     total = Math.max(1, Math.ceil(totalCols / cols));
-    screenStep = cols * colStep;
+    screenStep = cols * colStep; lastCols = cols; lastColStep = colStep;
     if (!touched && restoreF > 0) page = Math.max(0, Math.min(total - 1, Math.floor(restoreF * total)));   // 저장 비율 → 현재 총 페이지 기준 위치
     else if (page > total - 1) page = total - 1;
     apply();
@@ -221,6 +222,12 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
   const savePos = () => { if (posKey) setReadPos(posKey, page > 0 ? (page + 0.5) / total : 0); };   // 400ms 디바운스 flush(캐시는 즉시)
   const goTo = (n: number) => { const np = Math.max(0, Math.min(total - 1, Math.floor(n))); touched = true; if (np !== page) { page = np; apply(); } savePos(); };
   const go = (d: number) => goTo(page + d);
+  // 본문 요소가 놓인 페이지(0-based): doc 좌단 기준 x 오프셋 → 컬럼 번호 → 페이지. rect 차이라 translateX·애니메이션 중에도 정확.
+  const pageOf = (el: HTMLElement): number => {
+    const x = el.getBoundingClientRect().left - doc.getBoundingClientRect().left;
+    const col = Math.max(0, Math.floor((x + 2) / Math.max(1, lastColStep)));
+    return Math.max(0, Math.min(total - 1, Math.floor(col / Math.max(1, lastCols))));
+  };
   // 인디케이터 클릭 → 페이지 이동 팝오버: 슬라이더(드래그=즉시 이동, 리디식 스크러버) + 번호(1~총페이지)/%(비율) 입력 + 이동 버튼.
   //   Enter=이동, Esc·바깥 클릭·인디케이터 재클릭=닫기. 범위 밖 번호는 양끝으로 자름. 팝오버는 pager에 붙어 stage 탭 판정과 안 섞임.
   const openJump = () => {
@@ -291,7 +298,51 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
   const cleanup = () => { closeJump(); document.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); try { ro && ro.disconnect(); } catch (_) {} window.removeEventListener('hashchange', cleanup); };
   window.addEventListener('hashchange', cleanup);
   requestAnimationFrame(() => { relayout(); setTimeout(relayout, 300); });
-  return { relayout, stage, setAnim: (on: boolean) => doc.classList.toggle('anim', on), goTo, getPage: () => page, getTotal: () => total };
+  return { relayout, stage, doc, setAnim: (on: boolean) => doc.classList.toggle('anim', on), goTo, getPage: () => page, getTotal: () => total, pageOf };
+}
+
+// ── 장 목차(chapter TOC) ──────────────────────────────────────────────────────
+// 웹소설 템플릿의 장 구분을 본문에서 찾는다: ① .lp-wn-chapter(훅 ON) ② 훅 OFF 구조 매칭(가운데 정렬 div 안 단일 span, currentColor 밑줄+굵게)
+//   ③ 사용자가 직접 넣은 h1~h3. 문서 순서로 정렬. 하나도 없으면 목차 버튼 자체를 안 그림.
+function findChapters(root: HTMLElement): { el: HTMLElement; title: string }[] {
+  const out: { el: HTMLElement; title: string }[] = []; const seen = new Set<HTMLElement>();
+  const push = (el: HTMLElement | null) => {
+    if (!el || seen.has(el)) return;
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim(); if (!t) return;
+    seen.add(el); out.push({ el, title: t.length > 60 ? t.slice(0, 59) + '…' : t });
+  };
+  try {
+    root.querySelectorAll('.lp-wn-chapter').forEach((e) => push(e as HTMLElement));
+    root.querySelectorAll('div > span[style*="border-bottom:1px solid currentColor"][style*="font-weight:700"]').forEach((s) => { const d = s.parentElement; if (d && d.children.length === 1 && /text-align:\s*center/.test(d.getAttribute('style') || '')) push(d); });
+    root.querySelectorAll('h1, h2, h3').forEach((e) => push(e as HTMLElement));
+  } catch (_) {}
+  out.sort((a, b) => a.el === b.el ? 0 : ((a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1));
+  return out;
+}
+// 목차 버튼(리더 좌하단) + 팝오버(장 목록, 현재 장 강조, 클릭=점프). 페이지·스크롤 모드 공용 — 위치 환산만 콜백으로 받음.
+//   isPast(el) = 그 장이 현재 위치보다 앞(또는 같음)인가 → 마지막으로 true인 장이 "현재 장". label(el) = 옆에 붙일 보조 표기(페이지 번호 등, 없으면 빈 문자열).
+function attachToc(reader: HTMLElement, root: HTMLElement, jump: (el: HTMLElement) => void, isPast: (el: HTMLElement) => boolean, label: (el: HTMLElement) => string): void {
+  const chapters = findChapters(root); if (!chapters.length) return;
+  const btn = mk('button', 'reader-toc-btn'); btn.innerHTML = icon('bookmark') + ` 목차 ${chapters.length}`; btn.title = '장 목차 — 장으로 바로 이동';
+  btn.onclick = (e: Event) => {
+    e.stopPropagation();
+    const old = reader.querySelector('.reader-toc-pop'); if (old) { old.remove(); return; }
+    const pop = mk('div', 'reader-toc-pop'); pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', '장 목차');
+    pop.appendChild(mk('div', 'rtp-head', `장 목차 · ${chapters.length}`));
+    let cur = -1; chapters.forEach((c, i) => { if (isPast(c.el)) cur = i; });
+    chapters.forEach((c, i) => {
+      const it = mk('button', 'rtp-item' + (i === cur ? ' on' : ''));
+      it.append(mk('span', 'rtp-no', String(i + 1)), mk('span', 'rtp-title', c.title));
+      const lb = label(c.el); if (lb) it.appendChild(mk('span', 'rtp-page', lb));
+      it.onclick = (ev: Event) => { ev.stopPropagation(); pop.remove(); jump(c.el); };
+      pop.appendChild(it);
+    });
+    pop.onclick = (ev: Event) => ev.stopPropagation();
+    pop.addEventListener('keydown', (ev: KeyboardEvent) => { ev.stopPropagation(); if (ev.key === 'Escape') { ev.preventDefault(); pop.remove(); btn.focus(); } });
+    reader.appendChild(pop); popAutoClose(pop, btn);
+    const on = pop.querySelector('.rtp-item.on') as HTMLElement | null; if (on) { try { on.scrollIntoView({ block: 'center' }); } catch (_) {} on.focus(); }
+  };
+  reader.appendChild(btn);
 }
 
 // 리더 설정 팝오버. rerender = 읽기방식(스크롤↔페이지) 전환 시 호출자 라우터로 다시 그림(library/reader별).
@@ -361,6 +412,8 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
     const pager = buildWnPager(reader, html, rcfg, posKey);
     app().appendChild(reader);
     setBtn.onclick = () => toggleReaderSettings(reader, null, rcfg, wn, pager, setBtn, rerender);
+    // 장 목차: 요소→페이지 환산(pageOf)으로 점프·현재 장 판정·"p.12" 표기. relayout 뒤 값이라 열 때마다 계산(캐시 X).
+    attachToc(reader, pager.doc, (el) => pager.goTo(pager.pageOf(el)), (el) => pager.pageOf(el) <= pager.getPage(), (el) => 'p.' + (pager.pageOf(el) + 1));
     return { paged: true };
   }
   const scroll = mk('div', 'reader-scroll'); const col = mk('div', 'reader-col'); col.style.maxWidth = (wn ? rcfg.wnWidth : rcfg.width) + 'px';
@@ -383,6 +436,11 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
   };
   applyImmersive();
   scroll.scrollTop = 0;
+  // 장 목차(세로 스크롤): 요소의 스크롤러 내 y로 점프·현재 장 판정. 파파는 Shadow DOM 격리라 장 마커를 못 보므로 미적용(=버튼 없음). 일반 로그(챗버블 등)도 제외.
+  if (wn && !papa) {   // 웹소설형만(일반 로그의 상태창 h2 등이 목차로 잡히지 않게)
+    const yOf = (el: HTMLElement) => el.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop;
+    attachToc(reader, card, (el) => { scroll.scrollTop = Math.max(0, yOf(el) - 12); }, (el) => yOf(el) <= scroll.scrollTop + 8, () => '');
+  }
   if (posKey) {
     // 복원: 첫 프레임 + 300ms(이미지 늦은 로드로 높이 변할 때). 그 사이 사용자가 직접 스크롤했으면(우리가 놓은 값에서 벗어남) 두 번째 복원은 건너뜀.
     let setTo = -1;
