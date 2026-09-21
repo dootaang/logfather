@@ -185,10 +185,11 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
   const ind = mk('div', 'reader-page-ind', ''); ind.setAttribute('role', 'button'); ind.tabIndex = 0; ind.title = '페이지 이동 — 번호(예: 50) 또는 비율(예: 50%) 입력';
   pager.append(prev, next, ind); reader.appendChild(pager);
   let page = 0, total = 1, screenStep = 1;
-  let editing = false;   // 인디케이터가 입력칸으로 바뀐 상태(relayout이 텍스트를 덮지 않게)
+  let editing = false;   // 페이지 이동 팝오버(슬라이더+번호 입력)가 열린 상태
+  let syncPop: (() => void) | null = null;   // 열린 팝오버의 슬라이더·입력을 현재 page/total에 맞춤(relayout·넘김 시)
   let touched = false;   // 사용자가 한 번이라도 넘겼나 — 그 전까진 relayout마다 저장된 비율로 페이지를 다시 잡음(이미지 늦게 로드돼 총 페이지가 바뀌어도 같은 지점)
   const restoreF = posKey ? getReadPos(posKey) : 0;
-  const apply = () => { doc.style.transform = `translateX(${-page * screenStep}px)`; if (!editing) ind.textContent = `${page + 1} / ${total}`; (prev as HTMLButtonElement).disabled = page <= 0; (next as HTMLButtonElement).disabled = page >= total - 1; };
+  const apply = () => { doc.style.transform = `translateX(${-page * screenStep}px)`; ind.textContent = `${page + 1} / ${total}`; if (syncPop) syncPop(); (prev as HTMLButtonElement).disabled = page <= 0; (next as HTMLButtonElement).disabled = page >= total - 1; };
   const relayout = () => {
     // 두 페이지 사이 등마루 간격(px) — 리더 설정 "간격" 슬라이더로 조절(기본 28). 컬럼 폭·넘김 step 계산에도 쓰임.
     const GAP = (rcfg.wnPageGap != null ? rcfg.wnPageGap : 28);
@@ -217,31 +218,47 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
     apply();
   };
   // 페이지 중앙 비율로 저장((page+0.5)/total) — 복원은 floor(f*total)이라 총 페이지가 그대로면 정확히 같은 페이지, 달라지면 같은 지점 근처. 1페이지는 삭제(=처음부터).
-  const savePos = () => { if (posKey) setReadPos(posKey, page > 0 ? (page + 0.5) / total : 0, true); };
+  const savePos = () => { if (posKey) setReadPos(posKey, page > 0 ? (page + 0.5) / total : 0); };   // 400ms 디바운스 flush(캐시는 즉시)
   const goTo = (n: number) => { const np = Math.max(0, Math.min(total - 1, Math.floor(n))); touched = true; if (np !== page) { page = np; apply(); } savePos(); };
   const go = (d: number) => goTo(page + d);
-  // 인디케이터 클릭 → 그 자리가 입력칸: 번호(1~총페이지) 또는 %(비율). Enter=이동, Esc/포커스 이탈=취소. 범위 밖 번호는 양끝으로 자름.
+  // 인디케이터 클릭 → 페이지 이동 팝오버: 슬라이더(드래그=즉시 이동, 리디식 스크러버) + 번호(1~총페이지)/%(비율) 입력 + 이동 버튼.
+  //   Enter=이동, Esc·바깥 클릭·인디케이터 재클릭=닫기. 범위 밖 번호는 양끝으로 자름. 팝오버는 pager에 붙어 stage 탭 판정과 안 섞임.
   const openJump = () => {
-    if (editing) return; editing = true;
-    ind.classList.add('editing'); ind.textContent = '';
+    if (editing) { closeJump(); return; }
+    editing = true; ind.classList.add('editing');
+    const pop = mk('div', 'reader-page-pop'); pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', '페이지 이동');
+    const sRow = mk('div', 'rpp-row');
+    const sMin = mk('span', 'rpp-end', '1'); const sMax = mk('span', 'rpp-end', String(total));
+    const range = document.createElement('input'); range.type = 'range'; range.min = '1'; range.max = String(total); range.step = '1'; range.value = String(page + 1); range.setAttribute('aria-label', '페이지 슬라이더');
+    sRow.append(sMin, range, sMax);
+    const iRow = mk('div', 'rpp-row');
     const inp = document.createElement('input'); inp.className = 'reader-page-jump'; inp.type = 'text'; inp.inputMode = 'numeric'; inp.autocomplete = 'off';
-    inp.placeholder = `1–${total} 또는 %`; inp.setAttribute('aria-label', '이동할 페이지');
-    const close = () => { if (!editing) return; editing = false; ind.classList.remove('editing'); inp.remove(); apply(); };
+    inp.placeholder = `1–${total} 또는 %`; inp.setAttribute('aria-label', '이동할 페이지'); inp.value = String(page + 1);
+    const goB = mk('button', 'rpp-go', '이동') as HTMLButtonElement;
+    iRow.append(inp, goB);
+    pop.append(sRow, iRow); pager.appendChild(pop);
+    let fromRange = false;   // 슬라이더가 움직인 직후엔 입력칸 숫자만 따라가고 슬라이더 값은 건드리지 않음(드래그 중 되감김 방지)
+    syncPop = () => { sMax.textContent = String(total); range.max = String(total); if (!fromRange) range.value = String(page + 1); inp.value = String(page + 1); };
+    range.oninput = () => { fromRange = true; goTo(+range.value - 1); fromRange = false; };
     const commit = () => {
       const s = inp.value.trim(); let np = -1;
       const pm = /^(\d+(?:\.\d+)?)\s*%$/.exec(s);
       if (pm) np = Math.floor(Math.min(100, +pm[1]) / 100 * total);
       else if (/^\d+$/.test(s)) np = Math.max(0, +s - 1);
-      close();
-      if (np >= 0) goTo(np);
+      if (np >= 0) { goTo(np); closeJump(); } else { inp.select(); }
     };
-    inp.onkeydown = (e: KeyboardEvent) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); commit(); } else if (e.key === 'Escape') { e.preventDefault(); close(); } };
-    inp.onblur = () => { setTimeout(close, 0); };
-    inp.onclick = (e: Event) => e.stopPropagation();
-    ind.appendChild(inp); inp.focus();
+    goB.onclick = (e: Event) => { e.stopPropagation(); commit(); };
+    const onKeyPop = (e: KeyboardEvent) => { e.stopPropagation(); if (e.key === 'Escape') { e.preventDefault(); closeJump(); } else if (e.key === 'Enter' && e.target === inp) { e.preventDefault(); commit(); } };
+    pop.addEventListener('keydown', onKeyPop);
+    pop.onclick = (e: Event) => e.stopPropagation();
+    const onDown = (e: Event) => { const t = e.target as HTMLElement; if (!t || pop.contains(t) || ind.contains(t)) return; closeJump(); };
+    setTimeout(() => document.addEventListener('mousedown', onDown, true), 0);
+    closeJump = () => { if (!editing) return; editing = false; syncPop = null; ind.classList.remove('editing'); document.removeEventListener('mousedown', onDown, true); pop.remove(); };
+    if (!isMobileLib()) { inp.focus(); inp.select(); }   // 모바일은 자동 포커스 X(가상 키보드가 슬라이더를 가림)
   };
+  let closeJump = () => {};
   ind.onclick = (e: Event) => { e.stopPropagation(); openJump(); };
-  ind.onkeydown = (e: KeyboardEvent) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); openJump(); } };
+  ind.onkeydown = (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); openJump(); } };
   const toggleBar = () => { const h = !reader.classList.contains('bar-hidden'); reader.classList.toggle('bar-hidden', h); rcfg.immersive = h; saveReaderCfg(rcfg); requestAnimationFrame(relayout); };
   prev.onclick = (e) => { e.stopPropagation(); go(-1); };
   next.onclick = (e) => { e.stopPropagation(); go(1); };
@@ -271,7 +288,7 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
   let ro: any = null; try { ro = new ResizeObserver(() => relayout()); ro.observe(pager); } catch (_) {}
   const onResize = () => relayout();
   window.addEventListener('resize', onResize);
-  const cleanup = () => { document.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); try { ro && ro.disconnect(); } catch (_) {} window.removeEventListener('hashchange', cleanup); };
+  const cleanup = () => { closeJump(); document.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); try { ro && ro.disconnect(); } catch (_) {} window.removeEventListener('hashchange', cleanup); };
   window.addEventListener('hashchange', cleanup);
   requestAnimationFrame(() => { relayout(); setTimeout(relayout, 300); });
   return { relayout, stage, setAnim: (on: boolean) => doc.classList.toggle('anim', on), goTo, getPage: () => page, getTotal: () => total };
