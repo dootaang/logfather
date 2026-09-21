@@ -27,7 +27,7 @@ import { hasCardCss, loadCardCss, scopedCardCss } from './cardCss.js';   // ★3
 
 const loadShare = () => import('./share.js');
 const epOrder = (x: any) => (x && x.order != null ? x.order : 1e9);
-function sortEps(eps: any[]): any[] { return eps.slice().sort((a, b) => (epOrder(a) - epOrder(b)) || (a.date || '').localeCompare(b.date || '') || (a.id || '').localeCompare(b.id || '')); }
+export function sortEps(eps: any[]): any[] { return eps.slice().sort((a, b) => (epOrder(a) - epOrder(b)) || (a.date || '').localeCompare(b.date || '') || (a.id || '').localeCompare(b.id || '')); }
 const clonej = (x: any) => (x == null ? x : JSON.parse(JSON.stringify(x)));
 // 비파괴 번역: 원문 스냅샷(r.orig, 구조화 텍스트) ↔ 표시 레코드 사이 헬퍼.
 const ORIG_FIELDS = ['input', 'chat', 'diary', 'webnovel', 'cardCfg', 'userCardCss'];

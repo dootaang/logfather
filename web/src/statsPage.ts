@@ -11,7 +11,7 @@
 import { icon } from './icons.js';
 import { loadRead, loadMarks } from './store.js';
 import { readHistory, todayKey } from './readStats.js';
-import { logTextSlots } from './readerLog.js';
+import { logTextSlots, sortEps } from './readerLog.js';
 import { richCopy } from './clipboard.js';
 
 // ── 파생 레벨: 포인트 = 작품×30 + 보관 화×10 + 처음 읽은 화×5, 레벨 = 완만한 제곱근 커브 ──
@@ -71,12 +71,24 @@ function buildWrapCard(o: any): string {
       `<span style="color:#ece0d2; font-weight:800; margin-left:10px;">${esc(o.topWork)}</span>` +
       (o.topWorkCount ? `<span style="color:#b8a078; margin-left:8px;">${fmtN(o.topWorkCount)}회</span>` : '') + `</div>`
     : '';
+  // 밑줄 친 문장(B안 — 리더 형광펜 느낌 그대로): 기간 내 최근 3줄, 문장은 80자 컷, 출처 = 작품명 N화. 없으면 구역 자체 생략. 아카 안전 = 인라인만(background·box-shadow·border-radius).
+  const HLC: Record<string, [string, string]> = { y: ['rgba(255,214,0,.30)', 'rgba(255,214,0,.7)'], g: ['rgba(72,199,116,.28)', 'rgba(72,199,116,.75)'], p: ['rgba(255,120,170,.28)', 'rgba(255,120,170,.75)'] };
+  const cut = (s: string) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > 80 ? t.slice(0, 79) + '…' : t; };
+  const qs: any[] = Array.isArray(o.quotes) ? o.quotes : [];
+  const quotes = qs.length
+    ? `<div style="margin:14px auto 0; max-width:520px; text-align:center;">` +
+      `<div style="color:#d8b378; font-weight:700; margin-bottom:10px;">밑줄 친 문장</div>` +
+      qs.map((q: any, i: number) => { const col = HLC[q.c] || HLC.y;
+        return `<div style="margin:0 0 ${i === qs.length - 1 ? 0 : 10}px; line-height:1.9; color:#ece0d2;"><span style="background:${col[0]}; box-shadow:inset 0 -2px ${col[1]}; padding:1px 3px; border-radius:2px;">${esc(cut(q.q))}</span>` +
+          (q.work ? `<span style="font-size:0.78em; color:#8a7355; margin-left:8px;">${esc(q.work)}${q.no ? ' ' + q.no + '화' : ''}</span>` : '') + `</div>`; }).join('') +
+      `<div style="margin-top:8px; font-size:0.8em; color:#8a7355;">형광펜 ${fmtN(o.hlN || 0)}줄${o.bmN ? ' · 책갈피 ' + fmtN(o.bmN) + '곳' : ''}</div></div>`
+    : '';
   return `<div style="background:#17120d; padding:26px 16px 22px; border-radius:18px; font-family:'Noto Serif KR',serif; color:#dcc7a8; text-align:center; max-width:600px; margin:0 auto;">` +
     `<div style="font-family:'Pretendard Variable',system-ui,sans-serif; font-weight:900; font-size:1.9em; letter-spacing:-1px;"><span style="color:#ece0d2;">Log</span><span style="color:#ff5a1f;">Papa</span> <span style="color:#f3dcb0; font-size:0.72em; font-weight:800;">${esc(o.periodLabel)} 결산</span></div>` +
     `<div style="width:72px; height:3px; margin:12px auto 4px; background:linear-gradient(90deg,#e8633a,#f3a44a); border-radius:3px;">&nbsp;</div>` +
     `<div style="margin-top:8px;">` +
     stat(fmtN(o.eps), '보관한 화') + stat(fmtN(o.works), '새 작품') + stat(fmtN(o.readEps), '읽은 화') + stat(fmtChars(o.chars), '글자') +
-    `</div>` + top +
+    `</div>` + top + quotes +
     `<div style="margin-top:16px; font-size:0.95em; color:#b8a078;">서재 주인의 불꽃은 지금 <span style="color:${o.tierColor}; font-weight:800;">${esc(o.tierName)}</span> <span style="color:#ece0d2; font-weight:700;">Lv.${o.level}</span></div>` +
     `<div style="margin-top:10px; font-size:0.78em; color:#8a7355;">logpapa.web.app — AI 채팅 로그 보관소</div></div>`;
 }
@@ -101,14 +113,23 @@ export function createStatsPage(ctx: { app: HTMLElement; getAllLogs: () => any[]
     for (const day of Object.keys(hist)) if (inP(day)) { const h = hist[day]; readEps += h.o || 0; for (const c of Object.keys(h.w || {})) workReads[c] = (workReads[c] || 0) + h.w[c]; }
     const top = Object.keys(workReads).sort((a, b) => workReads[b] - workReads[a])[0] || '';
     const chars = eps.reduce((n, r) => n + logChars(r), 0);
-    return { eps: eps.length, works: newWorks.length, readEps, chars, topChar: top, topCount: top ? workReads[top] : 0 };
+    // 형광펜·책갈피(기간 = 칠한 시각 t 기준): 최근 3줄(B안 카드) + 개수. 출처 N화 = 작품 페이지와 같은 정렬 순번(sortEps).
+    const marks = loadMarks(); const byId: Record<string, any> = {}; for (const r of logs) byId[r.id] = r;
+    const epNo: Record<string, number> = {};
+    const numOf = (r: any) => { if (!epNo[r.id]) sortEps(logs.filter((x) => x.char === r.char)).forEach((x, i) => { epNo[x.id] = i + 1; }); return epNo[r.id] || 0; };
+    const inT = (t: number) => !!t && inP(todayKey(new Date(t)));
+    let hlN = 0, bmN = 0; const quotes: any[] = [];
+    for (const k of Object.keys(marks.hl)) for (const h of (Array.isArray(marks.hl[k]) ? marks.hl[k] : [])) { if (!inT(h.t)) continue; hlN++; const r = byId[k]; quotes.push({ q: h.q, c: h.c, t: h.t, work: r ? nameFor(r.char) : '', no: r ? numOf(r) : 0 }); }
+    for (const k of Object.keys(marks.bm)) for (const b of (Array.isArray(marks.bm[k]) ? marks.bm[k] : [])) if (inT(b.t)) bmN++;
+    quotes.sort((a, b) => b.t - a.t);
+    return { eps: eps.length, works: newWorks.length, readEps, chars, topChar: top, topCount: top ? workReads[top] : 0, quotes: quotes.slice(0, 3), hlN, bmN };
   }
 
   function openWrapModal(prefix: string, label: string, lv: any) {
     const logs = ctx.getAllLogs();
     const hist = readHistory(loadRead());
     const p = periodStats(logs, hist, prefix);
-    const html = buildWrapCard({ periodLabel: label, eps: p.eps, works: p.works, readEps: p.readEps, chars: p.chars, topWork: p.topChar ? nameFor(p.topChar) : '', topWorkCount: p.topCount, tierName: lv.tier.name, tierColor: lv.tier.color, level: lv.level });
+    const html = buildWrapCard({ periodLabel: label, eps: p.eps, works: p.works, readEps: p.readEps, chars: p.chars, topWork: p.topChar ? nameFor(p.topChar) : '', topWorkCount: p.topCount, tierName: lv.tier.name, tierColor: lv.tier.color, level: lv.level, quotes: p.quotes, hlN: p.hlN, bmN: p.bmN });
     const ov = el('div', 'import-modal'); const card = el('div', 'import-card st-wrap-card');
     const close = () => ov.remove();
     card.appendChild(el('div', 'import-title', label + ' 결산'));
