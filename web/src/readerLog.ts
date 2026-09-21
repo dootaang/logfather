@@ -134,11 +134,13 @@ function attachHideSelection(scrollEl: HTMLElement, rec: any, onAdded: () => voi
     const oneLine = text.indexOf('\n') < 0;   // 숨기기는 한 줄 문자열만(여러 줄 = 원문 개행과 어긋나기 쉬움). 형광펜은 여러 줄도 OK.
     const canHl = !!(opts && opts.onHighlight);
     if (text.length < 2 || text.length > 300 || (!oneLine && !canHl)) return;
-    const range = sel.getRangeAt(0);
+    const range = sel.getRangeAt(0).cloneRange();   // ★스냅샷: 모바일은 팝오버 버튼을 탭하는 순간 선택이 먼저 풀려(라이브 Range가 접힘) 빈 문장이 넘어가던 버그 방지
     if (!scrollEl.contains(range.commonAncestorContainer)) return;   // 리더 본문 밖(상단바 등) 선택은 무시
     const rect = range.getBoundingClientRect();
     if (!rect || (!rect.width && !rect.height)) return;
     pop = document.createElement('div'); pop.className = 'reader-hidepop';
+    pop.addEventListener('touchstart', () => { if (selT) { clearTimeout(selT); selT = null; } }, { passive: true });   // 버튼 탭으로 선택이 풀려도 팝오버가 먼저 사라지지 않게
+    pop.addEventListener('mousedown', () => { if (selT) { clearTimeout(selT); selT = null; } });
     if (canHl) {
       for (const [c, name] of HL_COLORS) {
         const d = document.createElement('button'); d.className = 'hl-dot'; d.dataset.c = c; d.title = '형광펜 · ' + name;
@@ -170,6 +172,14 @@ function attachHideSelection(scrollEl: HTMLElement, rec: any, onAdded: () => voi
   const onUp = () => setTimeout(show, 30);   // 선택 확정 뒤 읽기(mouseup 직후엔 selection이 아직 이전 값일 수 있음)
   scrollEl.addEventListener('mouseup', onUp);
   scrollEl.addEventListener('touchend', onUp);
+  // ★모바일(특히 iOS): 길게 눌러 선택하면 touchend가 페이지에 안 오는 경우가 많음 → selectionchange(디바운스)로도 띄움. 핸들 드래그로 범위 바꾸면 따라감. 리더가 DOM에서 빠지면 스스로 해제.
+  let selT: any = null;
+  const onSelChange = () => {
+    if (!document.contains(scrollEl)) { document.removeEventListener('selectionchange', onSelChange); return; }
+    if (selT) clearTimeout(selT);
+    selT = setTimeout(() => { selT = null; show(); }, 350);
+  };
+  document.addEventListener('selectionchange', onSelChange);
   scrollEl.addEventListener('scroll', dismiss, { passive: true });
   window.addEventListener('hashchange', dismiss, { once: true });   // 화 이동 시 잔존 방지(리더는 렌더마다 새로 붙임)
 }

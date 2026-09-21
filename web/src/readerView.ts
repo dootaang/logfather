@@ -528,6 +528,7 @@ function attachHighlights(reader: HTMLElement, root: HTMLElement, key: string, v
   const remove = (id: string) => { list = list.filter((h) => h.id !== id); hlSave(key, list); unwrapMarks(root, id); rendered.delete(id); pop.refresh(); };
   const recolor = (id: string, c: string) => { const h = list.find((x) => x.id === id); if (!h) return; h.c = c; hlSave(key, list); (rendered.get(id) || []).forEach((m) => { m.dataset.c = c; }); };
   const add = (range: Range, c: string): string => {
+    if (range.collapsed) return '선택이 풀렸어요 — 문장을 다시 선택해 주세요.';
     const off = rangeOffsets(root, range); if (!off) return '본문 안의 문장만 칠할 수 있어요.';
     const rt = rootText(root); const [s, e] = off; const q = rt.text.slice(s, e);
     if (!/\S/.test(q)) return '';
@@ -725,9 +726,11 @@ export function attachSelectionColors(eventsEl: HTMLElement, onPick: (range: Ran
     let sel: Selection | null = null; try { sel = window.getSelection(); } catch (_) { return; }
     if (!sel || sel.isCollapsed || !sel.rangeCount) return;
     const text = String(sel.toString() || '').trim(); if (text.length < 2 || text.length > 300) return;
-    const range = sel.getRangeAt(0); if (!eventsEl.contains(range.commonAncestorContainer)) return;
+    const range = sel.getRangeAt(0).cloneRange(); if (!eventsEl.contains(range.commonAncestorContainer)) return;   // 스냅샷(모바일 탭으로 선택이 풀려도 유지)
     const rect = range.getBoundingClientRect(); if (!rect || (!rect.width && !rect.height)) return;
     pop = mk('div', 'reader-hidepop');
+    pop.addEventListener('touchstart', () => { if (selT) { clearTimeout(selT); selT = null; } }, { passive: true });
+    pop.addEventListener('mousedown', () => { if (selT) { clearTimeout(selT); selT = null; } });
     for (const [c, name] of HL_COLORS) {
       const d = mk('button', 'hl-dot'); d.dataset.c = c; d.title = '형광펜 · ' + name;
       d.onclick = (e: Event) => { e.stopPropagation(); const rg = range.cloneRange(); dismiss(); onPick(rg, c); };
@@ -740,6 +743,9 @@ export function attachSelectionColors(eventsEl: HTMLElement, onPick: (range: Ran
   };
   const onUp = () => setTimeout(show, 30);
   eventsEl.addEventListener('mouseup', onUp); eventsEl.addEventListener('touchend', onUp);
+  let selT: any = null;   // 모바일: selectionchange 경로(iOS 길게 누르기는 touchend 미전달)
+  const onSelChange = () => { if (!document.contains(eventsEl)) { document.removeEventListener('selectionchange', onSelChange); return; } if (selT) clearTimeout(selT); selT = setTimeout(() => { selT = null; show(); }, 350); };
+  document.addEventListener('selectionchange', onSelChange);
   eventsEl.addEventListener('scroll', dismiss, { passive: true });
   window.addEventListener('hashchange', dismiss, { once: true });
 }
