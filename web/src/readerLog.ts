@@ -5,7 +5,7 @@
 // 페이지별 상태(allLogs·setStatus·route·로그인 사용자·표시이름)는 ctx로 주입 → library(작품 페이지의 번역/정리)와
 // reader(단일 화 열람)가 같은 코드 1벌을 쓴다(중복 복붙 금지). 리더 본문/페이저/타이포는 readerView.ts 재사용.
 // @ts-nocheck
-import { mountReaderBody, rdCfg, isWebnovel, isPapa, popAutoClose, mk, clearReadPos, clearMarks } from './readerView.js';
+import { mountReaderBody, rdCfg, isWebnovel, isPapa, popAutoClose, mk, clearReadPos, clearMarks, HL_COLORS } from './readerView.js';
 import { icon } from './icons.js';
 import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
@@ -121,7 +121,8 @@ function hideRuleMatches(rec: any, text: string): boolean {
 }
 // 본문(scrollEl) 안 텍스트 선택 시 "이 문자열 숨기기" 팝오버. 비파괴(원본·복사물 불변), 규칙은 관리실에서 관리·동기화.
 //   onAdded = 추가 성공 시(호출부가 정리 토글 켜고 재렌더). notify = 토스트.
-function attachHideSelection(scrollEl: HTMLElement, rec: any, onAdded: () => void, notify: (m: string) => void) {
+// opts.onHighlight(range, 색) — 있으면 팝오버 앞에 형광펜 색 3개(노랑·초록·분홍). 여러 줄 선택도 형광펜은 허용(숨기기 버튼은 한 줄만).
+function attachHideSelection(scrollEl: HTMLElement, rec: any, onAdded: () => void, notify: (m: string) => void, opts?: { onHighlight?: (range: Range, c: string) => string }) {
   let pop: HTMLElement | null = null;
   const dismiss = () => { if (pop) { pop.remove(); pop = null; } };
   const show = () => {
@@ -130,12 +131,22 @@ function attachHideSelection(scrollEl: HTMLElement, rec: any, onAdded: () => voi
     try { sel = window.getSelection(); } catch (_) { return; }
     if (!sel || sel.isCollapsed || !sel.rangeCount) return;
     const text = String(sel.toString() || '').trim();
-    if (text.length < 2 || text.length > 300 || text.indexOf('\n') >= 0) return;   // 한 줄 문자열만(여러 줄 = 원문 개행과 어긋나기 쉬움)
+    const oneLine = text.indexOf('\n') < 0;   // 숨기기는 한 줄 문자열만(여러 줄 = 원문 개행과 어긋나기 쉬움). 형광펜은 여러 줄도 OK.
+    const canHl = !!(opts && opts.onHighlight);
+    if (text.length < 2 || text.length > 300 || (!oneLine && !canHl)) return;
     const range = sel.getRangeAt(0);
     if (!scrollEl.contains(range.commonAncestorContainer)) return;   // 리더 본문 밖(상단바 등) 선택은 무시
     const rect = range.getBoundingClientRect();
     if (!rect || (!rect.width && !rect.height)) return;
     pop = document.createElement('div'); pop.className = 'reader-hidepop';
+    if (canHl) {
+      for (const [c, name] of HL_COLORS) {
+        const d = document.createElement('button'); d.className = 'hl-dot'; d.dataset.c = c; d.title = '형광펜 · ' + name;
+        d.onclick = (e) => { e.stopPropagation(); const rg = range.cloneRange(); dismiss(); const msg = opts!.onHighlight!(rg, c); if (msg) notify(msg); };
+        pop.appendChild(d);
+      }
+    }
+    if (!oneLine) { document.body.appendChild(pop); placePop(); return; }
     const b = document.createElement('button');
     b.innerHTML = icon('broom') + ' 이 문자열 숨기기';
     b.title = '선택한 문자열을 리더 화면에서 숨겨요(비파괴 — 원본 로그·복사물 불변). 관리실 "내 숨김 규칙"에 저장되고 기기 간 동기화돼요.';
@@ -149,9 +160,12 @@ function attachHideSelection(scrollEl: HTMLElement, rec: any, onAdded: () => voi
     };
     pop.appendChild(b);
     document.body.appendChild(pop);   // body 부착(★.section 등 backdrop-filter 컨테이너에 갇히지 않게 — 07-02 Pro1 패널 교훈)
-    const pw = pop.offsetWidth || 180;
-    pop.style.left = Math.max(8, Math.min(window.innerWidth - pw - 8, rect.left + rect.width / 2 - pw / 2)) + 'px';
-    pop.style.top = Math.min(window.innerHeight - 48, rect.bottom + 8) + 'px';
+    placePop();
+    function placePop() {
+      const pw = pop!.offsetWidth || 180;
+      pop!.style.left = Math.max(8, Math.min(window.innerWidth - pw - 8, rect.left + rect.width / 2 - pw / 2)) + 'px';
+      pop!.style.top = Math.min(window.innerHeight - 48, rect.bottom + 8) + 'px';
+    }
   };
   const onUp = () => setTimeout(show, 30);   // 선택 확정 뒤 읽기(mouseup 직후엔 selection이 아직 이전 값일 수 있음)
   scrollEl.addEventListener('mouseup', onUp);
@@ -654,12 +668,12 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     // 몰입 탭 토글·초기 상태·스크롤 리셋은 공용 mountReaderBody가 처리(일반·공유 리더 동일). 더보기 메뉴 닫힘도 거기서.
     // displayHtml = 원문/번역 토글(origView) + 정리/원본 토글(cleanView) 비파괴 합성(위에서 계산). ★저장은 안 바뀜.
     if (!papa) displayHtml = stripUnresolvedAssetImages(displayHtml);   // ★매핑 안 된 에셋명 <img>(AI가 지어낸 감정 등)는 표시에서 숨김 = 엑박 아이콘 방지. 파파는 남의 디자인 그대로(진짜 URL/data만) → 미적용
-    const mounted = mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route, papa, r.id);   // r.id = 화 안 읽던 위치 기억 키(원문/번역·정리 토글 재렌더에도 그 자리 유지)
+    const mounted = mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route, papa, r.id, (hasOrig && !showOrig) ? 't' : 'o');   // r.id = 위치 기억·책갈피·형광펜 키 / view = 형광펜을 칠한 화면(원문·번역) 구분
     // ★3단계 "리스 스타일": 카드 CSS를 화 컨테이너(.reader-card) 스코프로 주입 — 리스처럼 툴팁은 가려지고 상태창은 꾸며짐.
     //   reader는 렌더마다 새로 만들어져 스타일 수명은 자동. 원본 토글이면 injectCss='' = 주입 없음.
     if (injectCss) { const st = document.createElement('style'); st.dataset.lpCardcss = '1'; st.textContent = injectCss; reader.appendChild(st); }
-    // ★드래그→숨기기(UX 1차): 본문 텍스트 선택 → "이 문자열 숨기기" 팝오버(파파·페이지넘김 모드 제외).
-    if (!papa && mounted && mounted.scroll) attachHideSelection(mounted.scroll, r, () => { cleanView[r.id] = true; route(); }, setStatus);
+    // ★드래그→숨기기 + 형광펜: 본문 텍스트 선택 → 팝오버(색 3개 + "이 문자열 숨기기"). 파파 제외. 페이지 모드는 pager 본문(doc)에 부착.
+    if (!papa && mounted && mounted.root) attachHideSelection(mounted.scroll || mounted.root, r, () => { cleanView[r.id] = true; route(); }, setStatus, { onHighlight: mounted.hl ? (rg, c) => mounted.hl!.add(rg, c) : undefined });
     // ★파파 = 받자마자(처음 볼 때) 자동 이미지 굳히기 시도 — 배경. 세션당 1회(죽은 링크 매번 두드리지 않게). 성공=blob 박제 후 재렌더, 실패=원본 유지("굳히기" 버튼으로 재시도).
     const online = typeof navigator === 'undefined' || navigator.onLine !== false;
     if (papa && online && bakeAvailable() && externalCount(r.html || '') && !r._papaBakeTried) {

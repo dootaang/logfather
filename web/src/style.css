@@ -1579,7 +1579,32 @@ button .ic, summary .ic { margin-right: .15em; }
 .big-editor .fmt-toolbar { padding: 8px 12px 0; margin: 0; }
 
 /* ── 리더 드래그→숨기기 팝오버 (관리실 "내 숨김 규칙" 즉석 추가 — readerLog attachHideSelection) ── */
-.reader-hidepop { position: fixed; z-index: 9998; }
+.reader-hidepop { position: fixed; z-index: 9998; display: flex; align-items: center; gap: 6px; }
+/* 형광펜 색 점(선택 팝오버·칠한 곳 메뉴 공용) */
+.hl-dot, .reader-hidepop button.hl-dot { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid var(--panel); box-shadow: 0 0 0 1px var(--line-2), var(--shadow-sm); cursor: pointer; }
+.hl-dot[data-c=y] { background: #ffd600; } .hl-dot[data-c=g] { background: #48c774; } .hl-dot[data-c=p] { background: #ff78aa; }
+.hl-dot:hover, .hl-dot.on { box-shadow: 0 0 0 2px var(--ink), var(--shadow-sm); }
+/* 칠한 곳 클릭 메뉴 */
+.reader-hlmenu { position: fixed; z-index: 9998; display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; box-shadow: var(--shadow-lg); }
+.hl-act { font: 600 12px/1 var(--font-sans); padding: 7px 10px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--ink-2); cursor: pointer; }
+.hl-act:hover { color: var(--accent); border-color: var(--accent-line, var(--accent)); }
+.hl-act.danger:hover { color: var(--danger, #c0392b); border-color: currentColor; }
+/* 본문 형광펜 — 글자색은 그대로(currentColor), 배경만. 여러 줄에 걸쳐도 조각마다 둥글게. 다크·night는 알파 낮추고 밑줄로 보조 */
+mark.lp-hl { color: inherit; background: rgba(255, 214, 0, .40); border-radius: 2px; padding: 0 1px; cursor: pointer; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+mark.lp-hl[data-c=g] { background: rgba(72, 199, 116, .38); }
+mark.lp-hl[data-c=p] { background: rgba(255, 120, 170, .38); }
+.reader[data-theme="dark"] mark.lp-hl, .reader[data-theme="black"] mark.lp-hl { background: rgba(255, 214, 0, .22); box-shadow: inset 0 -2px rgba(255, 214, 0, .75); }
+.reader[data-theme="dark"] mark.lp-hl[data-c=g], .reader[data-theme="black"] mark.lp-hl[data-c=g] { background: rgba(72, 199, 116, .22); box-shadow: inset 0 -2px rgba(72, 199, 116, .8); }
+.reader[data-theme="dark"] mark.lp-hl[data-c=p], .reader[data-theme="black"] mark.lp-hl[data-c=p] { background: rgba(255, 120, 170, .22); box-shadow: inset 0 -2px rgba(255, 120, 170, .8); }
+@media (prefers-color-scheme: dark) {
+  .reader[data-theme="system"] mark.lp-hl { background: rgba(255, 214, 0, .22); box-shadow: inset 0 -2px rgba(255, 214, 0, .75); }
+  .reader[data-theme="system"] mark.lp-hl[data-c=g] { background: rgba(72, 199, 116, .22); box-shadow: inset 0 -2px rgba(72, 199, 116, .8); }
+  .reader[data-theme="system"] mark.lp-hl[data-c=p] { background: rgba(255, 120, 170, .22); box-shadow: inset 0 -2px rgba(255, 120, 170, .8); }
+}
+/* 목록 팝오버: 색 점·고아(흐림) */
+.rtp-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; }
+.rtp-dot[data-c=y] { background: #ffd600; } .rtp-dot[data-c=g] { background: #48c774; } .rtp-dot[data-c=p] { background: #ff78aa; }
+.rtp-item.muted .rtp-main { opacity: .5; }
 .reader-hidepop button { display: inline-flex; align-items: center; gap: 6px; font: 600 12.5px/1 var(--font-sans);
   padding: 8px 13px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--panel);
   color: var(--ink); box-shadow: var(--shadow-md); cursor: pointer; }

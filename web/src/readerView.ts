@@ -9,6 +9,7 @@
 import { loadReaderCfg, saveReaderCfg, loadMarks, saveMarks } from './store.js';
 import { getFontList } from './fonts.js';
 import { icon } from './icons.js';
+import { makeAnchor, resolveAnchor } from '../../core/reader/textAnchor.js';   // 형광펜 앵커(인용+문맥+힌트) — 순수 함수, core 테스트 커버
 
 const app = () => document.getElementById('app')!;
 export const mk = (tag: string, cls?: string, text?: string): HTMLElement => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -273,7 +274,8 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
   let swiped = false;
   stage.onclick = (e: MouseEvent) => {
     if (swiped) { swiped = false; return; }
-    const t = e.target as HTMLElement; if (t && t.closest && t.closest('a,button,summary')) return;
+    if (selOn()) return;   // 드래그 선택 직후 클릭은 넘김 X(형광펜·숨기기 팝오버가 뜸)
+    const t = e.target as HTMLElement; if (t && t.closest && t.closest('a,button,summary,mark.lp-hl')) return;
     const r = stage.getBoundingClientRect(); const x = e.clientX - r.left, third = r.width / 3;
     if (x < third) go(-1); else if (x > 2 * third) go(1); else toggleBar();
   };
@@ -282,7 +284,7 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
   stage.addEventListener('touchend', (e: TouchEvent) => {
     const t = e.changedTouches[0]; if (!t) return;
     const dx = t.clientX - tsx, dy = t.clientY - tsy;
-    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5) { swiped = true; if (dx < 0) go(1); else go(-1); try { e.preventDefault(); } catch (_) {} }
+    if (!selOn() && Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5) { swiped = true; if (dx < 0) go(1); else go(-1); try { e.preventDefault(); } catch (_) {} }
   }, { passive: false });
   const onKey = (e: KeyboardEvent) => {
     if (!document.contains(reader)) { cleanup(); return; }   // 재렌더로 떨어져 나간 옛 페이저 = 스스로 해제
@@ -323,7 +325,7 @@ function findChapters(root: HTMLElement): { el: HTMLElement; title: string }[] {
 }
 // ── 좌하단 알약 버튼 + 목록 팝오버 (목차·책갈피 공용 1벌) ─────────────────────
 //   버튼은 .reader-fabs 묶음에 나란히. count()=0이면 버튼 숨김. items()는 열 때마다 계산(현재 위치·개수 최신). del 있으면 ✕(지우기).
-type PopItem = { title: string; label?: string; on?: boolean; pick: () => void; del?: () => void };
+type PopItem = { title: string; label?: string; on?: boolean; dot?: string; muted?: boolean; pick: () => void; del?: () => void };
 function attachListPop(reader: HTMLElement, o: { cls: string; iconName: string; word: string; head: string; title: string; count: () => number; items: () => PopItem[] }): { refresh: () => void } {
   let fabs = reader.querySelector(':scope > .reader-fabs') as HTMLElement | null;
   if (!fabs) { fabs = mk('div', 'reader-fabs'); reader.appendChild(fabs); }
@@ -339,9 +341,11 @@ function attachListPop(reader: HTMLElement, o: { cls: string; iconName: string; 
       const items = o.items();
       pop.appendChild(mk('div', 'rtp-head', `${o.head} · ${items.length}`));
       items.forEach((it, i) => {
-        const row = mk('div', 'rtp-item' + (it.on ? ' on' : ''));
+        const row = mk('div', 'rtp-item' + (it.on ? ' on' : '') + (it.muted ? ' muted' : ''));
         const main = mk('button', 'rtp-main');
-        main.append(mk('span', 'rtp-no', String(i + 1)), mk('span', 'rtp-title', it.title));
+        main.append(mk('span', 'rtp-no', String(i + 1)));
+        if (it.dot) { const d = mk('span', 'rtp-dot'); d.dataset.c = it.dot; main.appendChild(d); }
+        main.appendChild(mk('span', 'rtp-title', it.title));
         if (it.label) main.appendChild(mk('span', 'rtp-page', it.label));
         main.onclick = (ev: Event) => { ev.stopPropagation(); pop.remove(); it.pick(); };
         row.appendChild(main);
@@ -431,6 +435,118 @@ function bindBookmarkKey(reader: HTMLElement, bm: { toggle: () => void } | null)
   document.addEventListener('keydown', onKey);
 }
 
+// ── 형광펜(하이라이트) — 계획서 HANDOFF_형광펜_책갈피.md 2단계 ───────────────────
+// 저장 = 동기화 KV pro2-marks.hl[화id]. 원본 로그 불변: 표시 DOM 위에 <mark class="lp-hl">만 씌움(복사·공유·아카 카드는 저장 html을 쓰므로 영향 0).
+//   앵커 = core/reader/textAnchor(인용 q + 앞뒤 문맥 + 위치 힌트). 본문 텍스트 규약 = 텍스트 노드 data를 문서 순서로 이어 붙인 것(Range.toString과 동일).
+//   view = 'o'(원문 화면) | 't'(번역 화면): 칠한 화면에서만 다시 칠함(텍스트가 다르므로). 다른 화면·못 찾음 = 고아(목록에만, 흐리게).
+type Hl = { id: string; c: string; q: string; pre: string; post: string; at: number; view: string; t: number; memo?: string };
+const HL_MAX_LOG = 200, HL_MAX_ALL = 5000, HL_QMAX = 300;
+export const HL_COLORS: [string, string][] = [['y', '노랑'], ['g', '초록'], ['p', '분홍']];
+function hlList(key: string): Hl[] { try { const m = loadMarks(); return Array.isArray(m.hl[key]) ? m.hl[key] : []; } catch (_) { return []; } }
+function hlSave(key: string, list: Hl[]): void { try { const m = loadMarks(); if (list.length) m.hl[key] = list; else delete m.hl[key]; saveMarks(m); } catch (_) {} }
+function hlTotal(): number { try { const m = loadMarks(); let n = 0; for (const k in m.hl) n += Array.isArray(m.hl[k]) ? m.hl[k].length : 0; return n; } catch (_) { return 0; } }
+// 본문 텍스트(노드 순서 이어붙임) + 각 노드 시작 오프셋.
+function rootText(root: HTMLElement): { text: string; nodes: Text[]; starts: number[] } {
+  const nodes: Text[] = []; const starts: number[] = []; let text = '';
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let n: Node | null;
+  while ((n = w.nextNode())) { nodes.push(n as Text); starts.push(text.length); text += (n as Text).data; }
+  return { text, nodes, starts };
+}
+// Range → root 텍스트 오프셋 [start,end). root 밖이면 null. (root 시작~선택 시작 Range의 toString 길이 = 앞 텍스트 길이)
+function rangeOffsets(root: HTMLElement, range: Range): [number, number] | null {
+  if (!root.contains(range.commonAncestorContainer)) return null;
+  try { const pre = document.createRange(); pre.setStart(root, 0); pre.setEnd(range.startContainer, range.startOffset); const s = pre.toString().length; return [s, s + range.toString().length]; } catch (_) { return null; }
+}
+// [s,e) 구간의 텍스트 노드들을 (필요하면 쪼개서) <mark>로 감쌈. 공백만인 조각은 건너뜀(문단 사이 줄바꿈 노드). 만든 mark 목록 반환.
+function wrapRange(root: HTMLElement, s: number, e: number, id: string, c: string): HTMLElement[] {
+  const rt = rootText(root); const jobs: { node: Text; a: number; b: number }[] = [];
+  for (let i = 0; i < rt.nodes.length; i++) {
+    const st = rt.starts[i], len = rt.nodes[i].data.length, en = st + len;
+    if (en <= s || st >= e) continue;
+    jobs.push({ node: rt.nodes[i], a: Math.max(0, s - st), b: Math.min(len, e - st) });
+  }
+  const marks: HTMLElement[] = [];
+  for (const j of jobs) {
+    let piece = j.node;
+    if (j.a > 0) piece = piece.splitText(j.a);
+    if (j.b - j.a < piece.data.length) piece.splitText(j.b - j.a);
+    if (!/\S/.test(piece.data)) continue;
+    const parent = piece.parentNode; if (!parent) continue;
+    const m = document.createElement('mark'); m.className = 'lp-hl'; m.dataset.id = id; m.dataset.c = c;
+    parent.insertBefore(m, piece); m.appendChild(piece); marks.push(m);
+  }
+  return marks;
+}
+function unwrapMarks(root: HTMLElement, id: string): void {
+  root.querySelectorAll('mark.lp-hl').forEach((m) => {
+    if ((m as HTMLElement).dataset.id !== id) return;
+    const p = m.parentNode; if (!p) return;
+    while (m.firstChild) p.insertBefore(m.firstChild, m);
+    p.removeChild(m); try { p.normalize(); } catch (_) {}
+  });
+}
+const selOn = (): boolean => { try { const s = window.getSelection(); return !!(s && !s.isCollapsed && String(s).trim()); } catch (_) { return false; } };
+// 형광펜 부착: 저장분 렌더 + 칠한 곳 클릭 메뉴(색·복사·지우기) + 좌하단 "형광펜 N" 목록. add(range,c)는 선택 팝오버(readerLog)가 부름 → 안내 문구 반환.
+function attachHighlights(reader: HTMLElement, root: HTMLElement, key: string, view: string, ctx: { jump: (el: HTMLElement) => void; label: (el: HTMLElement) => string; here: (el: HTMLElement) => boolean }): { add: (range: Range, c: string) => string; remove: (id: string) => void } {
+  let list = hlList(key);
+  const rendered = new Map<string, HTMLElement[]>();
+  const pop = attachListPop(reader, { cls: 'hl', iconName: 'palette', word: '형광펜', head: '형광펜', title: '형광펜 목록 — 칠한 문장으로 바로 이동', count: () => list.length,
+    items: () => list.map((h) => {
+      const ms = rendered.get(h.id); const el = ms && ms[0];
+      return { title: h.q.length > 60 ? h.q.slice(0, 59) + '…' : h.q, dot: h.c, muted: !el, on: !!(el && ctx.here(el)),
+        label: el ? ctx.label(el) : (h.view !== view ? (h.view === 't' ? '번역 화면에서' : '원문 화면에서') : '못 찾음'),
+        pick: () => { if (el) ctx.jump(el); }, del: () => remove(h.id) };
+    }) });
+  const render = () => {
+    for (const h of list) {
+      if (h.view !== view || rendered.has(h.id)) continue;
+      const r = resolveAnchor(rootText(root).text, h); if (!r) continue;
+      const ms = wrapRange(root, r[0], r[1], h.id, h.c); if (ms.length) rendered.set(h.id, ms);
+    }
+    pop.refresh();
+  };
+  const remove = (id: string) => { list = list.filter((h) => h.id !== id); hlSave(key, list); unwrapMarks(root, id); rendered.delete(id); pop.refresh(); };
+  const recolor = (id: string, c: string) => { const h = list.find((x) => x.id === id); if (!h) return; h.c = c; hlSave(key, list); (rendered.get(id) || []).forEach((m) => { m.dataset.c = c; }); };
+  const add = (range: Range, c: string): string => {
+    const off = rangeOffsets(root, range); if (!off) return '본문 안의 문장만 칠할 수 있어요.';
+    const rt = rootText(root); const [s, e] = off; const q = rt.text.slice(s, e);
+    if (!/\S/.test(q)) return '';
+    if (q.length > HL_QMAX) return `형광펜은 한 번에 ${HL_QMAX}자까지예요.`;
+    if (list.length >= HL_MAX_LOG) return `이 화의 형광펜이 ${HL_MAX_LOG}개예요 — 지우고 칠해 주세요.`;
+    if (hlTotal() >= HL_MAX_ALL) return `형광펜이 전체 ${HL_MAX_ALL}개예요 — 오래된 것을 정리해 주세요.`;
+    const anc = makeAnchor(rt.text, s, e);
+    const h: Hl = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), c, q: anc.q, pre: anc.pre, post: anc.post, at: anc.at, view, t: Date.now() };
+    list.push(h); list.sort((a, b) => a.at - b.at); hlSave(key, list);
+    const ms = wrapRange(root, s, e, h.id, c); if (ms.length) rendered.set(h.id, ms);
+    try { window.getSelection()!.removeAllRanges(); } catch (_) {}
+    pop.refresh();
+    return '형광펜을 칠했어요. 칠한 곳을 누르면 색 바꾸기·지우기.';
+  };
+  // 칠한 곳 클릭 → 미니 메뉴(body 부착, fixed). 드래그 선택 중이면 X(선택 팝오버가 뜸). 페이지 탭 판정보다 먼저 잡아 넘김 방지.
+  let menu: HTMLElement | null = null;
+  const closeMenu = () => { if (menu) { menu.remove(); menu = null; } };
+  root.addEventListener('click', (e: MouseEvent) => {
+    const t = e.target as HTMLElement; const m = (t && t.closest) ? (t.closest('mark.lp-hl') as HTMLElement | null) : null; if (!m) return;
+    if (selOn()) return;
+    e.stopPropagation(); e.preventDefault(); closeMenu();
+    const id = m.dataset.id || ''; const h = list.find((x) => x.id === id); if (!h) return;
+    menu = mk('div', 'reader-hlmenu');
+    for (const [c, name] of HL_COLORS) { const d = mk('button', 'hl-dot' + (h.c === c ? ' on' : '')); d.dataset.c = c; d.title = name; d.onclick = (ev: Event) => { ev.stopPropagation(); recolor(id, c); closeMenu(); }; menu.appendChild(d); }
+    const cp = mk('button', 'hl-act', '복사'); cp.onclick = async (ev: Event) => { ev.stopPropagation(); try { await navigator.clipboard.writeText(h.q); } catch (_) {} closeMenu(); };
+    const del = mk('button', 'hl-act danger', '지우기'); del.onclick = (ev: Event) => { ev.stopPropagation(); remove(id); closeMenu(); };
+    menu.append(cp, del);
+    document.body.appendChild(menu);
+    const r = m.getBoundingClientRect(); const mw = menu.offsetWidth || 200;
+    menu.style.left = Math.max(8, Math.min(window.innerWidth - mw - 8, r.left + r.width / 2 - mw / 2)) + 'px';
+    menu.style.top = Math.min(window.innerHeight - 48, r.bottom + 8) + 'px';
+    popAutoClose(menu, m);
+    window.addEventListener('hashchange', closeMenu, { once: true });
+  });
+  reader.addEventListener('scroll', closeMenu, true);   // 캡처: 안쪽 스크롤러 스크롤도 메뉴 닫기
+  render();
+  return { add, remove };
+}
+
 // 리더 설정 팝오버. rerender = 읽기방식(스크롤↔페이지) 전환 시 호출자 라우터로 다시 그림(library/reader별).
 function toggleReaderSettings(reader: HTMLElement, col: HTMLElement | null, rcfg: any, isWn: boolean, pager: any, trigger: HTMLElement | null, rerender: () => void) {
   let pop = reader.querySelector('.reader-settings') as HTMLElement | null;
@@ -490,7 +606,8 @@ export function popAutoClose(pop: HTMLElement, trigger?: HTMLElement | null) {
 
 // 리더 본문(스크롤↔페이지넘김 분기). app에 append + 결과 반환. rerender = 읽기방식 토글 시 호출자 라우터.
 // posKey = 화 안 읽던 위치 기억 키(페이지·스크롤 공통 비율). 없으면 기억 안 함.
-export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn: boolean, theme: string | undefined, setBtn: HTMLElement, rerender: () => void, papa?: boolean, posKey?: string): { paged: boolean; scroll?: HTMLElement; col?: HTMLElement } {
+// view = 'o'(원문 화면)|'t'(번역 화면) — 형광펜은 칠한 화면에서만 다시 칠함. 반환 root = 본문 요소(선택 팝오버 부착용), hl = 형광펜 컨트롤러(add/remove).
+export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn: boolean, theme: string | undefined, setBtn: HTMLElement, rerender: () => void, papa?: boolean, posKey?: string, view?: string): { paged: boolean; scroll?: HTMLElement; col?: HTMLElement; root?: HTMLElement; hl?: { add: (range: Range, c: string) => string; remove: (id: string) => void } | null } {
   const paged = wn && wnPagedResolved(rcfg);   // papa는 통짜 디자인이라 항상 스크롤(페이저·웹소설 타이포 비적용)
   if (paged) {
     applyWnTypography(reader, null, rcfg, theme);
@@ -510,7 +627,10 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
       pager.onPage(bm.paint);
     }
     bindBookmarkKey(reader, bm);
-    return { paged: true };
+    // 형광펜(페이지): 점프=칠한 mark가 놓인 페이지. 공유 리더는 2단계 범위 밖(로컬 저장은 3단계).
+    let hl: any = null;
+    if (posKey && !posKey.startsWith('share:')) hl = attachHighlights(reader, pager.doc, posKey, view || 'o', { jump: (el) => pager.goTo(pager.pageOf(el)), label: (el) => 'p.' + (pager.pageOf(el) + 1), here: (el) => pager.pageOf(el) === pager.getPage() });
+    return { paged: true, root: pager.doc, hl };
   }
   const scroll = mk('div', 'reader-scroll'); const col = mk('div', 'reader-col'); col.style.maxWidth = (wn ? rcfg.wnWidth : rcfg.width) + 'px';
   const card = mk('div', 'reader-card' + (papa ? ' reader-card-papa' : '')); if (!wn) card.style.zoom = String(rcfg.zoom);
@@ -527,7 +647,7 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
     const t = e.target as HTMLElement | null;
     const openMenu = reader.querySelector('.reader-actions.open');
     if (openMenu) { openMenu.classList.remove('open'); return; }
-    if (t && t.closest && t.closest('summary, a, button, input, label, select, textarea')) return;
+    if (t && t.closest && t.closest('summary, a, button, input, label, select, textarea, mark.lp-hl')) return;
     barHidden = !barHidden; rcfg.immersive = barHidden; saveReaderCfg(rcfg); applyImmersive();
   };
   applyImmersive();
@@ -550,6 +670,12 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
     scroll.addEventListener('scroll', () => { if (pt) return; pt = requestAnimationFrame(() => { pt = null; bm && bm.paint(); }); }, { passive: true });
   }
   bindBookmarkKey(reader, bm);
+  // 형광펜(세로 스크롤): 점프=mark의 y. 파파 제외(Shadow DOM — 선택 Range가 셸에서 안 보임 + "그대로 삼키기").
+  let hl: any = null;
+  if (posKey && !posKey.startsWith('share:') && !papa) {
+    const maxY = () => Math.max(1, scroll.scrollHeight - scroll.clientHeight);
+    hl = attachHighlights(reader, card, posKey, view || 'o', { jump: (el) => { scroll.scrollTop = Math.max(0, yOf(el) - 40); }, label: (el) => Math.round(Math.min(1, yOf(el) / maxY()) * 100) + '%', here: (el) => { const y = yOf(el); return y >= scroll.scrollTop && y < scroll.scrollTop + scroll.clientHeight; } });
+  }
   if (posKey) {
     // 복원: 첫 프레임 + 300ms(이미지 늦은 로드로 높이 변할 때). 그 사이 사용자가 직접 스크롤했으면(우리가 놓은 값에서 벗어남) 두 번째 복원은 건너뜀.
     let setTo = -1;
@@ -566,7 +692,7 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
       saveT = setTimeout(() => { saveT = null; const max = scroll.scrollHeight - scroll.clientHeight; setReadPos(posKey, max > 0 ? scroll.scrollTop / max : 0); }, 250);
     }, { passive: true });
   }
-  return { paged: false, scroll, col };
+  return { paged: false, scroll, col, root: card, hl };
 }
 
 // ── 공유 링크 열람(#/share, 비로그인 가능) ───────────────────────────────────
