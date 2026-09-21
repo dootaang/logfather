@@ -5,7 +5,7 @@
 // 페이지별 상태(allLogs·setStatus·route·로그인 사용자·표시이름)는 ctx로 주입 → library(작품 페이지의 번역/정리)와
 // reader(단일 화 열람)가 같은 코드 1벌을 쓴다(중복 복붙 금지). 리더 본문/페이저/타이포는 readerView.ts 재사용.
 // @ts-nocheck
-import { mountReaderBody, rdCfg, isWebnovel, isPapa, popAutoClose, mk } from './readerView.js';
+import { mountReaderBody, rdCfg, isWebnovel, isPapa, popAutoClose, mk, clearReadPos } from './readerView.js';
 import { icon } from './icons.js';
 import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
@@ -601,7 +601,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     delB.onclick = async () => {
       if (!(await confirmModal(`이 화(${idx + 1}화${r.title ? ' · ' + r.title : ''})를 삭제할까요? 되돌릴 수 없습니다.`, { okText: '삭제', danger: true }))) return;
       await logsDelete(r.id);
-      const rd2 = loadRead(); delete rd2.readIds[r.id]; if (rd2.lastByChar && rd2.lastByChar[char] === r.id) delete rd2.lastByChar[char]; saveRead(rd2);
+      const rd2 = loadRead(); delete rd2.readIds[r.id]; if (rd2.lastByChar && rd2.lastByChar[char] === r.id) delete rd2.lastByChar[char]; saveRead(rd2); clearReadPos(r.id);
       await reloadLogs();
       const remain = getAllLogs().filter((x: any) => x.char === char).length;
       setStatus('화를 삭제했습니다.');
@@ -654,7 +654,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     // 몰입 탭 토글·초기 상태·스크롤 리셋은 공용 mountReaderBody가 처리(일반·공유 리더 동일). 더보기 메뉴 닫힘도 거기서.
     // displayHtml = 원문/번역 토글(origView) + 정리/원본 토글(cleanView) 비파괴 합성(위에서 계산). ★저장은 안 바뀜.
     if (!papa) displayHtml = stripUnresolvedAssetImages(displayHtml);   // ★매핑 안 된 에셋명 <img>(AI가 지어낸 감정 등)는 표시에서 숨김 = 엑박 아이콘 방지. 파파는 남의 디자인 그대로(진짜 URL/data만) → 미적용
-    const mounted = mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route, papa);
+    const mounted = mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route, papa, r.id);   // r.id = 화 안 읽던 위치 기억 키(원문/번역·정리 토글 재렌더에도 그 자리 유지)
     // ★3단계 "리스 스타일": 카드 CSS를 화 컨테이너(.reader-card) 스코프로 주입 — 리스처럼 툴팁은 가려지고 상태창은 꾸며짐.
     //   reader는 렌더마다 새로 만들어져 스타일 수명은 자동. 원본 토글이면 injectCss='' = 주입 없음.
     if (injectCss) { const st = document.createElement('style'); st.dataset.lpCardcss = '1'; st.textContent = injectCss; reader.appendChild(st); }

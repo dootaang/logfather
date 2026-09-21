@@ -144,8 +144,37 @@ export function applyWnTypography(reader: HTMLElement, col: HTMLElement | null, 
 const WN_PAGE_MIN = 1024;
 export function wnPagedResolved(rcfg: any): boolean { return rcfg.wnPaged === undefined ? (window.innerWidth >= WN_PAGE_MIN) : !!rcfg.wnPaged; }
 
-// 웹소설형 좌우 페이지 넘김(전자책식, 반응형+스와이프).
-function buildWnPager(reader: HTMLElement, html: string, rcfg: any): { relayout: () => void; stage: HTMLElement; setAnim: (on: boolean) => void } {
+// ── 화 안 읽던 위치 기억(기기 로컬) ──────────────────────────────────────────
+// 페이지 번호가 아니라 비율(0~1)로 저장 — 글자 크기·창 폭이 바뀌어 총 페이지가 달라져도 같은 지점으로. 세로 스크롤도 같은 비율 키를 씀.
+//   ★동기화 KV가 아니라 localStorage: 페이지 넘길 때마다 쓰는 값이라 클라우드 쓰기 churn 방지(공유 진행도 SHARE_PROGRESS_KEY와 같은 결).
+//   키 = 화 id(서재) / 'share:<id>[:n]'(공유). 최근 400건만 보관. 0(맨 앞)이면 항목 삭제 = "아직 안 읽음".
+const READ_POS_KEY = 'pro2-read-pos';
+const READ_POS_MAX = 400;
+let posCache: Record<string, { f: number; t: number }> | null = null;
+let posFlushT: any = null;
+function posMap(): Record<string, { f: number; t: number }> {
+  if (!posCache) { try { const o = JSON.parse(localStorage.getItem(READ_POS_KEY) || '{}'); posCache = (o && typeof o === 'object') ? o : {}; } catch (_) { posCache = {}; } }
+  return posCache!;
+}
+function posFlush(): void {
+  posFlushT = null;
+  const m = posMap(); const keys = Object.keys(m);
+  if (keys.length > READ_POS_MAX) { keys.sort((a, b) => (m[a].t || 0) - (m[b].t || 0)); keys.slice(0, keys.length - READ_POS_MAX).forEach((k) => { delete m[k]; }); }
+  try { localStorage.setItem(READ_POS_KEY, JSON.stringify(m)); } catch (_) {}
+}
+export function getReadPos(key: string): number { const e = key ? posMap()[key] : null; return (e && typeof e.f === 'number' && e.f > 0 && e.f <= 1) ? e.f : 0; }
+export function setReadPos(key: string, f: number, now?: boolean): void {
+  if (!key || !(f >= 0)) return;
+  const m = posMap();
+  if (f <= 0) delete m[key]; else m[key] = { f: Math.min(1, f), t: Date.now() };
+  if (now) { if (posFlushT) clearTimeout(posFlushT); posFlush(); }
+  else if (!posFlushT) posFlushT = setTimeout(posFlush, 400);
+}
+export function clearReadPos(key: string): void { setReadPos(key, 0, true); }
+try { window.addEventListener('pagehide', () => { if (posFlushT) { clearTimeout(posFlushT); posFlush(); } }); } catch (_) {}
+
+// 웹소설형 좌우 페이지 넘김(전자책식, 반응형+스와이프). posKey = 읽던 페이지 기억 키(없으면 기억 안 함).
+function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: string): { relayout: () => void; stage: HTMLElement; setAnim: (on: boolean) => void; goTo: (n: number) => void; getPage: () => number; getTotal: () => number } {
   const pager = mk('div', 'reader-pager');
   const stage = mk('div', 'reader-pager-stage');
   const doc = mk('div', 'reader-card reader-pager-doc'); doc.innerHTML = sanitizeArchiveHtml(html);
@@ -153,10 +182,13 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any): { relayout:
   stage.appendChild(doc); pager.appendChild(stage);
   const prev = mk('button', 'reader-page-arrow prev', '‹'); prev.setAttribute('aria-label', '이전 페이지');
   const next = mk('button', 'reader-page-arrow next', '›'); next.setAttribute('aria-label', '다음 페이지');
-  const ind = mk('div', 'reader-page-ind', '');
+  const ind = mk('div', 'reader-page-ind', ''); ind.setAttribute('role', 'button'); ind.tabIndex = 0; ind.title = '페이지 이동 — 번호(예: 50) 또는 비율(예: 50%) 입력';
   pager.append(prev, next, ind); reader.appendChild(pager);
   let page = 0, total = 1, screenStep = 1;
-  const apply = () => { doc.style.transform = `translateX(${-page * screenStep}px)`; ind.textContent = `${page + 1} / ${total}`; (prev as HTMLButtonElement).disabled = page <= 0; (next as HTMLButtonElement).disabled = page >= total - 1; };
+  let editing = false;   // 인디케이터가 입력칸으로 바뀐 상태(relayout이 텍스트를 덮지 않게)
+  let touched = false;   // 사용자가 한 번이라도 넘겼나 — 그 전까진 relayout마다 저장된 비율로 페이지를 다시 잡음(이미지 늦게 로드돼 총 페이지가 바뀌어도 같은 지점)
+  const restoreF = posKey ? getReadPos(posKey) : 0;
+  const apply = () => { doc.style.transform = `translateX(${-page * screenStep}px)`; if (!editing) ind.textContent = `${page + 1} / ${total}`; (prev as HTMLButtonElement).disabled = page <= 0; (next as HTMLButtonElement).disabled = page >= total - 1; };
   const relayout = () => {
     // 두 페이지 사이 등마루 간격(px) — 리더 설정 "간격" 슬라이더로 조절(기본 28). 컬럼 폭·넘김 step 계산에도 쓰임.
     const GAP = (rcfg.wnPageGap != null ? rcfg.wnPageGap : 28);
@@ -180,10 +212,36 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any): { relayout:
     const totalCols = Math.max(1, Math.round((doc.scrollWidth + GAP) / colStep));
     total = Math.max(1, Math.ceil(totalCols / cols));
     screenStep = cols * colStep;
-    if (page > total - 1) page = total - 1;
+    if (!touched && restoreF > 0) page = Math.max(0, Math.min(total - 1, Math.floor(restoreF * total)));   // 저장 비율 → 현재 총 페이지 기준 위치
+    else if (page > total - 1) page = total - 1;
     apply();
   };
-  const go = (d: number) => { const np = Math.max(0, Math.min(total - 1, page + d)); if (np !== page) { page = np; apply(); } };
+  // 페이지 중앙 비율로 저장((page+0.5)/total) — 복원은 floor(f*total)이라 총 페이지가 그대로면 정확히 같은 페이지, 달라지면 같은 지점 근처. 1페이지는 삭제(=처음부터).
+  const savePos = () => { if (posKey) setReadPos(posKey, page > 0 ? (page + 0.5) / total : 0, true); };
+  const goTo = (n: number) => { const np = Math.max(0, Math.min(total - 1, Math.floor(n))); touched = true; if (np !== page) { page = np; apply(); } savePos(); };
+  const go = (d: number) => goTo(page + d);
+  // 인디케이터 클릭 → 그 자리가 입력칸: 번호(1~총페이지) 또는 %(비율). Enter=이동, Esc/포커스 이탈=취소. 범위 밖 번호는 양끝으로 자름.
+  const openJump = () => {
+    if (editing) return; editing = true;
+    ind.classList.add('editing'); ind.textContent = '';
+    const inp = document.createElement('input'); inp.className = 'reader-page-jump'; inp.type = 'text'; inp.inputMode = 'numeric'; inp.autocomplete = 'off';
+    inp.placeholder = `1–${total} 또는 %`; inp.setAttribute('aria-label', '이동할 페이지');
+    const close = () => { if (!editing) return; editing = false; ind.classList.remove('editing'); inp.remove(); apply(); };
+    const commit = () => {
+      const s = inp.value.trim(); let np = -1;
+      const pm = /^(\d+(?:\.\d+)?)\s*%$/.exec(s);
+      if (pm) np = Math.floor(Math.min(100, +pm[1]) / 100 * total);
+      else if (/^\d+$/.test(s)) np = Math.max(0, +s - 1);
+      close();
+      if (np >= 0) goTo(np);
+    };
+    inp.onkeydown = (e: KeyboardEvent) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); commit(); } else if (e.key === 'Escape') { e.preventDefault(); close(); } };
+    inp.onblur = () => { setTimeout(close, 0); };
+    inp.onclick = (e: Event) => e.stopPropagation();
+    ind.appendChild(inp); inp.focus();
+  };
+  ind.onclick = (e: Event) => { e.stopPropagation(); openJump(); };
+  ind.onkeydown = (e: KeyboardEvent) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); openJump(); } };
   const toggleBar = () => { const h = !reader.classList.contains('bar-hidden'); reader.classList.toggle('bar-hidden', h); rcfg.immersive = h; saveReaderCfg(rcfg); requestAnimationFrame(relayout); };
   prev.onclick = (e) => { e.stopPropagation(); go(-1); };
   next.onclick = (e) => { e.stopPropagation(); go(1); };
@@ -206,6 +264,8 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any): { relayout:
     if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return;
     if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { go(1); e.preventDefault(); }
     else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { go(-1); e.preventDefault(); }
+    else if (e.key === 'Home') { goTo(0); e.preventDefault(); }
+    else if (e.key === 'End') { goTo(total - 1); e.preventDefault(); }
   };
   document.addEventListener('keydown', onKey);
   let ro: any = null; try { ro = new ResizeObserver(() => relayout()); ro.observe(pager); } catch (_) {}
@@ -214,7 +274,7 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any): { relayout:
   const cleanup = () => { document.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); try { ro && ro.disconnect(); } catch (_) {} window.removeEventListener('hashchange', cleanup); };
   window.addEventListener('hashchange', cleanup);
   requestAnimationFrame(() => { relayout(); setTimeout(relayout, 300); });
-  return { relayout, stage, setAnim: (on: boolean) => doc.classList.toggle('anim', on) };
+  return { relayout, stage, setAnim: (on: boolean) => doc.classList.toggle('anim', on), goTo, getPage: () => page, getTotal: () => total };
 }
 
 // 리더 설정 팝오버. rerender = 읽기방식(스크롤↔페이지) 전환 시 호출자 라우터로 다시 그림(library/reader별).
@@ -275,12 +335,13 @@ export function popAutoClose(pop: HTMLElement, trigger?: HTMLElement | null) {
 }
 
 // 리더 본문(스크롤↔페이지넘김 분기). app에 append + 결과 반환. rerender = 읽기방식 토글 시 호출자 라우터.
-export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn: boolean, theme: string | undefined, setBtn: HTMLElement, rerender: () => void, papa?: boolean): { paged: boolean; scroll?: HTMLElement; col?: HTMLElement } {
+// posKey = 화 안 읽던 위치 기억 키(페이지·스크롤 공통 비율). 없으면 기억 안 함.
+export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn: boolean, theme: string | undefined, setBtn: HTMLElement, rerender: () => void, papa?: boolean, posKey?: string): { paged: boolean; scroll?: HTMLElement; col?: HTMLElement } {
   const paged = wn && wnPagedResolved(rcfg);   // papa는 통짜 디자인이라 항상 스크롤(페이저·웹소설 타이포 비적용)
   if (paged) {
     applyWnTypography(reader, null, rcfg, theme);
     reader.classList.toggle('bar-hidden', !!rcfg.immersive);
-    const pager = buildWnPager(reader, html, rcfg);
+    const pager = buildWnPager(reader, html, rcfg, posKey);
     app().appendChild(reader);
     setBtn.onclick = () => toggleReaderSettings(reader, null, rcfg, wn, pager, setBtn, rerender);
     return { paged: true };
@@ -305,6 +366,22 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
   };
   applyImmersive();
   scroll.scrollTop = 0;
+  if (posKey) {
+    // 복원: 첫 프레임 + 300ms(이미지 늦은 로드로 높이 변할 때). 그 사이 사용자가 직접 스크롤했으면(우리가 놓은 값에서 벗어남) 두 번째 복원은 건너뜀.
+    let setTo = -1;
+    const restore = () => {
+      const f = getReadPos(posKey); const max = scroll.scrollHeight - scroll.clientHeight;
+      if (!(f > 0) || max <= 0) return;
+      if (setTo >= 0 && Math.abs(scroll.scrollTop - setTo) > 2) return;
+      setTo = Math.round(f * max); scroll.scrollTop = setTo;
+    };
+    requestAnimationFrame(() => { restore(); setTimeout(restore, 300); });
+    let saveT: any = null;
+    scroll.addEventListener('scroll', () => {
+      if (saveT) return;
+      saveT = setTimeout(() => { saveT = null; const max = scroll.scrollHeight - scroll.clientHeight; setReadPos(posKey, max > 0 ? scroll.scrollTop / max : 0); }, 250);
+    }, { passive: true });
+  }
   return { paged: false, scroll, col };
 }
 
@@ -314,7 +391,7 @@ const SHARE_PROGRESS_KEY = 'pro2-share-progress';
 function shareProgress(id: string): number { try { const o = JSON.parse(localStorage.getItem(SHARE_PROGRESS_KEY) || '{}'); const n = o && o[id]; return Number.isInteger(n) ? n : -1; } catch (_) { return -1; } }
 function setShareProgress(id: string, n: number): void { try { const o = JSON.parse(localStorage.getItem(SHARE_PROGRESS_KEY) || '{}'); o[id] = n; localStorage.setItem(SHARE_PROGRESS_KEY, JSON.stringify(o)); } catch (_) {} }
 
-function shareReaderView(o: { titleText: string; html: string; backLabel: string; onBack: () => void; prevHash?: string | null; nextHash?: string | null; rerender: () => void; papa?: boolean }) {
+function shareReaderView(o: { titleText: string; html: string; backLabel: string; onBack: () => void; prevHash?: string | null; nextHash?: string | null; rerender: () => void; papa?: boolean; posKey?: string }) {
   const rcfg = rdCfg();
   const papa = !!o.papa;
   const wn = !papa && isWebnovel({ html: o.html });
@@ -329,7 +406,7 @@ function shareReaderView(o: { titleText: string; html: string; backLabel: string
   const setBtn = mk('button', 'reader-iconbtn') as HTMLButtonElement; setBtn.innerHTML = icon('sliders') + ' 보기';
   const mine = mk('button', 'reader-iconbtn'); mine.innerHTML = icon('pencil') + ' 나도 만들기'; mine.onclick = () => { location.href = 'index.html'; };
   bar.append(setBtn, mine); reader.appendChild(bar);
-  mountReaderBody(reader, o.html, rcfg, wn, wn ? rcfg.wnTheme : undefined, setBtn, o.rerender, papa);
+  mountReaderBody(reader, o.html, rcfg, wn, wn ? rcfg.wnTheme : undefined, setBtn, o.rerender, papa, o.posKey);
 }
 function shareLoading() {
   app().innerHTML = '';
@@ -367,7 +444,7 @@ export async function renderShare(id: string, rerender: () => void) {
   if (!data) { shareNotFound(); return; }
   if (data.type === 'series') { renderSharedSeries(id, data); return; }
   const cn = shareWorkName(data);
-  shareReaderView({ titleText: (data.title || '공유된 로그') + (cn ? ' · ' + cn : ''), html: data.html || '', backLabel: '← 서재', onBack: () => { location.href = 'library.html'; }, rerender, papa: data.template === 'papa' });
+  shareReaderView({ titleText: (data.title || '공유된 로그') + (cn ? ' · ' + cn : ''), html: data.html || '', backLabel: '← 서재', onBack: () => { location.href = 'library.html'; }, rerender, papa: data.template === 'papa', posKey: 'share:' + id });
 }
 function renderSharedSeries(id: string, data: any) {
   const eps: any[] = data.eps || [];
@@ -435,6 +512,6 @@ export async function renderSharedSeriesEp(id: string, n: number, rerender: () =
     backLabel: '← 목록', onBack: () => { location.hash = '#/share/' + encodeURIComponent(id); },
     prevHash: n > 0 ? '#/share/' + encodeURIComponent(id) + '/' + (n - 1) : null,
     nextHash: n < eps.length - 1 ? '#/share/' + encodeURIComponent(id) + '/' + (n + 1) : null,
-    rerender, papa: ep.template === 'papa',
+    rerender, papa: ep.template === 'papa', posKey: 'share:' + id + ':' + n,
   });
 }
