@@ -390,7 +390,7 @@ function bmSave(key: string, list: Bm[]): void {
 // 화 삭제 시 그 화의 책갈피(·형광펜 자리) 제거. 없으면 쓰기 0.
 export function clearMarks(key: string): void {
   if (!key) return;
-  if (key.startsWith('share:')) { bmSave(key, []); return; }
+  if (key.startsWith('share:')) { bmSave(key, []); hlSave(key, []); return; }
   try { const m = loadMarks(); if (!(key in m.bm) && !(key in m.hl)) return; delete m.bm[key]; delete m.hl[key]; saveMarks(m); } catch (_) {}
 }
 // 여러 화 한 번에 정리(작품 삭제) — 저장 1회. 없으면 쓰기 0.
@@ -451,8 +451,19 @@ function bindBookmarkKey(reader: HTMLElement, bm: { toggle: () => void } | null)
 type Hl = { id: string; c: string; q: string; pre: string; post: string; at: number; view: string; t: number; memo?: string };
 const HL_MAX_LOG = 200, HL_MAX_ALL = 5000, HL_QMAX = 300;
 export const HL_COLORS: [string, string][] = [['y', '노랑'], ['g', '초록'], ['p', '분홍']];
-function hlList(key: string): Hl[] { try { const m = loadMarks(); return Array.isArray(m.hl[key]) ? m.hl[key] : []; } catch (_) { return []; } }
-function hlSave(key: string, list: Hl[]): void { try { const m = loadMarks(); if (list.length) m.hl[key] = list; else delete m.hl[key]; saveMarks(m); } catch (_) {} }
+const SHARE_HL_KEY = 'pro2-share-hl';   // 공유 리더 형광펜(기기 로컬) — {[key]: Hl[]}
+function hlList(key: string): Hl[] {
+  try {
+    if (key.startsWith('share:')) { const o = JSON.parse(localStorage.getItem(SHARE_HL_KEY) || '{}'); return Array.isArray(o[key]) ? o[key] : []; }
+    const m = loadMarks(); return Array.isArray(m.hl[key]) ? m.hl[key] : [];
+  } catch (_) { return []; }
+}
+function hlSave(key: string, list: Hl[]): void {
+  try {
+    if (key.startsWith('share:')) { const o = JSON.parse(localStorage.getItem(SHARE_HL_KEY) || '{}'); if (list.length) o[key] = list; else delete o[key]; localStorage.setItem(SHARE_HL_KEY, JSON.stringify(o)); return; }
+    const m = loadMarks(); if (list.length) m.hl[key] = list; else delete m.hl[key]; saveMarks(m);
+  } catch (_) {}
+}
 function hlTotal(): number { try { const m = loadMarks(); let n = 0; for (const k in m.hl) n += Array.isArray(m.hl[k]) ? m.hl[k].length : 0; return n; } catch (_) { return 0; } }
 // 본문 텍스트(노드 순서 이어붙임) + 각 노드 시작 오프셋.
 function rootText(root: HTMLElement): { text: string; nodes: Text[]; starts: number[] } {
@@ -522,7 +533,7 @@ function attachHighlights(reader: HTMLElement, root: HTMLElement, key: string, v
     if (!/\S/.test(q)) return '';
     if (q.length > HL_QMAX) return `형광펜은 한 번에 ${HL_QMAX}자까지예요.`;
     if (list.length >= HL_MAX_LOG) return `이 화의 형광펜이 ${HL_MAX_LOG}개예요 — 지우고 칠해 주세요.`;
-    if (hlTotal() >= HL_MAX_ALL) return `형광펜이 전체 ${HL_MAX_ALL}개예요 — 오래된 것을 정리해 주세요.`;
+    if (!key.startsWith('share:') && hlTotal() >= HL_MAX_ALL) return `형광펜이 전체 ${HL_MAX_ALL}개예요 — 오래된 것을 정리해 주세요.`;
     const anc = makeAnchor(rt.text, s, e);
     const h: Hl = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), c, q: anc.q, pre: anc.pre, post: anc.post, at: anc.at, view, t: Date.now() };
     list.push(h); list.sort((a, b) => a.at - b.at); hlSave(key, list);
@@ -636,9 +647,9 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
       pager.onPage(bm.paint);
     }
     bindBookmarkKey(reader, bm);
-    // 형광펜(페이지): 점프=칠한 mark가 놓인 페이지. 공유 리더는 2단계 범위 밖(로컬 저장은 3단계).
+    // 형광펜(페이지): 점프=칠한 mark가 놓인 페이지. 공유 리더('share:…')는 기기 로컬 저장.
     let hl: any = null;
-    if (posKey && !posKey.startsWith('share:')) hl = attachHighlights(reader, pager.doc, posKey, view || 'o', { jump: (el) => pager.goTo(pager.pageOf(el)), label: (el) => 'p.' + (pager.pageOf(el) + 1), here: (el) => pager.pageOf(el) === pager.getPage() });
+    if (posKey) hl = attachHighlights(reader, pager.doc, posKey, view || 'o', { jump: (el) => pager.goTo(pager.pageOf(el)), label: (el) => 'p.' + (pager.pageOf(el) + 1), here: (el) => pager.pageOf(el) === pager.getPage() });
     return { paged: true, root: pager.doc, hl };
   }
   const scroll = mk('div', 'reader-scroll'); const col = mk('div', 'reader-col'); col.style.maxWidth = (wn ? rcfg.wnWidth : rcfg.width) + 'px';
@@ -681,7 +692,7 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
   bindBookmarkKey(reader, bm);
   // 형광펜(세로 스크롤): 점프=mark의 y. 파파 제외(Shadow DOM — 선택 Range가 셸에서 안 보임 + "그대로 삼키기").
   let hl: any = null;
-  if (posKey && !posKey.startsWith('share:') && !papa) {
+  if (posKey && !papa) {
     const maxY = () => Math.max(1, scroll.scrollHeight - scroll.clientHeight);
     hl = attachHighlights(reader, card, posKey, view || 'o', { jump: (el) => { scroll.scrollTop = Math.max(0, yOf(el) - 40); }, label: (el) => Math.round(Math.min(1, yOf(el) / maxY()) * 100) + '%', here: (el) => { const y = yOf(el); return y >= scroll.scrollTop && y < scroll.scrollTop + scroll.clientHeight; } });
   }
@@ -702,6 +713,35 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
     }, { passive: true });
   }
   return { paged: false, scroll, col, root: card, hl };
+}
+
+// 선택 → 형광펜 색 팝오버(공유 리더용 최소판. 서재 리더는 readerLog.attachHideSelection이 숨기기와 함께 담당).
+//   eventsEl = mouseup/touchend를 받을 요소(스크롤러 또는 pager 본문), 선택이 eventsEl 밖이면 무시. onPick(range, 색).
+export function attachSelectionColors(eventsEl: HTMLElement, onPick: (range: Range, c: string) => void): void {
+  let pop: HTMLElement | null = null;
+  const dismiss = () => { if (pop) { pop.remove(); pop = null; } };
+  const show = () => {
+    dismiss();
+    let sel: Selection | null = null; try { sel = window.getSelection(); } catch (_) { return; }
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const text = String(sel.toString() || '').trim(); if (text.length < 2 || text.length > 300) return;
+    const range = sel.getRangeAt(0); if (!eventsEl.contains(range.commonAncestorContainer)) return;
+    const rect = range.getBoundingClientRect(); if (!rect || (!rect.width && !rect.height)) return;
+    pop = mk('div', 'reader-hidepop');
+    for (const [c, name] of HL_COLORS) {
+      const d = mk('button', 'hl-dot'); d.dataset.c = c; d.title = '형광펜 · ' + name;
+      d.onclick = (e: Event) => { e.stopPropagation(); const rg = range.cloneRange(); dismiss(); onPick(rg, c); };
+      pop.appendChild(d);
+    }
+    document.body.appendChild(pop);
+    const pw = pop.offsetWidth || 120;
+    pop.style.left = Math.max(8, Math.min(window.innerWidth - pw - 8, rect.left + rect.width / 2 - pw / 2)) + 'px';
+    pop.style.top = Math.min(window.innerHeight - 48, rect.bottom + 8) + 'px';
+  };
+  const onUp = () => setTimeout(show, 30);
+  eventsEl.addEventListener('mouseup', onUp); eventsEl.addEventListener('touchend', onUp);
+  eventsEl.addEventListener('scroll', dismiss, { passive: true });
+  window.addEventListener('hashchange', dismiss, { once: true });
 }
 
 // ── 공유 링크 열람(#/share, 비로그인 가능) ───────────────────────────────────
@@ -725,7 +765,9 @@ function shareReaderView(o: { titleText: string; html: string; backLabel: string
   const setBtn = mk('button', 'reader-iconbtn') as HTMLButtonElement; setBtn.innerHTML = icon('sliders') + ' 보기';
   const mine = mk('button', 'reader-iconbtn'); mine.innerHTML = icon('pencil') + ' 나도 만들기'; mine.onclick = () => { location.href = 'index.html'; };
   bar.append(setBtn, mine); reader.appendChild(bar);
-  mountReaderBody(reader, o.html, rcfg, wn, wn ? rcfg.wnTheme : undefined, setBtn, o.rerender, papa, o.posKey);
+  const mounted = mountReaderBody(reader, o.html, rcfg, wn, wn ? rcfg.wnTheme : undefined, setBtn, o.rerender, papa, o.posKey);
+  // 공유 리더 형광펜(기기 로컬): 드래그 → 색 3개 팝오버. 파파·형광펜 미부착이면 없음.
+  if (mounted.hl && mounted.root) { const hl = mounted.hl; attachSelectionColors(mounted.scroll || mounted.root, (rg, c) => { hl.add(rg, c); }); }
 }
 function shareLoading() {
   app().innerHTML = '';
