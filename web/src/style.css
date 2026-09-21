@@ -1103,6 +1103,9 @@ img.zoomable { cursor: zoom-in; }
 .se-title-edit:focus { outline: none; border-color: var(--accent); background: var(--panel); box-shadow: var(--ring); }
 .se-date { font: 11px/1 var(--font-mono); color: var(--muted); flex: none; }
 .se-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; border: 1px solid var(--line-2); }
+.se-marks { display: inline-flex; align-items: center; gap: 8px; flex: none; font: 600 11px/1 var(--font-mono); color: var(--muted); }   /* 책갈피·형광펜 개수 배지 */
+.se-mark { display: inline-flex; align-items: center; gap: 2px; }
+.se-mark svg { width: 12px; height: 12px; }
 .series-ep.read .se-dot { background: var(--accent); border-color: var(--accent); }
 .se-acts { display: flex; gap: 5px; flex: none; opacity: 0; transition: .12s; }
 .series-ep:hover .se-acts { opacity: 1; }

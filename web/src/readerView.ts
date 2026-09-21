@@ -393,6 +393,15 @@ export function clearMarks(key: string): void {
   if (key.startsWith('share:')) { bmSave(key, []); return; }
   try { const m = loadMarks(); if (!(key in m.bm) && !(key in m.hl)) return; delete m.bm[key]; delete m.hl[key]; saveMarks(m); } catch (_) {}
 }
+// 여러 화 한 번에 정리(작품 삭제) — 저장 1회. 없으면 쓰기 0.
+export function clearMarksMany(keys: string[]): void {
+  try { const m = loadMarks(); let ch = false; for (const k of keys) { if (k in m.bm) { delete m.bm[k]; ch = true; } if (k in m.hl) { delete m.hl[k]; ch = true; } } if (ch) saveMarks(m); } catch (_) {}
+}
+// 화별 개수(서재 배지·내 기록) — 호출 측이 loadMarks() 1회 하고 넘김.
+export function marksCountOf(m: any, key: string): { bm: number; hl: number } {
+  const b = (m && m.bm && Array.isArray(m.bm[key])) ? m.bm[key].length : 0, h = (m && m.hl && Array.isArray(m.hl[key])) ? m.hl[key].length : 0;
+  return { bm: b, hl: h };
+}
 // 목록 표시용 스니펫: 본문 블록 중 pred가 처음 true인 블록(=현재 위치에서 처음 시작하는 블록)의 텍스트 앞 40자. 파파(Shadow DOM)는 빈 문자열.
 function snipFrom(root: HTMLElement, pred: (el: HTMLElement) => boolean): string {
   const body = (root.querySelector('.lp-webnovel') as HTMLElement | null) || root;

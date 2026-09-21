@@ -4,7 +4,7 @@
 // 해시 라우팅: #/(서가) · #/read/:char(뷰어). 데이터는 store.ts(IndexedDB/localStorage)로 에디터와 공유.
 // 화 HTML은 살균 후 본문 DOM에 직접 렌더(연속 스크롤·테마·줌). 본인 로그 + 살균이라 안전.
 // @ts-nocheck
-import { logsAll, logsAdd, logsDelete, loadRead, saveRead, loadReaderCfg, saveReaderCfg, metaGet, metaSet, metaDelete, metaAll, newWorkKey, idbDeleteWorkCard, getBackendKind, kvLoad, kvSave, isSessionSynced, markSessionSynced, OPEN_LOG_KEY, dedupeLogList, dedupeLogsInStore, blobsPutAssetMap, resolveAssetShareUrls, scanWorkSizes, deleteWorkLogs, enqueueWorkDeletion } from './store.js';
+import { logsAll, logsAdd, logsDelete, loadRead, saveRead, loadMarks, loadReaderCfg, saveReaderCfg, metaGet, metaSet, metaDelete, metaAll, newWorkKey, idbDeleteWorkCard, getBackendKind, kvLoad, kvSave, isSessionSynced, markSessionSynced, OPEN_LOG_KEY, dedupeLogList, dedupeLogsInStore, blobsPutAssetMap, resolveAssetShareUrls, scanWorkSizes, deleteWorkLogs, enqueueWorkDeletion } from './store.js';
 import { mountAccountUI } from './accountUI.js';   // 계정 UI(가벼움) — 에디터와 공용
 import { richCopy } from './clipboard.js';         // 리치 복사(아카 붙여넣기) — 에디터와 공용
 import { desktopAvailable, externalCount, bakeLogs } from './bake.js';   // 이미지 굳히기(데스크탑 전용)
@@ -12,7 +12,7 @@ import { translateAvailable, translateUnits, getWorkPrompt, setWorkPrompt, openT
 import { cleanUnits, getCleanPrompt, setCleanPrompt, makeCleanFn, ensureCleanReady } from './cleanup.js';   // 가져온 로그 군더더기 정리(1차 결정론 + 2차 LLM·작품별 프롬프트)
 import { createReaderLog, fattenShareHtml, shareMissingNote, logTextSlots } from './readerLog.js';   // 번역/정리 흐름 + 공유 fatten(이미지 임베드+내 입력 가리기) + 못 담긴 에셋 경고 공용 + 텍스트 슬롯(명대사 추출)
 import { todayKey } from './readStats.js';   // 오늘 날짜 키(명대사 날짜 시드·그날의 로그)
-import { popAutoClose } from './readerView.js';   // 공유 팝오버 바깥 탭=닫힘(리더 단일화 공유와 거동 통일)
+import { popAutoClose, clearMarksMany, marksCountOf } from './readerView.js';   // 공유 팝오버 바깥 탭=닫힘(리더 단일화 공유와 거동 통일)
 import { isLocalFirst, getSyncMode, shareBaseUrl, isDesktop } from './desktopSync.js';   // 로컬-퍼스트(데스크탑 OR 웹-수동) + 수동 동기화 상태 + 플랫폼
 import { mountUpdateBanner } from './updateBanner.js';   // 자동 업데이트 배너(데스크탑 전용)
 import { buildBackup, parseBackup, isZip } from '../../core/preset/backupZip.js';   // 서재 내보내기/가져오기=zip(이미지 분리)
@@ -939,6 +939,7 @@ async function renderSeries(char: string) {
       try { await idbDeleteWorkCard(char); } catch (_) {}            // 그 작품에 기억된 카드도 정리
 
       const rd = loadRead(); delete rd.fav[char]; delete rd.lastByChar[char]; if (rd.lastReadAt) delete rd.lastReadAt[char]; for (const e of s.eps) delete rd.readIds[e.id]; saveRead(rd);
+      clearMarksMany(s.eps.map((e: any) => e.id));   // 그 작품 화들의 책갈피·형광펜도 정리
       seriesEditMode = false; await reloadLogs(); setStatus(`작품 "${s.name}" 삭제됨`); location.hash = '#/';
     };
     actions.appendChild(delS);
@@ -1091,6 +1092,7 @@ async function renderSeries(char: string) {
   }
   const list = document.createElement('div'); list.className = 'series-eps';
   const persistOrder = async () => { for (let k = 0; k < s.eps.length; k++) { s.eps[k].order = k; await logsAdd(s.eps[k]); } renderSeries(char); };
+  const marksAll = loadMarks();   // 책갈피·형광펜 개수 배지(화별) — 렌더당 1회 로드
   s.eps.forEach((r: any, i: number) => {
     const ep = document.createElement('div'); ep.className = 'series-ep' + (read.readIds[r.id] ? ' read' : '') + (r.id === s.lastReadId ? ' current' : '') + (edit ? ' editing' : '');
     const no = document.createElement('button'); no.className = 'se-no se-open'; no.textContent = String(i + 1); no.title = '이 화 열람';
@@ -1116,7 +1118,13 @@ async function renderSeries(char: string) {
     } else {
       // 보기 모드: 제목 텍스트, 클릭=열람.
       const t = document.createElement('span'); t.className = 'se-title'; t.textContent = r.title || '(제목 없음)';
-      ep.append(no, t, dt, dot, acts);
+      const mc = marksCountOf(marksAll, r.id);
+      if (mc.bm || mc.hl) {   // 🔖 2 · 🖍 5 배지(있을 때만)
+        const mb = document.createElement('span'); mb.className = 'se-marks'; mb.title = `책갈피 ${mc.bm} · 형광펜 ${mc.hl}`;
+        if (mc.bm) { const x = document.createElement('span'); x.className = 'se-mark'; x.innerHTML = icon('bookmark') + mc.bm; mb.appendChild(x); }
+        if (mc.hl) { const x = document.createElement('span'); x.className = 'se-mark'; x.innerHTML = icon('palette') + mc.hl; mb.appendChild(x); }
+        ep.append(no, t, mb, dt, dot, acts);
+      } else ep.append(no, t, dt, dot, acts);
       ep.onclick = () => { location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(r.id); };
     }
     list.appendChild(ep);

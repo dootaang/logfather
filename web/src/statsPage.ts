@@ -9,7 +9,7 @@
 //   이미지 0·인라인 스타일만(Froala 생존) — 어두운 배경+불꽃 오렌지(브랜드, 소개글과 같은 idiom).
 // @ts-nocheck
 import { icon } from './icons.js';
-import { loadRead } from './store.js';
+import { loadRead, loadMarks } from './store.js';
 import { readHistory, todayKey } from './readStats.js';
 import { logTextSlots } from './readerLog.js';
 import { richCopy } from './clipboard.js';
@@ -179,6 +179,25 @@ export function createStatsPage(ctx: { app: HTMLElement; getAllLogs: () => any[]
       const list = el('div', 'st-tops');
       tops.forEach((c, i) => { const r = el('div', 'st-top'); r.append(el('span', 'st-top-rank', String(i + 1)), el('span', 'st-top-name', nameFor(c)), el('span', 'st-top-n', fmtN(acc[c]) + '회')); list.appendChild(r); });
       scroll.appendChild(list);
+    }
+    // ── 책갈피·형광펜(리디식 표시): 합계 + 표시한 화 수 + 최다 형광펜 작품 TOP 3 ──
+    {
+      const marks = loadMarks();
+      const idChar: Record<string, string> = {}; for (const r of logs) idChar[r.id] = r.char;
+      let bmN = 0, hlN = 0; const marked = new Set<string>(); const hlByWork: Record<string, number> = {};
+      for (const k of Object.keys(marks.bm)) { const n = Array.isArray(marks.bm[k]) ? marks.bm[k].length : 0; if (n) { bmN += n; marked.add(k); } }
+      for (const k of Object.keys(marks.hl)) { const n = Array.isArray(marks.hl[k]) ? marks.hl[k].length : 0; if (n) { hlN += n; marked.add(k); const c = idChar[k]; if (c) hlByWork[c] = (hlByWork[c] || 0) + n; } }
+      h2('책갈피 · 형광펜');
+      const f3 = el('div', 'adm-facts');
+      f3.append(el('span', 'adm-fact', `책갈피 ${fmtN(bmN)}`), el('span', 'adm-fact', `형광펜 ${fmtN(hlN)}`), el('span', 'adm-fact', `표시한 화 ${fmtN(marked.size)}`));
+      scroll.appendChild(f3);
+      if (!bmN && !hlN) scroll.appendChild(el('div', 'adv-desc st-note', '아직 없어요 — 리더에서 문장을 드래그해 형광펜을 칠하거나, 우상단 귀퉁이 아이콘(B)으로 책갈피를 꽂아 보세요.'));
+      const hw = Object.keys(hlByWork).sort((a, b) => hlByWork[b] - hlByWork[a]).slice(0, 3);
+      if (hw.length) {
+        const list = el('div', 'st-tops');
+        hw.forEach((c, i) => { const r = el('div', 'st-top'); r.append(el('span', 'st-top-rank', String(i + 1)), el('span', 'st-top-name', nameFor(c)), el('span', 'st-top-n', fmtN(hlByWork[c]) + '줄')); list.appendChild(r); });
+        scroll.appendChild(list);
+      }
     }
     // 월별 보관 추이(최근 12개월)
     h2('보관');
