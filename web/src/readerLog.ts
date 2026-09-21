@@ -5,7 +5,7 @@
 // 페이지별 상태(allLogs·setStatus·route·로그인 사용자·표시이름)는 ctx로 주입 → library(작품 페이지의 번역/정리)와
 // reader(단일 화 열람)가 같은 코드 1벌을 쓴다(중복 복붙 금지). 리더 본문/페이저/타이포는 readerView.ts 재사용.
 // @ts-nocheck
-import { mountReaderBody, rdCfg, isWebnovel, isPapa, popAutoClose, mk, clearReadPos } from './readerView.js';
+import { mountReaderBody, rdCfg, isWebnovel, isPapa, popAutoClose, mk, clearReadPos, clearMarks } from './readerView.js';
 import { icon } from './icons.js';
 import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
@@ -601,7 +601,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     delB.onclick = async () => {
       if (!(await confirmModal(`이 화(${idx + 1}화${r.title ? ' · ' + r.title : ''})를 삭제할까요? 되돌릴 수 없습니다.`, { okText: '삭제', danger: true }))) return;
       await logsDelete(r.id);
-      const rd2 = loadRead(); delete rd2.readIds[r.id]; if (rd2.lastByChar && rd2.lastByChar[char] === r.id) delete rd2.lastByChar[char]; saveRead(rd2); clearReadPos(r.id);
+      const rd2 = loadRead(); delete rd2.readIds[r.id]; if (rd2.lastByChar && rd2.lastByChar[char] === r.id) delete rd2.lastByChar[char]; saveRead(rd2); clearReadPos(r.id); clearMarks(r.id);
       await reloadLogs();
       const remain = getAllLogs().filter((x: any) => x.char === char).length;
       setStatus('화를 삭제했습니다.');

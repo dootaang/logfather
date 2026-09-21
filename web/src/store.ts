@@ -19,6 +19,7 @@ export const IDB_NAME = 'pro2', IDB_STORE = 'cards', IDB_KEY = 'last', IDB_LOGS 
 
 // 동기화 대상 KV 키(한 곳에서 관리 → Firebase 마이그레이션/문서모델이 참조).
 export const READ_KEY = 'pro2-read';            // 읽기상태(이어보기·읽음·즐겨찾기·lastReadAt)
+export const MARKS_KEY = 'pro2-marks';          // 책갈피·형광펜(리디식) — 동기화 KV. { v, bm:{[화id]:[…]}, hl:{[화id]:[…]} } (계획서 HANDOFF_형광펜_책갈피.md)
 export const RDR_KEY = 'pro2-reader';           // 리더설정(테마·폭·줌) — 기기취향이라 동기화는 선택
 export const PRESET_LIB_KEY = 'pro2-preset-library';  // 디자인별 프리셋 목록
 export const AUTOSAVE_KEY = 'pro2-preset-autosave';   // 활성 설정 + designStore(작업 상태)
@@ -402,6 +403,8 @@ export function markSessionSynced(): void { try { sessionStorage.setItem(SESSION
 // ── 읽기 상태(이어보기·읽음·즐겨찾기) + 리더 설정(테마·폭·줌) ──────
 export function loadRead(): any { const o = backend.kvLoad(READ_KEY); return (o && typeof o === 'object') ? { readIds: {}, lastByChar: {}, fav: {}, ...o } : { readIds: {}, lastByChar: {}, fav: {} }; }
 export function saveRead(r: any) { backend.kvSave(READ_KEY, r); }
+export function loadMarks(): any { const o = backend.kvLoad(MARKS_KEY); const m = (o && typeof o === 'object') ? { v: 1, bm: {}, hl: {}, ...o } : { v: 1, bm: {}, hl: {} }; if (!m.bm || typeof m.bm !== 'object') m.bm = {}; if (!m.hl || typeof m.hl !== 'object') m.hl = {}; return m; }
+export function saveMarks(m: any) { backend.kvSave(MARKS_KEY, m); }
 export function loadReaderCfg(): any {
   const o = backend.kvLoad(RDR_KEY);
   // theme/width/zoom = 카드·다이어리 등 일반 로그용(현행 유지).

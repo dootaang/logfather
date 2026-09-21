@@ -6,7 +6,7 @@
 //          + 공유 링크 열람(#/share, 비로그인 가능 — share.ts getShare만 씀).
 // route() 의존(읽기방식 토글의 재렌더)은 rerender 콜백으로 분리 → 페이지(library/reader)별 라우터 주입.
 // @ts-nocheck
-import { loadReaderCfg, saveReaderCfg } from './store.js';
+import { loadReaderCfg, saveReaderCfg, loadMarks, saveMarks } from './store.js';
 import { getFontList } from './fonts.js';
 import { icon } from './icons.js';
 
@@ -174,7 +174,7 @@ export function clearReadPos(key: string): void { setReadPos(key, 0, true); }
 try { window.addEventListener('pagehide', () => { if (posFlushT) { clearTimeout(posFlushT); posFlush(); } }); } catch (_) {}
 
 // 웹소설형 좌우 페이지 넘김(전자책식, 반응형+스와이프). posKey = 읽던 페이지 기억 키(없으면 기억 안 함).
-function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: string): { relayout: () => void; stage: HTMLElement; doc: HTMLElement; setAnim: (on: boolean) => void; goTo: (n: number) => void; getPage: () => number; getTotal: () => number; pageOf: (el: HTMLElement) => number } {
+function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: string): { relayout: () => void; stage: HTMLElement; doc: HTMLElement; setAnim: (on: boolean) => void; goTo: (n: number) => void; getPage: () => number; getTotal: () => number; pageOf: (el: HTMLElement) => number; onPage: (fn: () => void) => void } {
   const pager = mk('div', 'reader-pager');
   const stage = mk('div', 'reader-pager-stage');
   const doc = mk('div', 'reader-card reader-pager-doc'); doc.innerHTML = sanitizeArchiveHtml(html);
@@ -186,11 +186,12 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
   pager.append(prev, next, ind); reader.appendChild(pager);
   let page = 0, total = 1, screenStep = 1;
   let lastCols = 1, lastColStep = 1;   // 마지막 relayout의 컬럼 수·컬럼 간격(px) — 요소→페이지 환산(목차 점프)용
+  const pageFns: (() => void)[] = [];   // 페이지 바뀔 때(apply) 부를 리스너 — 책갈피 귀퉁이 상태 갱신 등
   let editing = false;   // 페이지 이동 팝오버(슬라이더+번호 입력)가 열린 상태
   let syncPop: (() => void) | null = null;   // 열린 팝오버의 슬라이더·입력을 현재 page/total에 맞춤(relayout·넘김 시)
   let touched = false;   // 사용자가 한 번이라도 넘겼나 — 그 전까진 relayout마다 저장된 비율로 페이지를 다시 잡음(이미지 늦게 로드돼 총 페이지가 바뀌어도 같은 지점)
   const restoreF = posKey ? getReadPos(posKey) : 0;
-  const apply = () => { doc.style.transform = `translateX(${-page * screenStep}px)`; ind.textContent = `${page + 1} / ${total}`; if (syncPop) syncPop(); (prev as HTMLButtonElement).disabled = page <= 0; (next as HTMLButtonElement).disabled = page >= total - 1; };
+  const apply = () => { doc.style.transform = `translateX(${-page * screenStep}px)`; ind.textContent = `${page + 1} / ${total}`; if (syncPop) syncPop(); (prev as HTMLButtonElement).disabled = page <= 0; (next as HTMLButtonElement).disabled = page >= total - 1; for (const fn of pageFns) { try { fn(); } catch (_) {} } };
   const relayout = () => {
     // 두 페이지 사이 등마루 간격(px) — 리더 설정 "간격" 슬라이더로 조절(기본 28). 컬럼 폭·넘김 step 계산에도 쓰임.
     const GAP = (rcfg.wnPageGap != null ? rcfg.wnPageGap : 28);
@@ -284,6 +285,7 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
     if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5) { swiped = true; if (dx < 0) go(1); else go(-1); try { e.preventDefault(); } catch (_) {} }
   }, { passive: false });
   const onKey = (e: KeyboardEvent) => {
+    if (!document.contains(reader)) { cleanup(); return; }   // 재렌더로 떨어져 나간 옛 페이저 = 스스로 해제
     const a = document.activeElement as HTMLElement | null;
     if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return;
     if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { go(1); e.preventDefault(); }
@@ -298,7 +300,7 @@ function buildWnPager(reader: HTMLElement, html: string, rcfg: any, posKey?: str
   const cleanup = () => { closeJump(); document.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); try { ro && ro.disconnect(); } catch (_) {} window.removeEventListener('hashchange', cleanup); };
   window.addEventListener('hashchange', cleanup);
   requestAnimationFrame(() => { relayout(); setTimeout(relayout, 300); });
-  return { relayout, stage, doc, setAnim: (on: boolean) => doc.classList.toggle('anim', on), goTo, getPage: () => page, getTotal: () => total, pageOf };
+  return { relayout, stage, doc, setAnim: (on: boolean) => doc.classList.toggle('anim', on), goTo, getPage: () => page, getTotal: () => total, pageOf, onPage: (fn: () => void) => { pageFns.push(fn); } };
 }
 
 // ── 장 목차(chapter TOC) ──────────────────────────────────────────────────────
@@ -319,30 +321,114 @@ function findChapters(root: HTMLElement): { el: HTMLElement; title: string }[] {
   out.sort((a, b) => a.el === b.el ? 0 : ((a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1));
   return out;
 }
-// 목차 버튼(리더 좌하단) + 팝오버(장 목록, 현재 장 강조, 클릭=점프). 페이지·스크롤 모드 공용 — 위치 환산만 콜백으로 받음.
-//   isPast(el) = 그 장이 현재 위치보다 앞(또는 같음)인가 → 마지막으로 true인 장이 "현재 장". label(el) = 옆에 붙일 보조 표기(페이지 번호 등, 없으면 빈 문자열).
-function attachToc(reader: HTMLElement, root: HTMLElement, jump: (el: HTMLElement) => void, isPast: (el: HTMLElement) => boolean, label: (el: HTMLElement) => string): void {
-  const chapters = findChapters(root); if (!chapters.length) return;
-  const btn = mk('button', 'reader-toc-btn'); btn.innerHTML = icon('bookmark') + ` 목차 ${chapters.length}`; btn.title = '장 목차 — 장으로 바로 이동';
+// ── 좌하단 알약 버튼 + 목록 팝오버 (목차·책갈피 공용 1벌) ─────────────────────
+//   버튼은 .reader-fabs 묶음에 나란히. count()=0이면 버튼 숨김. items()는 열 때마다 계산(현재 위치·개수 최신). del 있으면 ✕(지우기).
+type PopItem = { title: string; label?: string; on?: boolean; pick: () => void; del?: () => void };
+function attachListPop(reader: HTMLElement, o: { cls: string; iconName: string; word: string; head: string; title: string; count: () => number; items: () => PopItem[] }): { refresh: () => void } {
+  let fabs = reader.querySelector(':scope > .reader-fabs') as HTMLElement | null;
+  if (!fabs) { fabs = mk('div', 'reader-fabs'); reader.appendChild(fabs); }
+  const btn = mk('button', 'reader-toc-btn ' + o.cls); btn.title = o.title;
+  const refresh = () => { const n = o.count(); btn.style.display = n ? '' : 'none'; btn.innerHTML = icon(o.iconName) + ` ${o.word} ${n}`; };
   btn.onclick = (e: Event) => {
     e.stopPropagation();
-    const old = reader.querySelector('.reader-toc-pop'); if (old) { old.remove(); return; }
-    const pop = mk('div', 'reader-toc-pop'); pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', '장 목차');
-    pop.appendChild(mk('div', 'rtp-head', `장 목차 · ${chapters.length}`));
-    let cur = -1; chapters.forEach((c, i) => { if (isPast(c.el)) cur = i; });
-    chapters.forEach((c, i) => {
-      const it = mk('button', 'rtp-item' + (i === cur ? ' on' : ''));
-      it.append(mk('span', 'rtp-no', String(i + 1)), mk('span', 'rtp-title', c.title));
-      const lb = label(c.el); if (lb) it.appendChild(mk('span', 'rtp-page', lb));
-      it.onclick = (ev: Event) => { ev.stopPropagation(); pop.remove(); jump(c.el); };
-      pop.appendChild(it);
-    });
+    const old = reader.querySelector('.reader-toc-pop') as HTMLElement | null;
+    const mine = !!(old && old.dataset.for === o.cls); if (old) old.remove(); if (mine) return;   // 같은 버튼 재클릭=닫기, 다른 버튼=바꿔 열기
+    const pop = mk('div', 'reader-toc-pop'); pop.dataset.for = o.cls; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', o.head);
+    const render = () => {
+      pop.innerHTML = '';
+      const items = o.items();
+      pop.appendChild(mk('div', 'rtp-head', `${o.head} · ${items.length}`));
+      items.forEach((it, i) => {
+        const row = mk('div', 'rtp-item' + (it.on ? ' on' : ''));
+        const main = mk('button', 'rtp-main');
+        main.append(mk('span', 'rtp-no', String(i + 1)), mk('span', 'rtp-title', it.title));
+        if (it.label) main.appendChild(mk('span', 'rtp-page', it.label));
+        main.onclick = (ev: Event) => { ev.stopPropagation(); pop.remove(); it.pick(); };
+        row.appendChild(main);
+        if (it.del) { const d = mk('button', 'rtp-del', '✕'); d.title = '지우기'; d.setAttribute('aria-label', '지우기'); d.onclick = (ev: Event) => { ev.stopPropagation(); it.del!(); refresh(); if (o.count()) render(); else pop.remove(); }; row.appendChild(d); }
+        pop.appendChild(row);
+      });
+    };
+    render();
     pop.onclick = (ev: Event) => ev.stopPropagation();
     pop.addEventListener('keydown', (ev: KeyboardEvent) => { ev.stopPropagation(); if (ev.key === 'Escape') { ev.preventDefault(); pop.remove(); btn.focus(); } });
     reader.appendChild(pop); popAutoClose(pop, btn);
-    const on = pop.querySelector('.rtp-item.on') as HTMLElement | null; if (on) { try { on.scrollIntoView({ block: 'center' }); } catch (_) {} on.focus(); }
+    const on = pop.querySelector('.rtp-item.on .rtp-main') as HTMLElement | null; if (on) { try { on.scrollIntoView({ block: 'center' }); } catch (_) {} on.focus(); }
   };
-  reader.appendChild(btn);
+  fabs.appendChild(btn); refresh();
+  return { refresh };
+}
+// 장 목차 — 페이지·스크롤 모드 공용, 위치 환산만 콜백. isPast(el)=그 장이 현재 위치보다 앞(또는 같음) → 마지막 true가 "현재 장". label(el)=보조 표기(페이지 번호 등).
+function attachToc(reader: HTMLElement, root: HTMLElement, jump: (el: HTMLElement) => void, isPast: (el: HTMLElement) => boolean, label: (el: HTMLElement) => string): void {
+  const chapters = findChapters(root); if (!chapters.length) return;
+  attachListPop(reader, { cls: 'toc', iconName: 'bookOpen', word: '목차', head: '장 목차', title: '장 목차 — 장으로 바로 이동', count: () => chapters.length,
+    items: () => { let cur = -1; chapters.forEach((c, i) => { if (isPast(c.el)) cur = i; }); return chapters.map((c, i) => ({ title: c.title, label: label(c.el), on: i === cur, pick: () => jump(c.el) })); } });
+}
+
+// ── 책갈피(리디식 "이 페이지 표시") — 계획서 HANDOFF_형광펜_책갈피.md 1단계 ─────────
+// 저장: 서재 화 = 동기화 KV pro2-marks.bm[화id] / 공유 리더(비로그인) = localStorage pro2-share-marks[key]. 항목 {id, f(비율 0~1), snip(그 페이지 첫 문장 40자), t}.
+//   비율 저장이라 글자 크기·창 폭이 바뀌어도 같은 지점(위치 기억과 같은 공식). 화당 50개. 원본 로그 불변(오버레이 데이터).
+const SHARE_MARKS_KEY = 'pro2-share-marks';
+const BM_MAX = 50;
+type Bm = { id: string; f: number; snip: string; t: number };
+function bmList(key: string): Bm[] {
+  try {
+    if (key.startsWith('share:')) { const o = JSON.parse(localStorage.getItem(SHARE_MARKS_KEY) || '{}'); return Array.isArray(o[key]) ? o[key] : []; }
+    const m = loadMarks(); return Array.isArray(m.bm[key]) ? m.bm[key] : [];
+  } catch (_) { return []; }
+}
+function bmSave(key: string, list: Bm[]): void {
+  try {
+    if (key.startsWith('share:')) { const o = JSON.parse(localStorage.getItem(SHARE_MARKS_KEY) || '{}'); if (list.length) o[key] = list; else delete o[key]; localStorage.setItem(SHARE_MARKS_KEY, JSON.stringify(o)); return; }
+    const m = loadMarks(); if (list.length) m.bm[key] = list; else delete m.bm[key]; saveMarks(m);
+  } catch (_) {}
+}
+// 화 삭제 시 그 화의 책갈피(·형광펜 자리) 제거. 없으면 쓰기 0.
+export function clearMarks(key: string): void {
+  if (!key) return;
+  if (key.startsWith('share:')) { bmSave(key, []); return; }
+  try { const m = loadMarks(); if (!(key in m.bm) && !(key in m.hl)) return; delete m.bm[key]; delete m.hl[key]; saveMarks(m); } catch (_) {}
+}
+// 목록 표시용 스니펫: 본문 블록 중 pred가 처음 true인 블록(=현재 위치에서 처음 시작하는 블록)의 텍스트 앞 40자. 파파(Shadow DOM)는 빈 문자열.
+function snipFrom(root: HTMLElement, pred: (el: HTMLElement) => boolean): string {
+  const body = (root.querySelector('.lp-webnovel') as HTMLElement | null) || root;
+  const cands = (body.children.length > 1 ? Array.from(body.children) : Array.from(body.querySelectorAll('p, div, li, blockquote'))) as HTMLElement[];
+  for (const el of cands) {
+    if (!pred(el)) continue;
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim(); if (!t) continue;
+    return t.length > 40 ? t.slice(0, 40) + '…' : t;
+  }
+  return '';
+}
+// 귀퉁이 토글 버튼(host에 부착) + 좌하단 "책갈피 N" 목록. 모드별 차이(현재 비율·같은 페이지 판정·점프·라벨·스니펫)는 콜백으로.
+function attachBookmarks(reader: HTMLElement, host: HTMLElement, key: string, o: { curF: () => number; same: (f: number) => boolean; jump: (f: number) => void; label: (f: number) => string; snip: () => string }): { toggle: () => void; paint: () => void } {
+  let list = bmList(key);
+  const corner = mk('button', 'reader-bm-corner'); corner.innerHTML = icon('bookmark');
+  const here = () => list.find((b) => o.same(b.f));
+  const pop = attachListPop(reader, { cls: 'bm', iconName: 'bookmark', word: '책갈피', head: '책갈피', title: '책갈피 목록 — 꽂아 둔 페이지로 바로 이동', count: () => list.length,
+    items: () => list.map((b) => ({ title: b.snip || '(본문)', label: o.label(b.f), on: o.same(b.f), pick: () => o.jump(b.f), del: () => { list = list.filter((x) => x !== b); bmSave(key, list); paint(); } })) });
+  const paint = () => { const h = !!here(); corner.classList.toggle('on', h); corner.title = (h ? '책갈피 빼기' : '이 페이지에 책갈피 꽂기') + ' (B)'; pop.refresh(); };
+  const toggle = () => {
+    const h = here();
+    if (h) { list = list.filter((b) => b !== h); bmSave(key, list); paint(); return; }
+    if (list.length >= BM_MAX) { corner.title = `책갈피는 화당 ${BM_MAX}개까지예요`; return; }
+    list.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), f: o.curF(), snip: o.snip(), t: Date.now() });
+    list.sort((a, b) => a.f - b.f); bmSave(key, list); paint();
+  };
+  corner.onclick = (e: Event) => { e.stopPropagation(); toggle(); };
+  host.appendChild(corner); paint();
+  return { toggle, paint };
+}
+// B 키 = 책갈피 토글(양 모드). e.code라 한/영 무관. 입력칸 포커스·조합키는 무시. 리더가 DOM에서 빠지면(재렌더·라우트 이탈) 스스로 해제.
+function bindBookmarkKey(reader: HTMLElement, bm: { toggle: () => void } | null): void {
+  if (!bm) return;
+  const onKey = (e: KeyboardEvent) => {
+    if (!document.contains(reader)) { document.removeEventListener('keydown', onKey); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey || e.code !== 'KeyB') return;
+    const a = document.activeElement as HTMLElement | null; if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return;
+    bm.toggle(); e.preventDefault();
+  };
+  document.addEventListener('keydown', onKey);
 }
 
 // 리더 설정 팝오버. rerender = 읽기방식(스크롤↔페이지) 전환 시 호출자 라우터로 다시 그림(library/reader별).
@@ -414,6 +500,16 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
     setBtn.onclick = () => toggleReaderSettings(reader, null, rcfg, wn, pager, setBtn, rerender);
     // 장 목차: 요소→페이지 환산(pageOf)으로 점프·현재 장 판정·"p.12" 표기. relayout 뒤 값이라 열 때마다 계산(캐시 X).
     attachToc(reader, pager.doc, (el) => pager.goTo(pager.pageOf(el)), (el) => pager.pageOf(el) <= pager.getPage(), (el) => 'p.' + (pager.pageOf(el) + 1));
+    // 책갈피(페이지): 비율↔페이지 환산은 위치 기억과 같은 공식(floor(f*total)). 귀퉁이 버튼은 pager 우상단.
+    let bm: { toggle: () => void; paint: () => void } | null = null;
+    if (posKey) {
+      const T = () => Math.max(1, pager.getTotal()); const pOf = (f: number) => Math.max(0, Math.min(T() - 1, Math.floor(f * T())));
+      bm = attachBookmarks(reader, pager.stage.parentElement as HTMLElement, posKey, {
+        curF: () => (pager.getPage() + 0.5) / T(), same: (f) => pOf(f) === pager.getPage(), jump: (f) => pager.goTo(pOf(f)), label: (f) => 'p.' + (pOf(f) + 1),
+        snip: () => snipFrom(pager.doc, (el) => pager.pageOf(el) >= pager.getPage()) });
+      pager.onPage(bm.paint);
+    }
+    bindBookmarkKey(reader, bm);
     return { paged: true };
   }
   const scroll = mk('div', 'reader-scroll'); const col = mk('div', 'reader-col'); col.style.maxWidth = (wn ? rcfg.wnWidth : rcfg.width) + 'px';
@@ -436,11 +532,24 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
   };
   applyImmersive();
   scroll.scrollTop = 0;
-  // 장 목차(세로 스크롤): 요소의 스크롤러 내 y로 점프·현재 장 판정. 파파는 Shadow DOM 격리라 장 마커를 못 보므로 미적용(=버튼 없음). 일반 로그(챗버블 등)도 제외.
+  const yOf = (el: HTMLElement) => el.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop;   // 요소의 스크롤러 내 y
+  // 장 목차(세로 스크롤): 요소 y로 점프·현재 장 판정. 파파는 Shadow DOM 격리라 장 마커를 못 보므로 미적용(=버튼 없음). 일반 로그(챗버블 등)도 제외.
   if (wn && !papa) {   // 웹소설형만(일반 로그의 상태창 h2 등이 목차로 잡히지 않게)
-    const yOf = (el: HTMLElement) => el.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop;
     attachToc(reader, card, (el) => { scroll.scrollTop = Math.max(0, yOf(el) - 12); }, (el) => yOf(el) <= scroll.scrollTop + 8, () => '');
   }
+  // 책갈피(세로 스크롤): 비율=scrollTop/max. 귀퉁이 버튼은 스크롤러 안 sticky 띠(높이 0)에 얹어 스크롤해도 우상단 고정. 파파도 됨(스니펫만 빈칸).
+  let bm: { toggle: () => void; paint: () => void } | null = null;
+  if (posKey) {
+    const stick = mk('div', 'reader-bm-stick'); scroll.insertBefore(stick, col);
+    const max = () => Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+    const cur = () => (max() > 0 ? scroll.scrollTop / max() : 0);
+    bm = attachBookmarks(reader, stick, posKey, {
+      curF: cur, same: (f) => Math.abs(f - cur()) <= 0.02, jump: (f) => { scroll.scrollTop = Math.round(f * max()); }, label: (f) => Math.round(f * 100) + '%',
+      snip: () => snipFrom(card, (el) => yOf(el) + el.offsetHeight > scroll.scrollTop + 4) });
+    let pt: any = null;
+    scroll.addEventListener('scroll', () => { if (pt) return; pt = requestAnimationFrame(() => { pt = null; bm && bm.paint(); }); }, { passive: true });
+  }
+  bindBookmarkKey(reader, bm);
   if (posKey) {
     // 복원: 첫 프레임 + 300ms(이미지 늦은 로드로 높이 변할 때). 그 사이 사용자가 직접 스크롤했으면(우리가 놓은 값에서 벗어남) 두 번째 복원은 건너뜀.
     let setTo = -1;
@@ -448,7 +557,7 @@ export function mountReaderBody(reader: HTMLElement, html: string, rcfg: any, wn
       const f = getReadPos(posKey); const max = scroll.scrollHeight - scroll.clientHeight;
       if (!(f > 0) || max <= 0) return;
       if (setTo >= 0 && Math.abs(scroll.scrollTop - setTo) > 2) return;
-      setTo = Math.round(f * max); scroll.scrollTop = setTo;
+      setTo = Math.round(f * max); scroll.style.scrollBehavior = 'auto'; scroll.scrollTop = setTo; scroll.style.scrollBehavior = '';   // 복원은 즉시(.reader-scroll의 smooth 무시 — 애니메이션 중 "사용자 스크롤" 오판 방지)
     };
     requestAnimationFrame(() => { restore(); setTimeout(restore, 300); });
     let saveT: any = null;
