@@ -32,6 +32,7 @@ import { applyTagScheme, assetDataUrl } from '../../core/card/assets.js';
 import { decodeCharxAsset } from '../../core/card/charx.js';
 import { decodeRisumAsset } from '../../core/card/risum.js';
 import { getImagePatterns, extractTagFromMatch, processImageTags } from '../../core/convert/processImageTags.js';
+import { imageTagRulesFromCards, collectCustomImageRefs, rewriteCustomImageTags } from '../../core/card/customImageTags.js';   // 모듈 전용 이미지 태그(<img sh=…>·<aoiimg src=…>) 학습
 import { resolveAssetCBS } from '../../core/convert/prepareBody.js';
 import { resolveAssetMarkers } from '../../core/convert/risuMarkers.js';
 
@@ -781,9 +782,12 @@ async function applyAssetsToSeries(char: string, files: File[], onStep?: (msg: s
     try { const p = parseCard(new Uint8Array(await f.arrayBuffer()), f.name, { lazy: true }); applyTagScheme(p); cards.push(p); } catch (e: any) { if (onStep) onStep(`카드 실패: ${f.name}`); }
   }
   if (!cards.length) throw new Error('읽을 수 있는 카드 파일이 없습니다.');
-  // 2) 작품 로그들에서 참조된 에셋명만 수집
+  // ★모듈 전용 이미지 태그: 카드 표시 규칙 중 '에셋을 부르는 CBS + 캡처 $n'인 규칙 → 그 in 패턴을 이미지 태그로(캡처=에셋 이름).
+  //   표준 태그만 찾던 탓에 <img sh="…"> 같은 자체 태그 모듈이 0/0이던 버그(2026-10-04 제보, 산해경).
+  const tagRules = imageTagRulesFromCards(cards);
+  // 2) 작품 로그들에서 참조된 에셋명만 수집(표준 태그 + 전용 태그)
   const refs = new Set<string>();
-  for (const r of logs) { collectAssetRefs(r.html || '', refs); collectAssetRefs(r.input || '', refs); }
+  for (const r of logs) { collectAssetRefs(r.html || '', refs); collectAssetRefs(r.input || '', refs); collectCustomImageRefs(r.html || '', tagRules, refs); collectCustomImageRefs(r.input || '', tagRules, refs); }
   // 3) 참조명 → dataURL (필요한 것만 디코드 = 대형 카드도 메모리 안전)
   const map: Record<string, string> = {};
   for (const ref of refs) {
@@ -798,7 +802,8 @@ async function applyAssetsToSeries(char: string, files: File[], onStep?: (msg: s
     const r = logs[i];
     if (onStep) onStep(`에셋 입히는 중… (${i + 1}/${logs.length}화)`);
     let h = String(r.html || '');
-    let nh = resolveAssetCBS(h, map);
+    let nh = rewriteCustomImageTags(h, tagRules, (n: string) => !!map[n]);   // 전용 태그 → {{img::이름}}(카드에 있는 그림만) → 아래 표준 치환기가 입힘
+    nh = resolveAssetCBS(nh, map);
     nh = processImageTags(nh, map, imgStyle);
     nh = resolveAssetMarkers(nh, map, imgStyle);
     if (nh !== h) { r.html = nh; try { await logsAdd(r); changed++; } catch (_) {} }
