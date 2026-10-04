@@ -1571,7 +1571,7 @@ async function runRecovery() {
   const GONE_KO: Record<string, string> = { oom: '메모리 부족', crashed: '화면 프로세스 충돌', 'launch-failed': '화면 시작 실패' };
   const why = document.createElement('div'); why.style.cssText = 'margin:10px 0 4px;padding:10px 12px;border-radius:8px;font-size:13.5px;line-height:1.6;background:rgba(169,136,119,.12);';
   why.textContent = gone
-    ? `앱 화면이 비정상 종료돼 자동으로 열렸어요 — 사유: ${GONE_KO[gone] || gone}${goneCode ? ` (코드 ${goneCode})` : ''}. 같은 증상이 반복되면 이 사유와 그때 하던 작업을 알려 주세요.`
+    ? `앱 화면이 비정상 종료돼 자동으로 열렸어요 — 사유: ${GONE_KO[gone] || gone}${goneCode ? ` (코드 ${goneCode})` : ''}. 같은 증상이 반복되면 이 사유와 그때 하던 작업, 그리고 진단 파일(사용자 데이터 폴더 log-maker-pro2 안의 crash-log.jsonl과 Crashpad 폴더)을 보내 주세요.`
     : '메뉴에서 직접 열어 들어온 복구 화면이에요.';
   const status = document.createElement('div'); status.style.cssText = 'color:#a98;margin:8px 0;'; status.textContent = '작품 용량 확인 중…';
   const list = document.createElement('div'); list.style.cssText = 'margin-top:8px;';

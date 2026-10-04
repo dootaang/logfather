@@ -13,8 +13,15 @@
 // app:// 는 registerSchemesAsPrivileged로 standard(고정 origin)+secure(보안 컨텍스트)로
 // 등록한다 → navigator.clipboard.write(리치 복사)·crypto.subtle·IndexedDB가 정상 동작.
 
-const { app, BrowserWindow, protocol, net, session, shell, ipcMain, screen, Menu } = require('electron');
+const { app, BrowserWindow, protocol, net, session, shell, ipcMain, screen, Menu, crashReporter } = require('electron');
 const path = require('node:path');
+
+// ★크래시 리포터(로컬 전용, v0.2.6) — 서버 전송 없음. 덤프는 userData/Crashpad/reports/*.dmp에만 남는다.
+//   켜지 않으면 렌더러의 네이티브 크래시가 전부 crashpad "핸들러 미연결" 대체코드(-36861 = 0xFFFF7003)로 덮여
+//   진짜 원인(스택 오버플로·접근 위반·메모리 부족)을 알 수 없었다(2026-10-04 "리더 → ← 작품" 크래시 제보).
+//   연결되면 render-process-gone의 exitCode가 실제 예외 코드가 되고, 메모리 부족도 reason 'oom'으로 구분된다.
+//   ★가능한 한 일찍(app ready 전) 시작해야 모든 자식 프로세스가 핸들러에 붙는다.
+try { crashReporter.start({ uploadToServer: false, compress: true }); } catch (_) {}
 const fs = require('node:fs/promises');
 const fss = require('node:fs');   // 동기(창 상태는 닫힐 때 동기 저장 — quit 전에 확실히 기록)
 const crypto = require('node:crypto');
