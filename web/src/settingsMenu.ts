@@ -89,7 +89,7 @@ function wireBackup(setStatus: (m: string) => void, refresh?: () => void) {
       //   예전엔 전 화를 펼친 채 담아(같은 그림 × 참조 수) 백업을 만들다 메모리 부족으로 죽을 수 있었다. 64개씩 끊어 읽어 메모리 바운드.
       const blobs: any[] = [];
       try {
-        const hs = new Set<string>(); for (const r of logs) for (const h of blobRefsIn(r && r.html)) hs.add(h);
+        const hs = new Set<string>(); for (const r of logs) { for (const h of blobRefsIn(r && r.html)) hs.add(h); if (r && r.assetRefs && typeof r.assetRefs === 'object') { for (const v of Object.values(r.assetRefs)) if (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)) hs.add(v); } }   // 본문 그림 참조 + 에셋 목록(assetRefs: 채팅 가져오기·에셋 입히기) 그림
         const all = Array.from(hs);
         for (let i = 0; i < all.length; i += 64) {
           const got = await blobsGet(all.slice(i, i + 64));

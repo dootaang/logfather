@@ -32,10 +32,8 @@ import { parseCard } from '../../core/card/parseCard.js';
 import { applyTagScheme, assetDataUrl } from '../../core/card/assets.js';
 import { decodeCharxAsset } from '../../core/card/charx.js';
 import { decodeRisumAsset } from '../../core/card/risum.js';
-import { getImagePatterns, extractTagFromMatch, processImageTags } from '../../core/convert/processImageTags.js';
+import { getImagePatterns, extractTagFromMatch } from '../../core/convert/processImageTags.js';
 import { imageTagRulesFromCards, collectCustomImageRefs, rewriteCustomImageTags } from '../../core/card/customImageTags.js';   // 모듈 전용 이미지 태그(<img sh=…>·<aoiimg src=…>) 학습
-import { resolveAssetCBS } from '../../core/convert/prepareBody.js';
-import { resolveAssetMarkers } from '../../core/convert/risuMarkers.js';
 
 // 화 정렬: 수동 order(작품 페이지에서 편집) 우선, 없으면 저장 날짜/id 순.
 const epOrder = (x: any) => (x && x.order != null ? x.order : 1e9);
@@ -219,7 +217,7 @@ function seriesBase(): any[] {
     const eps = sortEps(groups[char]);
     const latest = eps[eps.length - 1] || {};   // 빈 작품이면 {}(date 등 없음 → 표시 폴백)
     const unread = eps.filter((e) => !read.readIds[e.id]).length;
-    const cover = (metaByChar[char] && metaByChar[char].cover) || eps.map((e: any) => firstImg(e.html)).find(Boolean) || '';   // 사용자 지정 표지 우선
+    const cover = (metaByChar[char] && metaByChar[char].cover) || eps.map((e: any) => coverOfEp(e)).find(Boolean) || '';   // 사용자 지정 표지 우선
     const lastReadId = read.lastByChar[char];
     const readIdx = lastReadId ? eps.findIndex((e: any) => e.id === lastReadId) : -1;
     // 표시이름: meta.name 우선 → 로그에 저장된 표시이름(workName, meta 실패 대비) → wk_ 하드닝 폴백.
@@ -271,6 +269,14 @@ const baseMeta = (s: any) => `${s.count}화` + (s.unread ? ` · 안읽음 ${s.un
 const contMeta = (s: any) => `${s.readIdx + 1}화까지` + (s.unread ? ` · 안읽음 ${s.unread}` : ' · 완독');
 
 // 표지 src — 첫 그림이 저장소 참조(lpblob:해시)면 object URL로 풀어 넣는다(그림당 1개 재사용). 그 외는 그대로.
+// 화의 표지 후보: 본문 첫 그림이 진짜 주소(data:/http/blob/lpblob)면 그것, 아니면(에셋 마커뿐) 그 화 에셋 목록(assetRefs)의 첫 그림 참조.
+//   ★에셋 입히기가 그림을 본문에 굽지 않게 바뀐 뒤(2026-10-04)에도 작품 표지가 사라지지 않게. 에셋명 <img src="이름">은 깨진 표지라 건너뜀.
+function coverOfEp(e: any): string {
+  const f = firstImg(e && e.html);
+  if (f && /^(?:data:|https?:|blob:|lpblob:)/i.test(f)) return f;
+  const refs = e && e.assetRefs; if (refs && typeof refs === 'object') { for (const k of Object.keys(refs)) { const h = refs[k]; if (typeof h === 'string' && /^[0-9a-f]{64}$/.test(h)) return 'lpblob:' + h; } }
+  return '';
+}
 function setCoverSrc(im: HTMLImageElement, src: string) {
   if (src && src.indexOf('lpblob:') === 0) { displayBlobRefs(src).then((u) => { if (u && u.indexOf('lpblob:') !== 0) im.src = u; }).catch(() => {}); }
   else im.src = src;
@@ -523,7 +529,7 @@ function renderHome() {
     // ★2026-10-04: 본문은 그림 참조(lpblob:해시) 그대로, 참조된 그림만 해시별 한 벌(bin/blob/<해시>) 동봉 — 전 화를 펼치면 메모리 부족.
     const binFiles: Record<string, Uint8Array> = {}; const blobs: any[] = [];
     try {
-      const hs = new Set<string>(); for (const r of allLogs) for (const h of blobRefsIn(r && r.html)) hs.add(h);
+      const hs = new Set<string>(); for (const r of allLogs) { for (const h of blobRefsIn(r && r.html)) hs.add(h); if (r && r.assetRefs && typeof r.assetRefs === 'object') { for (const v of Object.values(r.assetRefs)) if (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)) hs.add(v); } }   // 본문 그림 참조 + 에셋 목록(assetRefs: 채팅 가져오기·에셋 입히기) 그림
       const all = Array.from(hs);
       for (let i = 0; i < all.length; i += 64) { const got = await blobsGet(all.slice(i, i + 64)); for (const [h, b] of got) { const path = 'bin/blob/' + h; binFiles[path] = b64ToU8(b.b64); blobs.push({ h, mime: b.mime, file: path }); } }
     } catch (_) {}
@@ -709,6 +715,8 @@ function importLogs() {
           // ★모든 출력 디자인의 구조 데이터 보존(예전엔 diary만 받아 채팅·웹소설·카드블록이 누락됐음).
           for (const fld of ['diary', 'chat', 'webnovel', 'cardCfg']) if (r[fld] && typeof r[fld] === 'object') rec[fld] = r[fld];
           if (typeof r.userCardCss === 'string') rec.userCardCss = r.userCardCss;
+          // 에셋 목록(이름→그림 해시) — 그림 실체는 위에서 복원한 blobs. 외부 파일이라 64자 hex 해시만 통과.
+          if (r.assetRefs && typeof r.assetRefs === 'object') { const ar: Record<string, string> = {}; for (const k of Object.keys(r.assetRefs)) { const v = r.assetRefs[k]; if (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)) ar[String(k).slice(0, 300)] = v; } if (Object.keys(ar).length) rec.assetRefs = ar; }
           if (r.order != null) rec.order = r.order;
           await logsAdd(rec); n++;
         }
@@ -824,18 +832,31 @@ async function applyAssetsToSeries(char: string, files: File[], onStep?: (msg: s
     for (const p of cards) { const a = assetByRefIn(p, key); if (a) { const u = decodeAssetUrl(p, a); if (u) { map[key] = u; break; } } }
   }
   const mapped = Object.keys(map).length;
-  // 4) 각 로그 html 후처리(치환기 3종) → 바뀐 것만 저장
-  const imgStyle: any = { size: 100, margin: 10, useBorder: false, borderColor: '#000000', useShadow: true };
+  // 4) ★그림은 작품당 한 벌만(IDB_BLOBS, 콘텐츠해시 dedup) → 이름→해시. 본문엔 굽지 않는다(2026-10-04).
+  //   예전엔 태그마다 그림을 본문에 박아(같은 스프라이트 × 수천 번) 저장소는 참조로 작아도 열 때마다 수 GB로 펼쳐져
+  //   서재·리더가 메모리 부족으로 죽었다. 이제 채팅 가져오기와 같은 방식 — 화엔 rec.assetRefs(이름→해시, 작음)만,
+  //   리더가 표시할 때 그 화에 필요한 그림만 복원(applyAssetMap, 같은 카드 스타일). 공유·클라우드·백업도 assetRefs 경로를 탄다.
+  if (onStep) onStep(`그림 저장 중… (${mapped}개)`);
+  let hashes: Record<string, string> = {};
+  try { hashes = await blobsPutAssetMap(map); } catch (_) {}
+  for (const k of Object.keys(map)) delete map[k];   // 큰 dataURL 즉시 해제
+  // 5) 각 화: 전용 태그 → {{img::이름}}(카드에 그림이 있는 이름만, 나머지 태그는 그대로=보이지 않음)
+  //    + 그 화가 실제로 쓰는 이름만 assetRefs에 합침(기존 것 유지). 바뀐 화만 저장.
   let changed = 0;
   for (let i = 0; i < logs.length; i++) {
     const r = logs[i];
     if (onStep) onStep(`에셋 입히는 중… (${i + 1}/${logs.length}화)`);
-    let h = String(r.html || '');
-    let nh = rewriteCustomImageTags(h, tagRules, (n: string) => !!map[n]);   // 전용 태그 → {{img::이름}}(카드에 있는 그림만) → 아래 표준 치환기가 입힘
-    nh = resolveAssetCBS(nh, map);
-    nh = processImageTags(nh, map, imgStyle);
-    nh = resolveAssetMarkers(nh, map, imgStyle);
-    if (nh !== h) { r.html = nh; try { await logsAdd(r); changed++; } catch (_) {} }
+    const h = String(r.html || '');
+    const nh = rewriteCustomImageTags(h, tagRules, (n: string) => !!hashes[n]);
+    const mine = new Set<string>();
+    collectAssetRefs(nh, mine); collectAssetRefs(r.input || '', mine); collectCustomImageRefs(r.input || '', tagRules, mine);
+    const prev = (r.assetRefs && typeof r.assetRefs === 'object') ? r.assetRefs : {};
+    const next: Record<string, string> = Object.assign({}, prev); let added = 0;
+    for (const n of mine) { const k = n.trim(); const hh = hashes[k]; if (hh && next[k] !== hh) { next[k] = hh; added++; } }
+    if (nh !== h || added) {
+      r.html = nh; if (added) r.assetRefs = next;
+      try { await logsAdd(r); changed++; } catch (_) {}
+    }
   }
   return { changed, mapped, refs: refs.size };
 }
