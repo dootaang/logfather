@@ -121,6 +121,66 @@ function collectBlobRefs(html: string, into: Set<string>) {
   let m: RegExpExecArray | null; BLOB_REF_RE.lastIndex = 0;
   while ((m = BLOB_REF_RE.exec(html)) !== null) into.add(m[1]);
 }
+/** html 안 lpblob 참조 해시들(중복 제거). */
+export function blobRefsIn(html: string): string[] { const s = new Set<string>(); collectBlobRefs(html, s); return Array.from(s); }
+
+// ── 참조(lpblob:) 해석 — 화면용/반출용 (2026-10-04 OOM 수정) ──────────────────
+// 화면용: 그림(해시)마다 object URL을 딱 한 번 만들어 재사용 → 같은 그림이 100번 참조돼도 메모리엔 1벌.
+//   blob: URL은 이 문서 안에서만 유효 → 저장(logsAdd)·반출(portableHtml) 때 다시 lpblob:/data:로 되돌린다.
+const _objUrlByHash = new Map<string, string>();
+const _hashByObjUrl = new Map<string, string>();
+const OBJ_URL_RE = /blob:[^"'\s)<>]+/g;
+// 해시들 → {mime,b64} 맵. 로컬에 없으면(다른 기기에서 만든 화) 로그인 시 클라우드에서 받아 채운 뒤 다시 읽는다.
+async function _blobsWithCloud(hashes: string[]): Promise<Map<string, { mime: string; b64: string }>> {
+  let map = await blobsGet(hashes);
+  const missing = hashes.filter((h) => !map.has(h));
+  if (missing.length && _blobCloudFetch) { try { await _blobCloudFetch(missing); map = await blobsGet(hashes); } catch (_) {} }
+  return map;
+}
+const _objUrlPending = new Map<string, Promise<void>>();   // 해시 → 만드는 중(동시 호출이 같은 그림 URL을 두 번 만들지 않게)
+/** 화면용: lpblob 참조 → 그림당 1개 object URL. 못 찾은 참조는 그대로(깨진 그림보다 보존). */
+export async function displayBlobRefs(html: string): Promise<string> {
+  if (typeof html !== 'string' || html.indexOf('lpblob:') < 0) return html || '';
+  const all = blobRefsIn(html).filter((h) => !_objUrlByHash.has(h));
+  const waits: Promise<void>[] = [];
+  const need: string[] = [];
+  for (const h of all) { const p = _objUrlPending.get(h); if (p) waits.push(p); else need.push(h); }
+  if (need.length) {
+    const job = (async () => {
+      const map = await _blobsWithCloud(need);
+      for (const [h, b] of map) {
+        if (_objUrlByHash.has(h)) continue;
+        try { const url = URL.createObjectURL(new Blob([b64Bytes(b.b64)], { type: 'image/' + b.mime })); _objUrlByHash.set(h, url); _hashByObjUrl.set(url, h); } catch (_) {}
+      }
+    })().finally(() => { for (const h of need) _objUrlPending.delete(h); });
+    for (const h of need) _objUrlPending.set(h, job);
+    waits.push(job);
+  }
+  if (waits.length) { try { await Promise.all(waits); } catch (_) {} }
+  return displayBlobRefsSync(html);
+}
+/** 화면용(동기): 이미 만들어 둔 object URL로만 바꾼다(없는 참조는 그대로). 렌더 도중 await 없이 쓰려고 — displayBlobRefs로 미리 데운 뒤 호출. */
+export function displayBlobRefsSync(html: string): string {
+  if (typeof html !== 'string' || html.indexOf('lpblob:') < 0) return html || '';
+  return html.replace(BLOB_REF_RE, (full, h) => _objUrlByHash.get(h) || full);
+}
+// 우리가 만든 object URL → lpblob 참조(동기, 저장 직전 안전망). 남의 blob: URL은 손대지 않음.
+function _objUrlsToRefs(html: string): string {
+  if (!_hashByObjUrl.size || typeof html !== 'string' || html.indexOf('blob:') < 0) return html;
+  return html.replace(OBJ_URL_RE, (u) => { const h = _hashByObjUrl.get(u); return h ? 'lpblob:' + h : u; });
+}
+/** 반출용(복사·편집기·공유 폴백): 그 한 화의 참조/우리 object URL → data: URL. 이 화 분량만 메모리에 펼친다. */
+export async function portableHtml(html: string): Promise<string> {
+  let s = _objUrlsToRefs(String(html == null ? '' : html));
+  if (s.indexOf('lpblob:') < 0) return s;
+  return hydrateHtml(s, await _blobsWithCloud(blobRefsIn(s)));
+}
+/** 클라우드에서 받은 html 등 data: 그림이 박힌 html → 블롭은 로컬(IDB_BLOBS)에 한 벌 저장하고 참조 html 반환. */
+export async function dehydrateAndStoreBlobs(html: string): Promise<string> {
+  const d = await dehydrateHtml(_objUrlsToRefs(html));
+  if (d.blobs.length) { try { await blobsPutRaw(d.blobs); } catch (_) { return html; } }   // 저장 실패면 원본 유지(참조만 남아 깨지는 것 방지)
+  return d.html;
+}
 
 // ── 공유 에셋 저장(가져온 챗의 이미지를 화마다 굽지 않고 한 벌만) ──────────────
 // 챗 가져오기는 같은 스프라이트를 여러 화에 반복 임베드해 용량·메모리가 폭발했다(146MB → 1GB+).
@@ -193,23 +253,40 @@ export async function resolveAssetRefs(refs: Record<string, string>): Promise<Re
 const _recKeyOf = (v: any) => String((v && v.char) || '');
 const _recBytes = (v: any) => { let n = 0; if (v && typeof v.html === 'string') n += v.html.length; if (v && v.assets) { try { n += JSON.stringify(v.assets).length; } catch (_) { n += 64 * 1024 * 1024; } } return n; };
 // 작품별 용량·화수 집계(커서 1건씩, 메모리 안전). 용량 큰 순으로 정렬해 반환 — 복구 화면 picker용.
-export async function scanWorkSizes(): Promise<Array<{ key: string; name: string; bytes: number; count: number }>> {
+//   bytes = 저장 크기(참조는 짧은 글자로 셈). expanded = 그림 참조(lpblob)를 원래 그림으로 펼쳤을 때 크기
+//   (참조 1개 = 그 그림 base64 길이). ★2026-10-04: 저장 5.9MB인데 펼치면 4GB였던 작품을 "정상"으로 오판하던 것 수정.
+export async function scanWorkSizes(): Promise<Array<{ key: string; name: string; bytes: number; expanded: number; count: number }>> {
   const db = await idbOpen();
-  const tally = new Map<string, { name: string; bytes: number; count: number }>();
+  // 1) 그림 블롭 크기표(해시 → base64 길이). 커서로 한 건씩(값은 즉시 버림).
+  const blobLen = new Map<string, number>();
+  await new Promise<void>((res) => {
+    let tx: IDBTransaction;
+    try { tx = db.transaction(IDB_BLOBS, 'readonly'); } catch (_) { return res(); }
+    const req = tx.objectStore(IDB_BLOBS).openCursor();
+    req.onsuccess = () => { const c = req.result; if (!c) return; const v = c.value; if (v && v.h && typeof v.b64 === 'string') blobLen.set(String(v.h), v.b64.length); c.continue(); };
+    tx.oncomplete = () => res(); tx.onerror = () => res();
+  });
+  // 2) 화별 저장 크기 + 펼친 크기(참조 수 × 그 그림 크기).
+  const tally = new Map<string, { name: string; bytes: number; expanded: number; count: number }>();
   await new Promise<void>((res) => {
     const tx = db.transaction(IDB_LOGS, 'readonly');
     const req = tx.objectStore(IDB_LOGS).openCursor();
     req.onsuccess = () => {
       const c = req.result; if (!c) return;
       const v = c.value; const k = _recKeyOf(v);
-      const e = tally.get(k) || { name: String((v && (v.workName || v.char)) || '(이름 없음)'), bytes: 0, count: 0 };
-      e.bytes += _recBytes(v); e.count += 1; if (v && v.workName) e.name = String(v.workName);
+      const e = tally.get(k) || { name: String((v && (v.workName || v.char)) || '(이름 없음)'), bytes: 0, expanded: 0, count: 0 };
+      const b = _recBytes(v); let x = b;
+      if (v && typeof v.html === 'string' && v.html.indexOf('lpblob:') >= 0) {
+        let m: RegExpExecArray | null; BLOB_REF_RE.lastIndex = 0;
+        while ((m = BLOB_REF_RE.exec(v.html)) !== null) x += (blobLen.get(m[1]) || 0);
+      }
+      e.bytes += b; e.expanded += x; e.count += 1; if (v && v.workName) e.name = String(v.workName);
       tally.set(k, e); c.continue();
     };
     tx.oncomplete = () => res(); tx.onerror = () => res();
   });
   db.close();
-  return Array.from(tally, ([key, e]) => ({ key, name: e.name, bytes: e.bytes, count: e.count })).sort((a, b) => b.bytes - a.bytes);
+  return Array.from(tally, ([key, e]) => ({ key, name: e.name, bytes: e.bytes, expanded: e.expanded, count: e.count })).sort((a, b) => b.expanded - a.expanded);
 }
 // 지정한 작품(char 키)의 화만 삭제(커서 1건씩). ★이 함수만으로는 어떤 작품도 자동 삭제되지 않음 — 호출부가 명시한 작품만.
 export async function deleteWorkLogs(charKey: string): Promise<{ deleted: number }> {
@@ -232,7 +309,9 @@ const LocalBackend = {
   // 로그 보관함 — 저장 시 큰 이미지를 dedup(blobs)로 분리, 읽기 시 복원.
   async logsAdd(rec: any) {
     let toStore = rec, blobs: any[] = [];
-    try { if (rec && typeof rec.html === 'string') { const d = await dehydrateHtml(rec.html); if (d.blobs.length) { toStore = Object.assign({}, rec, { html: d.html }); blobs = d.blobs; } } } catch (_) { toStore = rec; }
+    // ★화면용 object URL(blob:)이 섞여 들어와도 저장본엔 lpblob 참조로(다음 실행엔 그 URL이 무효).
+    if (rec && typeof rec.html === 'string' && rec.html.indexOf('blob:') >= 0) { const h2 = _objUrlsToRefs(rec.html); if (h2 !== rec.html) toStore = Object.assign({}, rec, { html: h2 }); }
+    try { if (toStore && typeof toStore.html === 'string') { const d = await dehydrateHtml(toStore.html); if (d.blobs.length) { toStore = Object.assign({}, toStore, { html: d.html }); blobs = d.blobs; } } } catch (_) { /* 원본(또는 URL만 되돌린 것) 저장 */ }
     const db = await idbOpen();
     await new Promise<void>((res, rej) => {
       const stores = blobs.length ? [IDB_LOGS, IDB_BLOBS] : [IDB_LOGS];
@@ -246,13 +325,9 @@ const LocalBackend = {
   async logsAll(): Promise<any[]> {
     const db = await idbOpen();
     const r = await new Promise<any[]>((res, rej) => { const tx = db.transaction(IDB_LOGS, 'readonly'); const g = tx.objectStore(IDB_LOGS).getAll(); g.onsuccess = () => res(g.result || []); g.onerror = () => rej(g.error); });
-    // 참조(lpblob:) 복원 — 필요한 해시만 한 번에 읽어 hydrate.
-    const need = new Set<string>(); for (const rec of r) if (rec && rec.html) collectBlobRefs(rec.html, need);
-    if (need.size) {
-      const map = new Map<string, any>();
-      await new Promise<void>((res) => { const tx = db.transaction(IDB_BLOBS, 'readonly'); const bs = tx.objectStore(IDB_BLOBS); let left = need.size; if (!left) return res(); need.forEach((h) => { const g = bs.get(h); g.onsuccess = () => { if (g.result) map.set(h, g.result); if (--left === 0) res(); }; g.onerror = () => { if (--left === 0) res(); }; }); });
-      for (const rec of r) if (rec && rec.html && rec.html.indexOf('lpblob:') >= 0) rec.html = hydrateHtml(rec.html, map);
-    }
+    // ★2026-10-04 OOM 수정: 참조(lpblob:)를 여기서 펼치지 않는다. 예전엔 전 화의 모든 참조를 data:로 hydrate해서,
+    //   같은 그림이 수천 번 참조된 작품(에셋 입히기)은 저장 213KB → 메모리 4GB+로 부풀어 서재·리더가 V8 힙 OOM으로 죽었다.
+    //   이제 html은 참조 그대로 — 화면은 displayBlobRefs(그림당 object URL 1개), 반출(복사·편집기)은 portableHtml(그 한 화만).
     db.close(); return r;
   },
   async logsDelete(id: string) {

@@ -25,6 +25,7 @@ import { buildBundle, parseBundle, defaultSettings } from '../../core/preset/bun
 import { classifyLegacyFiles, applyLegacy } from '../../core/preset/legacy.js';   // Pro1 가져오기(편집기 기본카드) — 분류/적용은 코어 공유
 // (전체 백업/Pro1 레거시 import는 settingsMenu.ts[서재]로 이전 — 편집기 main.ts엔 없음.)
 import { generatePalette, deriveDarkBg } from '../../core/color/palette.js';
+import { portableHtml } from './store.js';   // 편집기로 연 화의 그림 참조 펼치기
 import { idbSaveCard, idbLoadCard, idbClearCard, idbSaveWorkCard, idbLoadWorkCard, logsAdd, logsAll, logsDelete, OPEN_LOG_KEY, kvLoad, kvSave, PRESET_LIB_KEY, AUTOSAVE_KEY, READ_KEY, RDR_KEY, markSessionSynced, metaSet, metaGet, metaAll, newWorkKey, dedupeLogsInStore, clearLibraryLocal, LocalBackend, archiveSaveSource } from './store.js';
 // auth.js / sync.js 는 무거운 Firebase SDK를 끌어온다 → 정적 import 대신 첫 렌더 뒤 동적 import(초기 로딩 경량화).
 import { mountAccountUI } from './accountUI.js';   // 계정 UI(가벼움, DOM만) — 에디터·서재 공용
@@ -3020,7 +3021,9 @@ if (MODE_LOG) {
 }
 async function openLogById(r: any) {
   if (!r) return;
-  const tmpl = (r.template === 'log-diary' || r.template === 'custom-css' || r.template === 'chat' || r.template === 'webnovel' || r.template === 'papa') ? r.template : 'card';
+  // ★저장 본문의 그림 참조(lpblob)는 편집기 입력칸·미리보기에서 못 보인다 → 이 화만 data:로 펼쳐 연다(보관 시 다시 참조로 줄어듦).
+  if (typeof r.html === 'string' && r.html.indexOf('lpblob:') >= 0) { try { r = Object.assign({}, r, { html: await portableHtml(r.html) }); } catch (_) {} }
+  const tmpl =(r.template === 'log-diary' || r.template === 'custom-css' || r.template === 'chat' || r.template === 'webnovel' || r.template === 'papa') ? r.template : 'card';
   designStore[settings.template || 'card'] = captureLook(settings.template || 'card');
   settings.template = tmpl;
   settings.templateSettings = settings.templateSettings || {};

@@ -20,7 +20,7 @@ import {
   collection, doc, getDoc, getDocs, setDoc, deleteDoc, onSnapshot, query, where,
 } from 'firebase/firestore';
 import { getStorage, ref as sref, uploadString, getBytes, getDownloadURL, deleteObject, listAll } from 'firebase/storage';
-import { LocalBackend, blobsGet, blobsPutRaw, setBlobCloudFetcher, setShareAssetUploader } from './store.js';   // KV 이중 쓰기 + 공유 에셋 블롭(콘텐츠해시) 동기화 + 공유 이미지 Storage 업로더
+import { LocalBackend, blobsGet, blobsPutRaw, setBlobCloudFetcher, setShareAssetUploader, dehydrateAndStoreBlobs, blobRefsIn } from './store.js';   // KV 이중 쓰기 + 공유 에셋 블롭(콘텐츠해시) 동기화 + 공유 이미지 Storage 업로더
 import { parseDataUrlImg, buildAssetDataUrl } from '../../core/card/assetRefs.js';
 import { reencodeOne } from './clipboard.js';   // 공유 이미지 축소(캔버스) 재사용
 
@@ -164,6 +164,16 @@ export function createFirebaseBackend(uid: string): any {
     // ★JSON 왕복 = 깊은 undefined 제거 — Firestore setDoc은 undefined 필드를 거부(과거 번역이 만든 orig.chat:undefined로
     //   동기화가 영구 실패·재시도 무한 루프). 이미 로컬에 남은 오염 레코드도 다음 flush에서 자동 치유된다.
     const r: any = JSON.parse(JSON.stringify(rec));
+    // ★2026-10-04 OOM 수정: 클라우드엔 참조(lpblob) 형태로 — 펼친 html(같은 그림 × 참조 수)을 올리면 저장소가 부풀고,
+    //   다른 기기가 내려받을 때 그대로 메모리 폭발. 그림은 해시 주소(users/{uid}/blobs/{hash})로 한 벌만.
+    if (typeof r.html === 'string' && r.html.indexOf('data:image/') >= 0) { try { r.html = await dehydrateAndStoreBlobs(r.html); } catch (_) {} }
+    if (typeof r.html === 'string' && r.html.indexOf('lpblob:') >= 0) {
+      const refs = blobRefsIn(r.html);
+      await pushBlobs(refs);
+      // pushBlobs는 개별 실패를 삼킨다 → 로컬에 있는데 아직 못 올린 그림이 남으면 이 화를 실패로(재시도 큐) — 그림 없는 참조만 올라가는 것 방지.
+      const up = loadUploaded(); const notUp = refs.filter((h) => !up.has(h));
+      if (notUp.length) { const local = await blobsGet(notUp); if (local.size) throw new Error('그림 업로드 미완료 ' + local.size + '개 — 재시도 예약'); }
+    }
     // html이 커서 문서가 임계를 넘으면 Storage로 분리.
     if (r.html && byteLen(JSON.stringify(r)) > THRESHOLD) {
       await uploadString(sref(storage(), logHtmlPath(r.id)), r.html, 'raw', { contentType: 'text/html;charset=utf-8' });
@@ -196,6 +206,20 @@ export function createFirebaseBackend(uid: string): any {
     // ★마른 레코드의 공유 에셋 블롭 업로드(콘텐츠해시 dedup) — assetRefs(이름→해시)는 작아 문서에 인라인 유지.
     if (r.assetRefs && typeof r.assetRefs === 'object') { try { await pushBlobs(Object.values(r.assetRefs)); } catch (_) {} }
     await setDoc(docRef('logs', r.id), r);
+  }
+
+  // ★예전 버전이 올린 '펼친 html'(data: 그림 × 참조 수)을 받으면: 그림은 로컬에 한 벌 저장하고 참조로 줄인다(한 화씩 → 메모리 바운드).
+  //   그리고 클라우드에도 줄인 형태로 다시 올린다(백그라운드·순차·중복 방지) → 다음부터는 작은 본문만 내려받는다.
+  const repushing = new Set<string>();
+  async function shrinkDownloaded(r: any): Promise<void> {
+    if (!r || typeof r.html !== 'string' || r.html.indexOf('data:image/') < 0) return;
+    const before = r.html.length;
+    try { r.html = await dehydrateAndStoreBlobs(r.html); } catch (_) { return; }
+    if (r.html.length < before && r.id && !repushing.has(String(r.id))) {
+      const id = String(r.id); repushing.add(id);
+      const copy = Object.assign({}, r);
+      setTimeout(() => { pushLog(copy).catch(() => {}).finally(() => repushing.delete(id)); }, 1500 + repushing.size * 400);
+    }
   }
 
   setBlobCloudFetcher(fetchBlobs);   // ★리더 온디맨드 블롭 보충 활성(로그아웃 시 store.setBackend가 해제)
@@ -241,6 +265,7 @@ export function createFirebaseBackend(uid: string): any {
           try { r.assets = JSON.parse(new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.assetsRef))))); } catch (_) {}
           delete r.assetsRef;
         }
+        await shrinkDownloaded(r);   // ★펼친 그림 → 참조(메모리 폭발 방지)
         out.push(r);
       }
       return out;
@@ -266,6 +291,7 @@ export function createFirebaseBackend(uid: string): any {
           try { r.assets = JSON.parse(new TextDecoder().decode(await withBlobTimeout(getBytes(sref(storage(), r.assetsRef))))); } catch (_) {}
           delete r.assetsRef;
         }
+        await shrinkDownloaded(r);   // ★펼친 그림 → 참조(메모리 폭발 방지)
         out.push(r);
       }
       return out;

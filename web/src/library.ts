@@ -4,6 +4,7 @@
 // 해시 라우팅: #/(서가) · #/read/:char(뷰어). 데이터는 store.ts(IndexedDB/localStorage)로 에디터와 공유.
 // 화 HTML은 살균 후 본문 DOM에 직접 렌더(연속 스크롤·테마·줌). 본인 로그 + 살균이라 안전.
 // @ts-nocheck
+import { displayBlobRefs, portableHtml, blobRefsIn, blobsGet, blobsPutRaw } from './store.js';   // 그림 참조(lpblob) 표지 해석(화면=object URL, 공유=data:)
 import { logsAll, logsAdd, logsDelete, loadRead, saveRead, loadMarks, loadReaderCfg, saveReaderCfg, metaGet, metaSet, metaDelete, metaAll, newWorkKey, idbDeleteWorkCard, getBackendKind, kvLoad, kvSave, isSessionSynced, markSessionSynced, OPEN_LOG_KEY, dedupeLogList, dedupeLogsInStore, blobsPutAssetMap, resolveAssetShareUrls, scanWorkSizes, deleteWorkLogs, enqueueWorkDeletion } from './store.js';
 import { mountAccountUI } from './accountUI.js';   // 계정 UI(가벼움) — 에디터와 공용
 import { richCopy } from './clipboard.js';         // 리치 복사(아카 붙여넣기) — 에디터와 공용
@@ -15,7 +16,7 @@ import { todayKey } from './readStats.js';   // 오늘 날짜 키(명대사 날�
 import { popAutoClose, clearMarksMany, marksCountOf } from './readerView.js';   // 공유 팝오버 바깥 탭=닫힘(리더 단일화 공유와 거동 통일)
 import { isLocalFirst, getSyncMode, shareBaseUrl, isDesktop } from './desktopSync.js';   // 로컬-퍼스트(데스크탑 OR 웹-수동) + 수동 동기화 상태 + 플랫폼
 import { mountUpdateBanner } from './updateBanner.js';   // 자동 업데이트 배너(데스크탑 전용)
-import { buildBackup, parseBackup, isZip } from '../../core/preset/backupZip.js';   // 서재 내보내기/가져오기=zip(이미지 분리)
+import { buildBackup, openBackup, isZip } from '../../core/preset/backupZip.js';   // 서재 내보내기/가져오기=zip(이미지 분리)
 import { fontsSupported, refreshFonts, getFontList } from './fonts.js';   // 커스텀 폰트(리더·보관함 글꼴)
 import { icon } from './icons.js';                 // 통일 라인 아이콘(currentColor) — 이모지 대체
 import { confirmModal } from './confirmModal.js';  // 공용 DOM 확인 모달(네이티브 confirm 대체 — Electron 포커스 버그 회피)
@@ -142,6 +143,8 @@ function autoHideBar(scroller: HTMLElement, bars: (HTMLElement | null)[]) {
 }
 // (리더 설정 rdCfg는 readerView.ts로 이전 — 서재[홈·작품]는 리더 설정을 안 씀.)
 const previewLine = (r: any) => { const t = String(r.input || '').replace(/<[^>]*>/g, '').replace(/\{\{[^}]*\}\}/g, '').replace(/\[[^\]]*\]/g, '').replace(/\s+/g, ' ').trim(); return t ? t.slice(0, 60) : ''; };
+const b64ToU8 = (b64: string): Uint8Array => { const bin = atob(b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
+const u8ToB64 = (u: Uint8Array): string => { let t = ''; for (let i = 0; i < u.length; i += 0x8000) t += String.fromCharCode.apply(null, Array.from(u.subarray(i, i + 0x8000))); return btoa(t); };
 function download(name: string, text: string) {
   const blob = new Blob([text], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
@@ -244,7 +247,7 @@ function seriesList(): any[] {
 function shelfRow(s: any, refresh: () => void): HTMLElement {
   const row = document.createElement('div'); row.className = 'lib-shelf';
   const cover = document.createElement('div'); cover.className = 'lib-cover';
-  if (s.cover) { const im = document.createElement('img'); im.src = s.cover; im.loading = 'lazy'; cover.appendChild(im); } else cover.textContent = s.name.slice(0, 2);
+  if (s.cover) { const im = document.createElement('img'); setCoverSrc(im, s.cover); im.loading = 'lazy'; cover.appendChild(im); } else cover.textContent = s.name.slice(0, 2);
   const meta = document.createElement('div'); meta.className = 'lib-meta';
   const nm = document.createElement('div'); nm.className = 'lib-name'; nm.textContent = s.name;
   const sub = document.createElement('div'); sub.className = 'lib-sub';
@@ -267,10 +270,15 @@ function shelfRow(s: any, refresh: () => void): HTMLElement {
 const baseMeta = (s: any) => `${s.count}화` + (s.unread ? ` · 안읽음 ${s.unread}` : '');
 const contMeta = (s: any) => `${s.readIdx + 1}화까지` + (s.unread ? ` · 안읽음 ${s.unread}` : ' · 완독');
 
+// 표지 src — 첫 그림이 저장소 참조(lpblob:해시)면 object URL로 풀어 넣는다(그림당 1개 재사용). 그 외는 그대로.
+function setCoverSrc(im: HTMLImageElement, src: string) {
+  if (src && src.indexOf('lpblob:') === 0) { displayBlobRefs(src).then((u) => { if (u && u.indexOf('lpblob:') !== 0) im.src = u; }).catch(() => {}); }
+  else im.src = src;
+}
 function homeCard(s: any, metaText: string, destBase: string): HTMLElement {
   const card = document.createElement('button'); card.className = 'home-card';
   const cover = document.createElement('div'); cover.className = 'home-cover';
-  if (s.cover) { const im = document.createElement('img'); im.src = s.cover; im.loading = 'lazy'; cover.appendChild(im); } else cover.textContent = s.name.slice(0, 2);
+  if (s.cover) { const im = document.createElement('img'); setCoverSrc(im, s.cover); im.loading = 'lazy'; cover.appendChild(im); } else cover.textContent = s.name.slice(0, 2);
   const nm = document.createElement('div'); nm.className = 'home-card-name'; nm.textContent = s.name;
   const meta = document.createElement('div'); meta.className = 'home-card-meta'; meta.textContent = metaText;
   card.append(cover, nm, meta);
@@ -512,9 +520,16 @@ function renderHome() {
   expBtn.onclick = async () => {
     tools.open = false;
     let metas: any[] = []; try { metas = await metaAll(); } catch (_) {}   // 작품 표지·소개도 함께(예전엔 빠졌음)
-    const data = { app: 'log-jejogi-pro2', kind: 'log-archive', version: 2, logs: allLogs, meta: metas };
-    // ★zip 한 파일(이미지 분리). 로그 html의 data:이미지가 많아도 안 부풀고 안 멈춤. 실패 시 json 폴백.
-    try { downloadBytes('log-archive.zip', buildBackup(data), 'application/zip'); }
+    // ★2026-10-04: 본문은 그림 참조(lpblob:해시) 그대로, 참조된 그림만 해시별 한 벌(bin/blob/<해시>) 동봉 — 전 화를 펼치면 메모리 부족.
+    const binFiles: Record<string, Uint8Array> = {}; const blobs: any[] = [];
+    try {
+      const hs = new Set<string>(); for (const r of allLogs) for (const h of blobRefsIn(r && r.html)) hs.add(h);
+      const all = Array.from(hs);
+      for (let i = 0; i < all.length; i += 64) { const got = await blobsGet(all.slice(i, i + 64)); for (const [h, b] of got) { const path = 'bin/blob/' + h; binFiles[path] = b64ToU8(b.b64); blobs.push({ h, mime: b.mime, file: path }); } }
+    } catch (_) {}
+    const data = { app: 'log-jejogi-pro2', kind: 'log-archive', version: 2, logs: allLogs, meta: metas, blobs };
+    // ★zip 한 파일(이미지 분리). 로그 html의 data:이미지가 많아도 안 부풀고 안 멈춤. 실패 시 json 폴백(그림 참조는 못 담음).
+    try { downloadBytes('log-archive.zip', buildBackup(data, binFiles), 'application/zip'); }
     catch (_) { download('log-archive.json', JSON.stringify(data, null, 2)); }
   };
   impBtn.onclick = () => { tools.open = false; importLogs(); };
@@ -636,13 +651,14 @@ async function doShareSeries(s: any, pop: HTMLElement, redraw: () => void, makeB
   try {
     const S = await loadShare();
     // ★전 화의 공유 이미지를 한 번에 Storage 업로드(콘텐츠해시 중복제거) → 화별 fatten은 캐시 적중 = 빠르고 중복 업로드 없음.
-    const allRefs: any = {}; for (const e of s.eps) if (e && e.assetRefs && typeof e.assetRefs === 'object') Object.assign(allRefs, e.assetRefs);
+    const allRefs: any = {}; for (const e of s.eps) { if (e && e.assetRefs && typeof e.assetRefs === 'object') Object.assign(allRefs, e.assetRefs); for (const h of blobRefsIn(e && e.html)) allRefs[h] = h; }   // + 본문 그림 참조(lpblob) 해시
     if (Object.keys(allRefs).length) { if (note) note.textContent = '이미지 올리는 중…'; try { await resolveAssetShareUrls(allRefs); } catch (_) {} }
     const episodes = await Promise.all(s.eps.map(async (e: any) => { const f = await fattenShareHtml(e, !!hideUser); return { char: s.char, charName: s.name, title: e.title, date: e.date, html: f.html, hideUser: !!hideUser, _missing: f.missing }; }));   // ★공유본: 이미지 임베드(마른 레코드 복원) + 내 입력 가리기(원본 불변) + 작품 표시이름(charName) 동봉
     const missing = episodes.reduce((a: number, e: any) => a + (e._missing || 0), 0);   // 화 전체에서 이미지로 못 박은 에셋 수(안 열어본 화의 블롭 누락 등)
     // 표지·소개도 함께 공유 → 공유 열람 화면이 작품 페이지처럼 보임.
     let cm: any = {}; try { cm = (await metaGet(s.char)) || {}; } catch (_) {}
     let cover = cm.cover || s.cover || '';
+    if (cover.indexOf('lpblob:') === 0) { try { cover = await portableHtml(cover); } catch (_) { cover = ''; } }   // 참조 표지 → data:(아래 축소)
     if (cover) { try { cover = await downscaleDataUrl(cover, 480); } catch (_) {} }   // 인덱스 문서 가볍게(JPEG 480px)
     const desc = (cm.desc != null && String(cm.desc).trim() !== '') ? String(cm.desc) : (previewLine(s.eps[0]) || '');
     const res = await S.createSeriesShare(s.name, s.name, episodes, (i: number, n: number) => { if (note) note.textContent = `만드는 중… (${i + 1}/${n}화)`; }, { cover, desc });   // ★s.name = 풀린 작품 표시이름(meta.name→workName→폴백). 받는 사람 화면에 코드(wk_…) 대신 이름이 뜸.
@@ -669,7 +685,20 @@ function importLogs() {
       const f = fileInput!.files && fileInput!.files[0]; if (!f) return;
       try {
         const buf = new Uint8Array(await f.arrayBuffer());
-        const obj = isZip(buf) ? parseBackup(buf) : JSON.parse(new TextDecoder().decode(buf));   // zip(신규) 또는 옛 json
+        let getBin: (path: string) => Uint8Array | null = () => null;
+        let obj: any;
+        if (isZip(buf)) { const op = openBackup(buf); obj = op.data; getBin = op.getBin; } else obj = JSON.parse(new TextDecoder().decode(buf));   // zip(신규) 또는 옛 json
+        // 그림 참조(lpblob)의 실체 블롭 먼저 — 해시 64자 hex·mime 형식 검증(외부 파일).
+        if (obj && Array.isArray(obj.blobs)) {
+          let batch: any[] = [];
+          for (const b of obj.blobs) {
+            if (!b || !/^[0-9a-f]{64}$/.test(String(b.h || '')) || !/^[a-zA-Z0-9.+-]{1,40}$/.test(String(b.mime || ''))) continue;
+            const bytes = getBin(String(b.file || '')); if (!bytes) continue;
+            batch.push({ h: String(b.h), mime: String(b.mime), b64: u8ToB64(bytes) });
+            if (batch.length >= 32) { try { await blobsPutRaw(batch); } catch (_) {} batch = []; }
+          }
+          if (batch.length) { try { await blobsPutRaw(batch); } catch (_) {} }
+        }
         const logs = Array.isArray(obj) ? obj : (obj && Array.isArray(obj.logs) ? obj.logs : []);
         let n = 0;
         const { logsAdd, metaSet } = await import('./store.js');
@@ -864,7 +893,7 @@ async function renderSeries(char: string) {
   const hero = document.createElement('div'); hero.className = 'series-hero';
   const cover = document.createElement('div'); cover.className = 'series-cover';
   // 표지 클릭=크게 보기(라이트박스). ★img에만 연결 → edit 모드의 "이미지 변경" 버튼 클릭과 충돌 안 함.
-  if (coverSrc) { const im = document.createElement('img'); im.src = coverSrc; im.className = 'zoomable'; im.title = '표지 크게 보기'; im.onclick = (e) => { e.stopPropagation(); openLightbox(coverSrc); }; cover.appendChild(im); } else cover.textContent = s.name.slice(0, 2);
+  if (coverSrc) { const im = document.createElement('img'); setCoverSrc(im, coverSrc); im.className = 'zoomable'; im.title = '표지 크게 보기'; im.onclick = (e) => { e.stopPropagation(); openLightbox(coverSrc); }; cover.appendChild(im); } else cover.textContent = s.name.slice(0, 2);
   if (edit) {
     // 표지 이미지 변경/자동
     const ovl = document.createElement('div'); ovl.className = 'cover-edit';
@@ -1579,23 +1608,29 @@ async function runRecovery() {
   goBtn.onclick = goHome;
   box.append(h, p, why, status, list, goBtn); scroll.appendChild(box); app.appendChild(scroll);
   const mb = (n: number) => (n / 1048576).toFixed(1) + 'MB';
-  const render = (works: Array<{ key: string; name: string; bytes: number; count: number }>) => {
+  const render = (works: Array<{ key: string; name: string; bytes: number; expanded?: number; count: number }>) => {
     list.innerHTML = '';
     if (!works.length) { status.textContent = '저장된 작품이 없습니다.'; return; }
-    const HUGE = 60 * 1048576;
-    const hugeN = works.filter((x) => x.bytes > HUGE).length;
-    if (hugeN) status.textContent = `작품 ${works.length}개 — 용량 큰 순. 빨간 버튼이 붙은 ${hugeN}개가 비정상적으로 큰 작품입니다.`;
+    // ★위험 기준(2026-10-04): 저장 크기 60MB+ (한 번에 읽는 양) 또는 그림 참조를 펼친 크기 1.5GB+ (같은 그림이 수천 번 참조된 작품).
+    //   예전엔 저장 크기만 봐서, 저장 5.9MB·펼치면 4GB인 작품을 "정상"으로 오판했다.
+    const HUGE = 60 * 1048576, HUGE_EXP = 1536 * 1048576;
+    const exp = (x: any) => (typeof x.expanded === 'number' ? x.expanded : x.bytes);
+    const isHuge = (x: any) => x.bytes > HUGE || exp(x) > HUGE_EXP;
+    const hugeN = works.filter(isHuge).length;
+    if (hugeN) status.textContent = `작품 ${works.length}개 — 큰 순. 빨간 버튼이 붙은 ${hugeN}개가 비정상적으로 큰 작품입니다(저장 크기 또는 그림을 펼친 크기).`;
     else {
       // ★작은 작품뿐 = 용량이 원인이 아님 → 지울 필요 없다고 분명히 말하고 서재로 돌아가기를 주 버튼으로.
-      status.textContent = `작품 ${works.length}개 모두 정상 크기예요(60MB 넘는 작품 없음). 이번 문제는 작품 용량 때문이 아니니 아무것도 지우지 말고 서재로 돌아가세요.`;
+      status.textContent = `작품 ${works.length}개 모두 정상 크기예요(저장 60MB·그림을 펼친 크기 1.5GB를 넘는 작품 없음). 이번 문제는 작품 용량 때문이 아니니 아무것도 지우지 말고 서재로 돌아가세요.`;
       status.style.color = ''; status.style.fontWeight = '600';
       goBtn.textContent = '서재로 돌아가기'; goBtn.style.cssText = 'margin-top:18px;padding:9px 18px;cursor:pointer;background:#b1532c;color:#fff;border:none;border-radius:8px;font-weight:600;';
     }
     for (const w of works) {
       const row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid #5a4636;border-radius:8px;margin-bottom:8px;';
-      const huge = w.bytes > HUGE;
+      const huge = isHuge(w);
+      const e = exp(w);
+      const sizeText = (e > w.bytes * 1.5 && e - w.bytes > 10 * 1048576) ? `저장 ${mb(w.bytes)} · 그림 펼치면 ${mb(e)}` : mb(w.bytes);   // 참조 그림이 많아 펼치면 크게 커지는 작품만 두 값 표시
       const info = document.createElement('div'); info.style.flex = '1';
-      info.innerHTML = `<div style="font-weight:600">${(w.name || '(이름 없음)').replace(/</g, '&lt;')}</div><div style="color:#a98;font-size:13px">${mb(w.bytes)} · ${w.count}화${huge ? ' · ⚠ 비정상적으로 큼' : ''}</div>`;
+      info.innerHTML = `<div style="font-weight:600">${(w.name || '(이름 없음)').replace(/</g, '&lt;')}</div><div style="color:#a98;font-size:13px">${sizeText} · ${w.count}화${huge ? ' · ⚠ 비정상적으로 큼' : ''}</div>`;
       const del = document.createElement('button'); del.textContent = '이 작품 삭제'; del.style.cssText = 'padding:7px 12px;cursor:pointer;' + (huge ? 'background:#c0392b;color:#fff;border:none;border-radius:6px;' : '');
       del.onclick = async () => {
         if (!confirm(`“${w.name}” (${mb(w.bytes)}, ${w.count}화)를 삭제할까요? 되돌릴 수 없습니다.\n(다른 작품은 그대로 유지됩니다.)`)) return;

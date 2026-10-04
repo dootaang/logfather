@@ -8,6 +8,7 @@
 // @ts-nocheck
 import { confirmModal } from './confirmModal.js';
 import { initTheme, wireThemeToggle, applyShellTheme, getThemePref, applySkin, refreshSkinOptions, SKIN_KEY, SHELL_THEME_KEY, buildCustomSkin } from './appSettings.js';
+import { blobRefsIn, blobsGet, blobsPutRaw } from './store.js';   // 백업에 그림 참조(lpblob) 블롭 동봉·복원
 import { kvLoad, kvSave, logsAll, logsAdd, metaAll, metaSet, clearLibraryLocal, dedupeLogsInStore, AUTOSAVE_KEY, PRESET_LIB_KEY, READ_KEY, RDR_KEY,
   idbExportCards, idbImportCard, archiveList, archiveGetFile, archiveImport, fontsAll, fontsAdd } from './store.js';
 import { buildBackup, openBackup, isZip } from '../../core/preset/backupZip.js';
@@ -71,6 +72,8 @@ function captureKv(): Record<string, string> {
   try { for (const k of Object.keys(localStorage)) { if (!backupKvKey(k)) continue; const v = localStorage.getItem(k); if (v != null) out[k] = v; } } catch (_) {}
   return out;
 }
+const b64ToU8 = (b64: string): Uint8Array => { const bin = atob(b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
+const u8ToB64 = (u: Uint8Array): string => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, Array.from(u.subarray(i, i + 0x8000))); return btoa(s); };
 function snapshot() { return { app: APP_ID, version: 4, kind: 'backup', autosave: kvLoad(AUTOSAVE_KEY), presets: kvLoad(PRESET_LIB_KEY), read: kvLoad(READ_KEY), reader: kvLoad(RDR_KEY), kv: captureKv() }; }
 function wireBackup(setStatus: (m: string) => void, refresh?: () => void) {
   const expB = document.getElementById('btn-export'); const impB = document.getElementById('btn-import'); const fileImp = document.getElementById('file-import') as HTMLInputElement | null;
@@ -82,10 +85,21 @@ function wireBackup(setStatus: (m: string) => void, refresh?: () => void) {
       // ★큰 바이너리는 base64 문자열이 아니라 zip 안 사파일로(level0). data엔 그 경로 참조만 둔다(수백 MB~GB도 안전).
       const binFiles: Record<string, Uint8Array> = {};
       const management: any[] = [], fonts: any[] = [], cards: any[] = [];
+      // ★2026-10-04: 로그 본문은 그림 참조(lpblob:해시) 그대로 담고, 참조된 그림만 해시별 한 벌(bin/blob/<해시>)로 동봉.
+      //   예전엔 전 화를 펼친 채 담아(같은 그림 × 참조 수) 백업을 만들다 메모리 부족으로 죽을 수 있었다. 64개씩 끊어 읽어 메모리 바운드.
+      const blobs: any[] = [];
+      try {
+        const hs = new Set<string>(); for (const r of logs) for (const h of blobRefsIn(r && r.html)) hs.add(h);
+        const all = Array.from(hs);
+        for (let i = 0; i < all.length; i += 64) {
+          const got = await blobsGet(all.slice(i, i + 64));
+          for (const [h, b] of got) { const path = 'bin/blob/' + h; binFiles[path] = b64ToU8(b.b64); blobs.push({ h, mime: b.mime, file: path }); }
+        }
+      } catch (_) {}
       try { for (const s of await archiveList()) { const bytes = await archiveGetFile(s.id); if (!bytes) continue; const path = 'bin/src/' + s.id + '.' + (s.format || 'bin'); binFiles[path] = bytes; management.push(Object.assign({}, s, { file: path })); } } catch (_) {}
       try { for (const f of await fontsAll()) { if (!f || !f.bytes) continue; const bytes = f.bytes instanceof Uint8Array ? f.bytes : new Uint8Array(f.bytes); const path = 'bin/font/' + f.id + '.' + (f.format || 'bin'); binFiles[path] = bytes; fonts.push({ id: f.id, family: f.family, name: f.name, format: f.format, ts: f.ts, file: path }); } } catch (_) {}
       try { const cl = await idbExportCards(); cl.forEach((c, i) => { const path = 'bin/card/' + i + '.bin'; binFiles[path] = c.bytes; cards.push({ key: c.key, name: c.name, ts: c.ts, file: path }); }); } catch (_) {}
-      const backup = Object.assign(snapshot(), { logs, meta, management, fonts, cards });
+      const backup = Object.assign(snapshot(), { logs, meta, management, fonts, cards, blobs });
       const stamp = new Date().toISOString().slice(0, 10);
       try { downloadBytes(`log-backup-${stamp}.zip`, buildBackup(backup, binFiles), 'application/zip'); }
       catch (_) { download(`log-backup-${stamp}.json`, JSON.stringify(backup, null, 2)); }   // zip 실패 시 json 폴백(바이너리 제외, 텍스트만)
@@ -123,6 +137,17 @@ async function restoreBackupObj(obj: any, getBin: (p: string) => Uint8Array | nu
   if (obj.read && typeof obj.read === 'object') { try { kvSave(READ_KEY, obj.read); } catch (_) {} }
   if (obj.reader && typeof obj.reader === 'object') { try { kvSave(RDR_KEY, obj.reader); } catch (_) {} }
   // 서재 로그·작품 메타
+  // 그림 블롭(참조 lpblob의 실체) 먼저 — 그래야 아래 화들의 참조가 바로 풀린다. 해시는 64자 hex만 허용.
+  if (Array.isArray(obj.blobs)) {
+    let batch: any[] = [];
+    for (const b of obj.blobs) {
+      if (!b || !/^[0-9a-f]{64}$/.test(String(b.h || '')) || !/^[a-zA-Z0-9.+-]{1,40}$/.test(String(b.mime || ''))) continue;
+      const bytes = getBin(String(b.file || '')); if (!bytes) continue;
+      batch.push({ h: String(b.h), mime: String(b.mime), b64: u8ToB64(bytes) });
+      if (batch.length >= 32) { try { await blobsPutRaw(batch); } catch (_) {} batch = []; }
+    }
+    if (batch.length) { try { await blobsPutRaw(batch); } catch (_) {} }
+  }
   if (Array.isArray(obj.logs)) { for (const r of obj.logs) { if (r && r.id) { try { await logsAdd(r); } catch (_) {} } } }
   if (Array.isArray(obj.meta)) {
     for (const m of obj.meta) {

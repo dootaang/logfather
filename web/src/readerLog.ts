@@ -9,7 +9,7 @@ import { mountReaderBody, rdCfg, isWebnovel, isPapa, popAutoClose, mk, clearRead
 import { icon } from './icons.js';
 import { richCopy } from './clipboard.js';
 import { confirmModal } from './confirmModal.js';
-import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad, kvSave, resolveAssetRefs, resolveAssetShareUrls } from './store.js';
+import { logsAdd, logsDelete, loadRead, saveRead, saveReaderCfg, getBackendKind, kvLoad, kvSave, resolveAssetRefs, resolveAssetShareUrls, displayBlobRefs, displayBlobRefsSync, portableHtml, blobRefsIn } from './store.js';
 import { bumpReadHistory } from './readStats.js';   // 읽기 이력 배관(내 기록·결산 원료) — saveRead 쓰기에 편승(추가 쓰기 0)
 import { isLocalFirst, getSyncMode } from './desktopSync.js';
 import { bakeLogs, externalCount, bakeAvailable } from './bake.js';   // 파파 하이브리드 이미지 굳히기(데스크탑 native / 웹 weserv 폴백)
@@ -281,8 +281,18 @@ export async function fattenShareHtml(r: any, hideUser: boolean): Promise<{ html
   } else {
     h = applyAssetMap(String(r.html || ''), amap, r.char, r.displayRules);
   }
+  h = await shareBlobRefs(h);   // ★그림 참조(lpblob) → 해시별 Storage URL(작품 공유도 문서 가볍게), 실패분은 그 화만 data:로
   const missing = countUnresolvedAssetRefs(h);   // strip(숨김) 전에 센다 — 못 박힌 에셋(텍스트 마커 + 에셋명 <img>)
   return { html: stripUnresolvedAssetImages(h), missing };   // 공유본도 미해결 에셋명 <img> 숨김(받는 사람 화면 엑박 방지)
+}
+// 공유본의 그림 참조(lpblob:해시) 해석 — 공유 에셋 업로더(해시 → Storage URL, 콘텐츠해시 캐시) 재사용. 남은 참조는 그 화만 data:로 펼침.
+async function shareBlobRefs(h: string): Promise<string> {
+  const hashes = blobRefsIn(h); if (!hashes.length) return h;
+  const refs: Record<string, string> = {}; for (const x of hashes) refs[x] = x;
+  let urls: Record<string, string> = {}; try { urls = await resolveAssetShareUrls(refs); } catch (_) {}
+  let out = h.replace(/lpblob:([0-9a-f]{64})/g, (full, x) => urls[x] || full);
+  if (out.indexOf('lpblob:') >= 0) out = await portableHtml(out);
+  return out;
 }
 // 공유 후 안내문에 붙일 "이미지 N장 안 담김" 경고(0이면 빈 문자열). 단일·작품 공유 공용.
 export function shareMissingNote(n: number): string {
@@ -507,6 +517,8 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     const papa = isPapa(r);   // ★파파모드 = 순수 통과 보관(번역·정리·역할 구조 없음). 리더는 충실 렌더(Shadow DOM)+스크롤만.
     // ★마른 레코드(rec.assetRefs=이름→해시): 이 화에 필요한 이미지만 IDB_BLOBS에서 지연 복원(name→dataURL). 옛 레코드(rec.assets base64)는 undefined → rerenderLog가 rec.assets로 하위호환.
     const amap: Record<string, string> | undefined = (r && r.assetRefs && typeof r.assetRefs === 'object') ? await resolveAssetRefs(r.assetRefs) : undefined;
+    // ★그림 참조(lpblob)의 화면용 object URL을 화면을 비우기 "전"에 미리 만든다 — 아래 렌더는 await 없이 동기로 바꿔(렌더 경쟁·이중 마운트 방지).
+    if (r && typeof r.html === 'string' && r.html.indexOf('lpblob:') >= 0) { try { await displayBlobRefs(r.html); } catch (_) {} }
     // ★작업 3: 번역된 적 있는 화(r.orig)인데 본문이 원문으로 되돌아가 있으면(왕복/동기화 잔여) 캐시에서 자동 복원 — 무료·키 불필요·진입당 1회.
     //   비파괴(원문 토글 유지) · 캐시 미스면 원문 유지(무해) · 진입=상단이라 스크롤 보존 회귀 없음.
     if (!papa && r && r.orig && !origView[r.id] && !r._trAuto && translateAvailable()) {
@@ -534,7 +546,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
     nextB.onclick = () => { location.hash = '#/log/' + encodeURIComponent(char) + '/' + encodeURIComponent(eps[idx + 1].id); };
     const setBtn = document.createElement('button'); setBtn.className = 'reader-iconbtn'; setBtn.innerHTML = icon('sliders') + ' 보기';
     const cp = document.createElement('button'); cp.className = 'reader-iconbtn'; cp.innerHTML = icon('copy') + ' 복사'; cp.title = '리치 복사 — 아카 에디터에 붙여넣으면 이미지까지 올라감';
-    cp.onclick = async () => { const o = cp.textContent; cp.textContent = '변환중…'; try { await richCopy(displayHtml, r.input || ''); cp.textContent = '복사됨!'; } catch (err: any) { cp.textContent = '실패'; setStatus('복사 오류: ' + ((err && err.message) || '')); } setTimeout(() => { cp.textContent = o; }, 1400); };   // ★표시본(이미지 임베드)으로 복사 — 마른 레코드는 r.html이 마커뿐이라 displayHtml 사용
+    cp.onclick = async () => { const o = cp.textContent; cp.textContent = '변환중…'; try { await richCopy(await portableHtml(displayHtml), r.input || ''); cp.textContent = '복사됨!'; } catch (err: any) { cp.textContent = '실패'; setStatus('복사 오류: ' + ((err && err.message) || '')); } setTimeout(() => { cp.textContent = o; }, 1400); };   // ★표시본(이미지 임베드)으로 복사 — 마른 레코드는 r.html이 마커뿐이라 displayHtml 사용
     const shareB = document.createElement('button'); shareB.className = 'reader-iconbtn'; shareB.innerHTML = icon('link') + (r.shareId ? ' 공유됨' : ' 공유'); shareB.title = '공개 읽기전용 링크 — 받은 사람이 로그인 없이 이 화를 봄';
     shareB.onclick = () => toggleSharePop(reader, r, shareB);
     const editLog = document.createElement('button'); editLog.className = 'reader-iconbtn'; editLog.innerHTML = icon('pencil') + ' 편집기로'; editLog.title = '이 로그를 편집기에서 수정';
@@ -677,6 +689,7 @@ export function createReaderLog(ctx: { setStatus: (m: string) => void; reloadLog
 
     // 몰입 탭 토글·초기 상태·스크롤 리셋은 공용 mountReaderBody가 처리(일반·공유 리더 동일). 더보기 메뉴 닫힘도 거기서.
     // displayHtml = 원문/번역 토글(origView) + 정리/원본 토글(cleanView) 비파괴 합성(위에서 계산). ★저장은 안 바뀜.
+    displayHtml = displayBlobRefsSync(displayHtml);   // ★그림 참조(lpblob) → 그림당 object URL 1개(같은 그림 100번 참조돼도 메모리 1벌 — 2026-10-04 OOM 수정)
     if (!papa) displayHtml = stripUnresolvedAssetImages(displayHtml);   // ★매핑 안 된 에셋명 <img>(AI가 지어낸 감정 등)는 표시에서 숨김 = 엑박 아이콘 방지. 파파는 남의 디자인 그대로(진짜 URL/data만) → 미적용
     const mounted = mountReaderBody(reader, displayHtml, rcfg, wn, wnTh, setBtn, route, papa, r.id, (hasOrig && !showOrig) ? 't' : 'o');   // r.id = 위치 기억·책갈피·형광펜 키 / view = 형광펜을 칠한 화면(원문·번역) 구분
     // ★3단계 "리스 스타일": 카드 CSS를 화 컨테이너(.reader-card) 스코프로 주입 — 리스처럼 툴팁은 가려지고 상태창은 꾸며짐.
