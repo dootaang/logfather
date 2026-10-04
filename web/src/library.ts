@@ -1556,7 +1556,7 @@ function hideLibLoading() {
 //   ★자동 삭제 없음 — 사용자가 거대한 작품(용량으로 한눈에 보임)을 직접 골라 그 작품만 지운다(다른 작품·읽기기록·프리셋 보존).
 async function runRecovery() {
   try { const el = document.getElementById('lib-loading'); if (el) el.remove(); } catch (_) {}
-  const goHome = () => { location.hash = '#/'; location.reload(); };   // ★해시만 바꾸면 리로드 안 됨(복구는 부트에서만 분기) → reload로 정상 서재 진입
+  const goHome = () => { if (location.search) location.replace(location.pathname + '#/'); else { location.hash = '#/'; location.reload(); } };   // ★해시만 바꾸면 리로드 안 됨(복구는 부트에서만 분기) → reload로 정상 서재 진입. 데스크탑 자동 진입의 ?gone= 쿼리도 함께 제거
   { const b = document.getElementById('brand'); if (b) (b as HTMLElement).onclick = goHome; }   // 로고 클릭 = 서재홈(복구 페이지에선 기본 핸들러 미설정 상태라 직접 연결)
   const app = document.getElementById('app') || document.body;
   app.innerHTML = '';
@@ -1565,19 +1565,35 @@ async function runRecovery() {
   const box = document.createElement('div'); box.style.cssText = 'max-width:640px;margin:48px auto;padding:0 24px 48px;font:15px/1.7 system-ui,sans-serif;';
   const h = document.createElement('div'); h.style.cssText = 'font-size:20px;font-weight:700;margin-bottom:6px;'; h.textContent = '비상 복구';
   const p = document.createElement('div'); p.style.marginBottom = '6px'; p.textContent = '서재가 메모리 부족으로 안 열릴 때 쓰는 화면입니다. 용량이 비정상적으로 큰 작품을 직접 골라 지우세요. (다른 작품·읽기기록·프리셋은 그대로)';
+  // ★진입 사유(2026-10-04): 데스크탑은 화면 프로세스가 어떤 이유로든 종료되면 여기로 자동 진입 → 사유를 보여 줘야 '용량 탓'으로 오해하지 않는다.
+  const qs = new URLSearchParams(location.search);
+  const gone = qs.get('gone') || '', goneCode = qs.get('code') || '';
+  const GONE_KO: Record<string, string> = { oom: '메모리 부족', crashed: '화면 프로세스 충돌', 'launch-failed': '화면 시작 실패' };
+  const why = document.createElement('div'); why.style.cssText = 'margin:10px 0 4px;padding:10px 12px;border-radius:8px;font-size:13.5px;line-height:1.6;background:rgba(169,136,119,.12);';
+  why.textContent = gone
+    ? `앱 화면이 비정상 종료돼 자동으로 열렸어요 — 사유: ${GONE_KO[gone] || gone}${goneCode ? ` (코드 ${goneCode})` : ''}. 같은 증상이 반복되면 이 사유와 그때 하던 작업을 알려 주세요.`
+    : '메뉴에서 직접 열어 들어온 복구 화면이에요.';
   const status = document.createElement('div'); status.style.cssText = 'color:#a98;margin:8px 0;'; status.textContent = '작품 용량 확인 중…';
   const list = document.createElement('div'); list.style.cssText = 'margin-top:8px;';
   const goBtn = document.createElement('button'); goBtn.textContent = '서재로 가기'; goBtn.style.cssText = 'margin-top:18px;padding:8px 16px;cursor:pointer;';
   goBtn.onclick = goHome;
-  box.append(h, p, status, list, goBtn); scroll.appendChild(box); app.appendChild(scroll);
+  box.append(h, p, why, status, list, goBtn); scroll.appendChild(box); app.appendChild(scroll);
   const mb = (n: number) => (n / 1048576).toFixed(1) + 'MB';
   const render = (works: Array<{ key: string; name: string; bytes: number; count: number }>) => {
     list.innerHTML = '';
     if (!works.length) { status.textContent = '저장된 작품이 없습니다.'; return; }
-    status.textContent = `작품 ${works.length}개 — 용량 큰 순. 거대한 것(보통 100MB+)이 문제의 작품입니다.`;
+    const HUGE = 60 * 1048576;
+    const hugeN = works.filter((x) => x.bytes > HUGE).length;
+    if (hugeN) status.textContent = `작품 ${works.length}개 — 용량 큰 순. 빨간 버튼이 붙은 ${hugeN}개가 비정상적으로 큰 작품입니다.`;
+    else {
+      // ★작은 작품뿐 = 용량이 원인이 아님 → 지울 필요 없다고 분명히 말하고 서재로 돌아가기를 주 버튼으로.
+      status.textContent = `작품 ${works.length}개 모두 정상 크기예요(60MB 넘는 작품 없음). 이번 문제는 작품 용량 때문이 아니니 아무것도 지우지 말고 서재로 돌아가세요.`;
+      status.style.color = ''; status.style.fontWeight = '600';
+      goBtn.textContent = '서재로 돌아가기'; goBtn.style.cssText = 'margin-top:18px;padding:9px 18px;cursor:pointer;background:#b1532c;color:#fff;border:none;border-radius:8px;font-weight:600;';
+    }
     for (const w of works) {
       const row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid #5a4636;border-radius:8px;margin-bottom:8px;';
-      const huge = w.bytes > 60 * 1048576;
+      const huge = w.bytes > HUGE;
       const info = document.createElement('div'); info.style.flex = '1';
       info.innerHTML = `<div style="font-weight:600">${(w.name || '(이름 없음)').replace(/</g, '&lt;')}</div><div style="color:#a98;font-size:13px">${mb(w.bytes)} · ${w.count}화${huge ? ' · ⚠ 비정상적으로 큼' : ''}</div>`;
       const del = document.createElement('button'); del.textContent = '이 작품 삭제'; del.style.cssText = 'padding:7px 12px;cursor:pointer;' + (huge ? 'background:#c0392b;color:#fff;border:none;border-radius:6px;' : '');

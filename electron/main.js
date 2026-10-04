@@ -120,6 +120,20 @@ function lockDownPermissions() {
 // 끈 그 모습 그대로 다시 켜지게. origin 고정 덕에 업데이트 후에도 보존되는 userData에 저장.
 const DEFAULT_WIN = { width: 1320, height: 880 };
 const winStatePath = () => path.join(app.getPath('userData'), 'window-state.json');
+
+// ── 렌더러 종료 기록(진단용) — userData/crash-log.jsonl, 한 줄 = { t, reason, exitCode, page, ver }, 최근 50건만 ──
+//   어떤 화면에서 어떤 사유로 죽었는지 남겨, '비상 복구가 왜 떴나'를 다음 제보 때 바로 확인한다. 실패해도 앱 동작엔 영향 없음.
+const crashLogPath = () => path.join(app.getPath('userData'), 'crash-log.jsonl');
+function logRendererGone(reason, exitCode, url) {
+  try {
+    const page = String(url || '').replace(ORIGIN, '');
+    const line = JSON.stringify({ t: new Date().toISOString(), reason: reason || '', exitCode: exitCode == null ? null : exitCode, page, ver: app.getVersion() });
+    let lines = [];
+    try { lines = fss.readFileSync(crashLogPath(), 'utf8').split('\n').filter(Boolean); } catch (_) {}
+    lines.push(line);
+    fss.writeFileSync(crashLogPath(), lines.slice(-50).join('\n') + '\n', 'utf8');
+  } catch (_) {}
+}
 function loadWinState() {
   try { const s = JSON.parse(fss.readFileSync(winStatePath(), 'utf8')); return (s && typeof s === 'object') ? s : null; }
   catch (_) { return null; }
@@ -199,13 +213,19 @@ function createWindow() {
   // ★렌더러 OOM 자동 복구 — 거대 챗을 옛 경로로 가져오다 무거운 화가 남으면 로딩 중 렌더러가 메모리부족으로 죽어(검은 화면)
   //   다시 켜도 또 죽는다. 메인 프로세스가 그 죽음을 감지해, 무거운 로딩을 건너뛰는 #/recover로 자동 재진입(커서로 무거운 화만 정리).
   //   #/recover는 getAll을 안 타 다시 죽지 않음 → 정리 후 서재로. 무한루프 방지로 2회 한도.
+  //   ★2026-10-04: 사유를 버리지 않는다 — 매번 userData/crash-log.jsonl(최근 50건)에 남기고, 복구 화면에 쿼리로 넘겨 보여 준다
+  //   (작은 작품뿐인데 복구 화면이 떠서 원인을 못 잡던 제보). 프로토콜 핸들러는 pathname만 보므로 쿼리는 서빙에 무해.
   let recoverTries = 0;
   win.webContents.on('render-process-gone', (_e, details) => {
     const reason = details && details.reason;
+    const exitCode = details && details.exitCode;
+    let lastUrl = ''; try { lastUrl = win.webContents.getURL(); } catch (_) {}
+    logRendererGone(reason, exitCode, lastUrl);
     if (recoverTries >= 2) return;
     if (reason === 'oom' || reason === 'crashed' || reason === 'launch-failed') {
       recoverTries++;
-      try { win.loadURL(`${ORIGIN}/library.html#/recover`); } catch (_) {}
+      const q = `?gone=${encodeURIComponent(reason || '')}&code=${encodeURIComponent(String(exitCode == null ? '' : exitCode))}`;
+      try { win.loadURL(`${ORIGIN}/library.html${q}#/recover`); } catch (_) {}
     }
   });
 
