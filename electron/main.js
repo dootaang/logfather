@@ -13,7 +13,7 @@
 // app:// 는 registerSchemesAsPrivileged로 standard(고정 origin)+secure(보안 컨텍스트)로
 // 등록한다 → navigator.clipboard.write(리치 복사)·crypto.subtle·IndexedDB가 정상 동작.
 
-const { app, BrowserWindow, protocol, net, session, shell, ipcMain, screen, Menu, crashReporter } = require('electron');
+const { app, BrowserWindow, protocol, net, session, shell, ipcMain, screen, Menu, crashReporter, dialog } = require('electron');
 const path = require('node:path');
 
 // ★크래시 리포터(로컬 전용, v0.2.6) — 서버 전송 없음. 덤프는 userData/Crashpad/reports/*.dmp에만 남는다.
@@ -130,6 +130,15 @@ const winStatePath = () => path.join(app.getPath('userData'), 'window-state.json
 
 // ── 렌더러 종료 기록(진단용) — userData/crash-log.jsonl, 한 줄 = { t, reason, exitCode, page, ver }, 최근 50건만 ──
 //   어떤 화면에서 어떤 사유로 죽었는지 남겨, '비상 복구가 왜 떴나'를 다음 제보 때 바로 확인한다. 실패해도 앱 동작엔 영향 없음.
+// 흘려 저장 중인 파일(토큰 → {fh, path, sender}). 렌더러가 죽으면 그 창 것만 닫고 지운다.
+const saveStreams = new Map();
+function abortSaveStreams(senderId) {
+  for (const [t, s] of saveStreams) {
+    if (s.sender !== senderId) continue;
+    saveStreams.delete(t);
+    s.fh.close().catch(() => {}).finally(() => { fs.unlink(s.path).catch(() => {}); });
+  }
+}
 const crashLogPath = () => path.join(app.getPath('userData'), 'crash-log.jsonl');
 function logRendererGone(reason, exitCode, url) {
   try {
@@ -228,6 +237,7 @@ function createWindow() {
     const exitCode = details && details.exitCode;
     let lastUrl = ''; try { lastUrl = win.webContents.getURL(); } catch (_) {}
     logRendererGone(reason, exitCode, lastUrl);
+    abortSaveStreams(win.webContents.id);   // 백업 쓰는 중에 죽었으면 반쪽 파일 정리
     if (recoverTries >= 2) return;
     if (reason === 'oom' || reason === 'crashed' || reason === 'launch-failed') {
       recoverTries++;
@@ -569,6 +579,35 @@ function registerIpc() {
   });
 
   // 자동 업데이트: 사용자가 "지금 재시작" 눌렀을 때만 설치(조용한 강제설치 금지).
+  // ── 큰 파일 흘려 저장(전체 백업 zip, 2026-10-22) ──────────────────────────
+  //   렌더러가 zip을 메모리에 다 만들면 1GB+ 백업에서 메모리 부족 → 조각째 받아 사용자가 고른 파일에 바로 쓴다.
+  //   ★보안: 쓸 수 있는 파일 = 이 대화상자에서 사용자가 고른 경로뿐(무작위 토큰 + 요청한 창 일치). 임의 경로 쓰기 불가.
+  ipcMain.handle('desktop:saveStreamOpen', async (e, name) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const safe = String(name || 'logpapa-backup.zip').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 120) || 'logpapa-backup.zip';
+    const r = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), safe), filters: [{ name: 'ZIP', extensions: ['zip'] }] });
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+    const fh = await fs.open(r.filePath, 'w');
+    const token = crypto.randomBytes(16).toString('hex');
+    saveStreams.set(token, { fh, path: r.filePath, sender: e.sender.id, bytes: 0 });
+    return { ok: true, token, name: path.basename(r.filePath) };
+  });
+  ipcMain.handle('desktop:saveStreamWrite', async (e, token, chunk) => {
+    const s = saveStreams.get(String(token || ''));
+    if (!s || s.sender !== e.sender.id) throw new Error('저장 통로가 없어요');
+    if (!(chunk instanceof Uint8Array)) throw new Error('잘못된 조각');
+    await s.fh.write(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+    s.bytes += chunk.byteLength;
+    return true;
+  });
+  ipcMain.handle('desktop:saveStreamClose', async (e, token, abort) => {
+    const s = saveStreams.get(String(token || ''));
+    if (!s || s.sender !== e.sender.id) return false;
+    saveStreams.delete(String(token));
+    try { await s.fh.close(); } catch (_) {}
+    if (abort) { try { await fs.unlink(s.path); } catch (_) {} }   // 실패·취소 = 쓰다 만 파일 삭제(반쪽 백업 남기지 않음)
+    return true;
+  });
   ipcMain.handle('desktop:installUpdate', () => { try { autoUpdater.quitAndInstall(); } catch (_) {} });
 }
 

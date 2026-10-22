@@ -48,6 +48,10 @@ const desktop = {
   //   event 객체는 안 넘기고 메시지만 콜백에 전달(보안).
   onUpdate(cb) { ipcRenderer.on('desktop:update', (_e, msg) => { try { cb(msg); } catch (_) {} }); },
   installUpdate() { return ipcRenderer.invoke('desktop:installUpdate'); },
+  // 큰 파일 흘려 저장(전체 백업 zip): 대화상자로 고른 파일에만 조각을 이어 씀. open → write×N → close(abort=true면 삭제).
+  saveStreamOpen(name) { return ipcRenderer.invoke('desktop:saveStreamOpen', name); },              // → { ok, token, name } | { ok:false, canceled }
+  saveStreamWrite(token, chunk) { return ipcRenderer.invoke('desktop:saveStreamWrite', token, chunk); },
+  saveStreamClose(token, abort) { return ipcRenderer.invoke('desktop:saveStreamClose', token, !!abort); },
 };
 
 contextBridge.exposeInMainWorld('desktop', desktop);

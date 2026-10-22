@@ -590,6 +590,19 @@ export async function idbExportCards(): Promise<Array<{ key: string; name: strin
   });
   db.close(); return out;
 }
+// 카드를 한 장씩(백업 흘려 쓰기용) — 키 목록만 먼저, 바이트는 쓸 때 한 장씩 읽는다(전체 getAll 금지 = 메모리 바운드).
+export async function idbCardKeys(): Promise<string[]> {
+  const db = await idbOpen();
+  const keys = await new Promise<string[]>((res) => { const tx = db.transaction(IDB_STORE, 'readonly'); const q = tx.objectStore(IDB_STORE).getAllKeys(); q.onsuccess = () => res((q.result || []).map(String)); q.onerror = () => res([]); });
+  db.close(); return keys;
+}
+export async function idbGetCardEntry(key: string): Promise<{ name: string; bytes: Uint8Array; ts: number } | null> {
+  const db = await idbOpen();
+  const v = await new Promise<any>((res) => { const tx = db.transaction(IDB_STORE, 'readonly'); const q = tx.objectStore(IDB_STORE).get(key); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); });
+  db.close();
+  if (!v || !v.bytes) return null;
+  return { name: v.name, bytes: v.bytes instanceof Uint8Array ? v.bytes : new Uint8Array(v.bytes), ts: v.ts || 0 };
+}
 export async function idbImportCard(key: string, rec: { name: string; bytes: Uint8Array; ts?: number }): Promise<void> {
   if (!key || !rec || !rec.bytes) return;
   const db = await idbOpen();

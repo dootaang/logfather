@@ -8,10 +8,13 @@
 // @ts-nocheck
 import { confirmModal } from './confirmModal.js';
 import { initTheme, wireThemeToggle, applyShellTheme, getThemePref, applySkin, refreshSkinOptions, SKIN_KEY, SHELL_THEME_KEY, buildCustomSkin } from './appSettings.js';
-import { blobRefsIn, blobsGet, blobsPutRaw } from './store.js';   // 백업에 그림 참조(lpblob) 블롭 동봉·복원
+import { blobRefsIn, blobsGet, blobsPutRaw, idbCardKeys, idbGetCardEntry } from './store.js';   // 백업에 그림 참조(lpblob) 블롭 동봉·복원
 import { kvLoad, kvSave, logsAll, logsAdd, metaAll, metaSet, clearLibraryLocal, dedupeLogsInStore, AUTOSAVE_KEY, PRESET_LIB_KEY, READ_KEY, RDR_KEY,
   idbExportCards, idbImportCard, archiveList, archiveGetFile, archiveImport, fontsAll, fontsAdd } from './store.js';
-import { buildBackup, openBackup, isZip } from '../../core/preset/backupZip.js';
+import { isZip } from '../../core/preset/backupZip.js';
+import { writeBackupStream, openBackupLazy, blobReader } from '../../core/preset/backupStream.js';   // 백업 흘려 쓰기/읽기(메모리 바운드)
+import { openSaveSink, markBusy, clearBusy } from './saveStream.js';
+import type { SaveSink } from './saveStream.js';
 import { fontsSupported, getFontList, addFontFiles, removeFont, getUiFont, applyUiFont, refreshFonts } from './fonts.js';
 import { isDesktop, getWebSyncMode, setWebSyncMode, getDesktopSyncMode, setDesktopSyncMode } from './desktopSync.js';   // 동기화 모드(자동/수동) 토글용(웹·데스크탑)
 import { injectAdminButton } from './adminPanel.js';   // 관리자 사용량 패널(관리자 uid만 노출 — 진짜 벽은 보안규칙)
@@ -78,51 +81,58 @@ function snapshot() { return { app: APP_ID, version: 4, kind: 'backup', autosave
 function wireBackup(setStatus: (m: string) => void, refresh?: () => void) {
   const expB = document.getElementById('btn-export'); const impB = document.getElementById('btn-import'); const fileImp = document.getElementById('file-import') as HTMLInputElement | null;
   if (expB) expB.addEventListener('click', async () => {
-    const orig = expB.textContent; expB.textContent = '백업 만드는 중…';
+    const orig = expB.textContent;
+    const stamp = new Date().toISOString().slice(0, 10);
+    // ★2026-10-22: zip을 메모리에 다 만들지 않고 "흘려 쓴다" — 파일을 하나씩 읽어 zip에 이어 쓰고 바로 버림.
+    //   예전엔 담을 파일 전부 + zip 출력 + 다운로드 사본이 동시에 올라(백업 데이터의 3~4배) 1GB+면 메모리 부족으로 죽었다.
+    //   저장 위치를 먼저 고른다(데스크탑=대화상자·크롬=파일 저장, 그 외=조각 모아 다운로드).
+    let sink: SaveSink | null = null;
+    try { sink = await openSaveSink(`log-backup-${stamp}.zip`); } catch (e: any) { setStatus('백업 저장 위치를 열지 못했어요: ' + ((e && e.message) || e)); return; }
+    if (!sink) return;   // 사용자가 취소
+    expB.textContent = '백업 만드는 중…';
+    markBusy('backup');
     try {
       let logs: any[] = []; try { logs = await logsAll(); } catch (_) {}
       let meta: any[] = []; try { meta = await metaAll(); } catch (_) {}
-      // ★큰 바이너리는 base64 문자열이 아니라 zip 안 사파일로(level0). data엔 그 경로 참조만 둔다(수백 MB~GB도 안전).
-      const binFiles: Record<string, Uint8Array> = {};
-      const management: any[] = [], fonts: any[] = [], cards: any[] = [];
-      // ★2026-10-04: 로그 본문은 그림 참조(lpblob:해시) 그대로 담고, 참조된 그림만 해시별 한 벌(bin/blob/<해시>)로 동봉.
-      //   예전엔 전 화를 펼친 채 담아(같은 그림 × 참조 수) 백업을 만들다 메모리 부족으로 죽을 수 있었다. 64개씩 끊어 읽어 메모리 바운드.
-      const blobs: any[] = [];
-      try {
-        const hs = new Set<string>(); for (const r of logs) { for (const h of blobRefsIn(r && r.html)) hs.add(h); if (r && r.assetRefs && typeof r.assetRefs === 'object') { for (const v of Object.values(r.assetRefs)) if (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)) hs.add(v); } }   // 본문 그림 참조 + 에셋 목록(assetRefs: 채팅 가져오기·에셋 입히기) 그림
-        const all = Array.from(hs);
-        for (let i = 0; i < all.length; i += 64) {
-          const got = await blobsGet(all.slice(i, i + 64));
-          for (const [h, b] of got) { const path = 'bin/blob/' + h; binFiles[path] = b64ToU8(b.b64); blobs.push({ h, mime: b.mime, file: path }); }
-        }
-      } catch (_) {}
-      try { for (const s of await archiveList()) { const bytes = await archiveGetFile(s.id); if (!bytes) continue; const path = 'bin/src/' + s.id + '.' + (s.format || 'bin'); binFiles[path] = bytes; management.push(Object.assign({}, s, { file: path })); } } catch (_) {}
-      try { for (const f of await fontsAll()) { if (!f || !f.bytes) continue; const bytes = f.bytes instanceof Uint8Array ? f.bytes : new Uint8Array(f.bytes); const path = 'bin/font/' + f.id + '.' + (f.format || 'bin'); binFiles[path] = bytes; fonts.push({ id: f.id, family: f.family, name: f.name, format: f.format, ts: f.ts, file: path }); } } catch (_) {}
-      try { const cl = await idbExportCards(); cl.forEach((c, i) => { const path = 'bin/card/' + i + '.bin'; binFiles[path] = c.bytes; cards.push({ key: c.key, name: c.name, ts: c.ts, file: path }); }); } catch (_) {}
-      const backup = Object.assign(snapshot(), { logs, meta, management, fonts, cards, blobs });
-      const stamp = new Date().toISOString().slice(0, 10);
-      try { downloadBytes(`log-backup-${stamp}.zip`, buildBackup(backup, binFiles), 'application/zip'); }
-      catch (_) { download(`log-backup-${stamp}.json`, JSON.stringify(backup, null, 2)); }   // zip 실패 시 json 폴백(바이너리 제외, 텍스트만)
+      // 바이너리는 "목록만" 먼저 만들고 바이트는 쓸 때 하나씩 읽는다(get). 메타 목록(blobs·management·cards)은 실제로 읽힌 것만 채운다.
+      const bins: Array<{ path: string; get: () => Promise<Uint8Array | null> }> = [];
+      const management: any[] = [], fonts: any[] = [], cards: any[] = [], blobs: any[] = [];
+      // 그림: 본문 참조(lpblob) + 에셋 목록(assetRefs: 채팅 가져오기·에셋 입히기) — 해시별 한 벌.
+      const hs = new Set<string>();
+      for (const r of logs) { for (const h of blobRefsIn(r && r.html)) hs.add(h); if (r && r.assetRefs && typeof r.assetRefs === 'object') { for (const v of Object.values(r.assetRefs)) if (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)) hs.add(v); } }
+      for (const h of hs) { const path = 'bin/blob/' + h; bins.push({ path, get: async () => { const b = (await blobsGet([h])).get(h); if (!b) return null; blobs.push({ h, mime: b.mime, file: path }); return b64ToU8(b.b64); } }); }
+      try { for (const s of await archiveList()) { const path = 'bin/src/' + s.id + '.' + (s.format || 'bin'); bins.push({ path, get: async () => { const bytes = await archiveGetFile(s.id); if (bytes) management.push(Object.assign({}, s, { file: path })); return bytes; } }); } } catch (_) {}
+      try { const fl = await fontsAll(); for (let i = 0; i < fl.length; i++) { const f = fl[i]; if (!f || !f.bytes) continue; const path = 'bin/font/' + f.id + '.' + (f.format || 'bin'); bins.push({ path, get: async () => { const g = fl[i]; fl[i] = null; if (!g || !g.bytes) return null; fonts.push({ id: g.id, family: g.family, name: g.name, format: g.format, ts: g.ts, file: path }); return g.bytes instanceof Uint8Array ? g.bytes : new Uint8Array(g.bytes); } }); } } catch (_) {}
+      try { const keys = await idbCardKeys(); keys.forEach((k, i) => { const path = 'bin/card/' + i + '.bin'; bins.push({ path, get: async () => { const c = await idbGetCardEntry(k); if (!c) return null; cards.push({ key: k, name: c.name, ts: c.ts, file: path }); return c.bytes; } }); }); } catch (_) {}
+      const backup = Object.assign(snapshot(), { logs, meta, management, fonts, cards, blobs });   // 목록 배열은 bins가 읽히며 채워짐(카탈로그는 맨 마지막에 씀)
+      await writeBackupStream((c) => sink!.write(c), backup, bins, { onStep: (i, n) => { expB.textContent = `백업 만드는 중… (${i}/${n})`; } });
+      await sink.close(); sink = null;
       flash(expB, `백업 저장됨 (로그 ${logs.length}·소스 ${management.length}·폰트 ${fonts.length})`);
-    } finally { if (orig != null) expB.textContent = orig; }
+    } catch (e: any) {
+      if (sink) { try { await sink.abort(); } catch (_) {} }
+      setStatus('백업 실패: ' + ((e && e.message) || e));
+    } finally { clearBusy(); if (orig != null) expB.textContent = orig; }
   });
   if (impB && fileImp) {
     impB.addEventListener('click', () => fileImp.click());
     fileImp.addEventListener('change', async () => {
       const f = fileImp.files && fileImp.files[0]; if (!f) return;
+      markBusy('restore');
       try {
-        const buf = new Uint8Array(await f.arrayBuffer());
-        let obj: any, getBin: (p: string) => Uint8Array | null;
-        if (isZip(buf)) { const op = openBackup(buf); obj = op.data; getBin = op.getBin; }   // zip(신규): 데이터 + 바이너리 회수
-        else { obj = JSON.parse(new TextDecoder().decode(buf)); getBin = () => null; }        // 옛 json: 바이너리 없음
+        // ★zip은 통째로 읽지 않는다 — 끝의 목록만 읽고 항목을 필요할 때 하나씩(파일 슬라이스). 옛·새 백업 모두.
+        const head = new Uint8Array(await f.slice(0, 4).arrayBuffer());
+        let obj: any, getBin: (p: string) => Promise<Uint8Array | null> | Uint8Array | null;
+        if (isZip(head)) { const op = await openBackupLazy(f.size, blobReader(f)); obj = op.data; getBin = op.getBin; }
+        else { obj = JSON.parse(await f.text()); getBin = () => null; }        // 옛 json: 바이너리 없음
         if (obj && obj.kind === 'backup') { await restoreBackupObj(obj, getBin, setStatus, refresh); flash(impB, '복원됨!'); }
         else setStatus('백업 파일이 아닙니다 (kind:backup 아님).');
       } catch (e: any) { setStatus('불러오기 실패: ' + e.message); flash(impB, '실패'); }
+      finally { clearBusy(); }
       fileImp.value = '';
     });
   }
 }
-async function restoreBackupObj(obj: any, getBin: (p: string) => Uint8Array | null, setStatus: (m: string) => void, refresh?: () => void) {
+async function restoreBackupObj(obj: any, getBin: (p: string) => Promise<Uint8Array | null> | Uint8Array | null, setStatus: (m: string) => void, refresh?: () => void) {
   if (!(await confirmModal('이 백업으로 이 기기의 프리셋·디자인·서재·관리실·폰트·설정을 덮어쓸까요?', { okText: '복원' }))) return;
   setStatus('복원 중…');
   // 프리셋(디자인별) — DESIGN_IDS만 추려 적용(살균).
@@ -139,12 +149,13 @@ async function restoreBackupObj(obj: any, getBin: (p: string) => Uint8Array | nu
   // 서재 로그·작품 메타
   // 그림 블롭(참조 lpblob의 실체) 먼저 — 그래야 아래 화들의 참조가 바로 풀린다. 해시는 64자 hex만 허용.
   if (Array.isArray(obj.blobs)) {
-    let batch: any[] = [];
+    let batch: any[] = []; let batchBytes = 0;
     for (const b of obj.blobs) {
       if (!b || !/^[0-9a-f]{64}$/.test(String(b.h || '')) || !/^[a-zA-Z0-9.+-]{1,40}$/.test(String(b.mime || ''))) continue;
-      const bytes = getBin(String(b.file || '')); if (!bytes) continue;
+      const bytes = await getBin(String(b.file || '')); if (!bytes) continue;
       batch.push({ h: String(b.h), mime: String(b.mime), b64: u8ToB64(bytes) });
-      if (batch.length >= 32) { try { await blobsPutRaw(batch); } catch (_) {} batch = []; }
+      batchBytes += batch[batch.length - 1].b64.length;
+      if (batch.length >= 32 || batchBytes > 48 * 1024 * 1024) { try { await blobsPutRaw(batch); } catch (_) {} batch = []; batchBytes = 0; }   // 개수·크기(48MB)로 끊어 메모리 바운드(큰 그림 32장이면 수백 MB)
     }
     if (batch.length) { try { await blobsPutRaw(batch); } catch (_) {} }
   }
@@ -160,13 +171,13 @@ async function restoreBackupObj(obj: any, getBin: (p: string) => Uint8Array | nu
   }
   // ★관리실 영구보관 소스(원본 바이트 = zip 사파일에서 회수) — id=파일해시·보관시각 보존.
   let nSrc = 0;
-  if (Array.isArray(obj.management)) { for (const s of obj.management) { if (!s || !s.id || !s.file) continue; const bytes = getBin(s.file); if (!bytes) continue; try { await archiveImport(s, bytes); nSrc++; } catch (_) {} } }
+  if (Array.isArray(obj.management)) { for (const s of obj.management) { if (!s || !s.id || !s.file) continue; const bytes = await getBin(s.file); if (!bytes) continue; try { await archiveImport(s, bytes); nSrc++; } catch (_) {} } }
   // ★커스텀 폰트(파일 바이트 회수 → 저장 후 등록).
   let nFont = 0;
-  if (Array.isArray(obj.fonts)) { for (const ft of obj.fonts) { if (!ft || !ft.id || !ft.file) continue; const bytes = getBin(ft.file); if (!bytes) continue; try { await fontsAdd({ id: String(ft.id), family: String(ft.family || '내 폰트'), name: String(ft.name || ''), format: String(ft.format || ''), bytes, ts: +ft.ts || Date.now() }); nFont++; } catch (_) {} } }
+  if (Array.isArray(obj.fonts)) { for (const ft of obj.fonts) { if (!ft || !ft.id || !ft.file) continue; const bytes = await getBin(ft.file); if (!bytes) continue; try { await fontsAdd({ id: String(ft.id), family: String(ft.family || '내 폰트'), name: String(ft.name || ''), format: String(ft.format || ''), bytes, ts: +ft.ts || Date.now() }); nFont++; } catch (_) {} } }
   if (nFont) { try { await refreshFonts(); } catch (_) {} }
   // ★작품별 카드(연재 재드롭 방지) + 전역 last 카드 — 키 그대로 복원.
-  if (Array.isArray(obj.cards)) { for (const c of obj.cards) { if (!c || !c.key || !c.file) continue; const bytes = getBin(c.file); if (!bytes) continue; try { await idbImportCard(String(c.key), { name: String(c.name || ''), bytes, ts: +c.ts || Date.now() }); } catch (_) {} } }
+  if (Array.isArray(obj.cards)) { for (const c of obj.cards) { if (!c || !c.key || !c.file) continue; const bytes = await getBin(c.file); if (!bytes) continue; try { await idbImportCard(String(c.key), { name: String(c.name || ''), bytes, ts: +c.ts || Date.now() }); } catch (_) {} } }
   // 외형(스킨·테마·도구폰트) 즉시 재적용 — 복원한 localStorage 값 기준.
   try { applySkin(localStorage.getItem(SKIN_KEY) || 'atelier'); } catch (_) {}
   try { applyShellTheme(localStorage.getItem(SHELL_THEME_KEY) || 'system'); } catch (_) {}

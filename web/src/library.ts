@@ -16,7 +16,10 @@ import { todayKey } from './readStats.js';   // 오늘 날짜 키(명대사 날�
 import { popAutoClose, clearMarksMany, marksCountOf } from './readerView.js';   // 공유 팝오버 바깥 탭=닫힘(리더 단일화 공유와 거동 통일)
 import { isLocalFirst, getSyncMode, shareBaseUrl, isDesktop } from './desktopSync.js';   // 로컬-퍼스트(데스크탑 OR 웹-수동) + 수동 동기화 상태 + 플랫폼
 import { mountUpdateBanner } from './updateBanner.js';   // 자동 업데이트 배너(데스크탑 전용)
-import { buildBackup, openBackup, isZip } from '../../core/preset/backupZip.js';   // 서재 내보내기/가져오기=zip(이미지 분리)
+import { isZip } from '../../core/preset/backupZip.js';
+import { writeBackupStream, openBackupLazy, blobReader } from '../../core/preset/backupStream.js';   // 내보내기/가져오기 흘려 쓰기·읽기(메모리 바운드)
+import { openSaveSink, markBusy, clearBusy, takeBusy } from './saveStream.js';
+import type { SaveSink } from './saveStream.js';   // 서재 내보내기/가져오기=zip(이미지 분리)
 import { fontsSupported, refreshFonts, getFontList } from './fonts.js';   // 커스텀 폰트(리더·보관함 글꼴)
 import { icon } from './icons.js';                 // 통일 라인 아이콘(currentColor) — 이모지 대체
 import { confirmModal } from './confirmModal.js';  // 공용 DOM 확인 모달(네이티브 confirm 대체 — Electron 포커스 버그 회피)
@@ -526,17 +529,24 @@ function renderHome() {
   expBtn.onclick = async () => {
     tools.open = false;
     let metas: any[] = []; try { metas = await metaAll(); } catch (_) {}   // 작품 표지·소개도 함께(예전엔 빠졌음)
-    // ★2026-10-04: 본문은 그림 참조(lpblob:해시) 그대로, 참조된 그림만 해시별 한 벌(bin/blob/<해시>) 동봉 — 전 화를 펼치면 메모리 부족.
-    const binFiles: Record<string, Uint8Array> = {}; const blobs: any[] = [];
+    // ★2026-10-22: 흘려 쓰기 — 저장 위치를 먼저 고르고, 그림을 하나씩 읽어 zip에 이어 쓰고 버린다(메모리 = 그림 1장 분량).
+    //   본문은 그림 참조(lpblob) 그대로, 참조된 그림(본문 참조 + assetRefs)만 해시별 한 벌(bin/blob/<해시>).
+    let sink: SaveSink | null = null;
+    try { sink = await openSaveSink('log-archive.zip'); } catch (e: any) { setStatus('저장 위치를 열지 못했어요: ' + ((e && e.message) || e)); return; }
+    if (!sink) return;
+    markBusy('export');
     try {
-      const hs = new Set<string>(); for (const r of allLogs) { for (const h of blobRefsIn(r && r.html)) hs.add(h); if (r && r.assetRefs && typeof r.assetRefs === 'object') { for (const v of Object.values(r.assetRefs)) if (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)) hs.add(v); } }   // 본문 그림 참조 + 에셋 목록(assetRefs: 채팅 가져오기·에셋 입히기) 그림
-      const all = Array.from(hs);
-      for (let i = 0; i < all.length; i += 64) { const got = await blobsGet(all.slice(i, i + 64)); for (const [h, b] of got) { const path = 'bin/blob/' + h; binFiles[path] = b64ToU8(b.b64); blobs.push({ h, mime: b.mime, file: path }); } }
-    } catch (_) {}
-    const data = { app: 'log-jejogi-pro2', kind: 'log-archive', version: 2, logs: allLogs, meta: metas, blobs };
-    // ★zip 한 파일(이미지 분리). 로그 html의 data:이미지가 많아도 안 부풀고 안 멈춤. 실패 시 json 폴백(그림 참조는 못 담음).
-    try { downloadBytes('log-archive.zip', buildBackup(data, binFiles), 'application/zip'); }
-    catch (_) { download('log-archive.json', JSON.stringify(data, null, 2)); }
+      const blobs: any[] = []; const bins: Array<{ path: string; get: () => Promise<Uint8Array | null> }> = [];
+      const hs = new Set<string>(); for (const r of allLogs) { for (const h of blobRefsIn(r && r.html)) hs.add(h); if (r && r.assetRefs && typeof r.assetRefs === 'object') { for (const v of Object.values(r.assetRefs)) if (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)) hs.add(v); } }
+      for (const h of hs) { const path = 'bin/blob/' + h; bins.push({ path, get: async () => { const b = (await blobsGet([h])).get(h); if (!b) return null; blobs.push({ h, mime: b.mime, file: path }); return b64ToU8(b.b64); } }); }
+      const data = { app: 'log-jejogi-pro2', kind: 'log-archive', version: 2, logs: allLogs, meta: metas, blobs };
+      await writeBackupStream((c) => sink!.write(c), data, bins, { onStep: (i, n) => setStatus(`내보내는 중… (그림 ${i}/${n})`) });
+      await sink.close(); sink = null;
+      setStatus(`내보내기 완료 — ${allLogs.length}화`);
+    } catch (e: any) {
+      if (sink) { try { await sink.abort(); } catch (_) {} }
+      setStatus('내보내기 실패: ' + ((e && e.message) || e));
+    } finally { clearBusy(); }
   };
   impBtn.onclick = () => { tools.open = false; importLogs(); };
   search.oninput = () => { archiveQuery = search.value; renderBody(); };
@@ -690,18 +700,20 @@ function importLogs() {
     fileInput.addEventListener('change', async () => {
       const f = fileInput!.files && fileInput!.files[0]; if (!f) return;
       try {
-        const buf = new Uint8Array(await f.arrayBuffer());
-        let getBin: (path: string) => Uint8Array | null = () => null;
+        // ★zip은 통째로 읽지 않는다 — 끝 목록만 읽고 항목을 필요할 때 하나씩(파일 슬라이스, 메모리 바운드). 옛·새 형식 모두.
+        const head = new Uint8Array(await f.slice(0, 4).arrayBuffer());
+        let getBin: (path: string) => Promise<Uint8Array | null> | Uint8Array | null = () => null;
         let obj: any;
-        if (isZip(buf)) { const op = openBackup(buf); obj = op.data; getBin = op.getBin; } else obj = JSON.parse(new TextDecoder().decode(buf));   // zip(신규) 또는 옛 json
+        if (isZip(head)) { const op = await openBackupLazy(f.size, blobReader(f)); obj = op.data; getBin = op.getBin; } else obj = JSON.parse(await f.text());   // zip 또는 옛 json
         // 그림 참조(lpblob)의 실체 블롭 먼저 — 해시 64자 hex·mime 형식 검증(외부 파일).
         if (obj && Array.isArray(obj.blobs)) {
-          let batch: any[] = [];
+          let batch: any[] = []; let batchBytes = 0;
           for (const b of obj.blobs) {
             if (!b || !/^[0-9a-f]{64}$/.test(String(b.h || '')) || !/^[a-zA-Z0-9.+-]{1,40}$/.test(String(b.mime || ''))) continue;
-            const bytes = getBin(String(b.file || '')); if (!bytes) continue;
+            const bytes = await getBin(String(b.file || '')); if (!bytes) continue;
             batch.push({ h: String(b.h), mime: String(b.mime), b64: u8ToB64(bytes) });
-            if (batch.length >= 32) { try { await blobsPutRaw(batch); } catch (_) {} batch = []; }
+            batchBytes += batch[batch.length - 1].b64.length;
+      if (batch.length >= 32 || batchBytes > 48 * 1024 * 1024) { try { await blobsPutRaw(batch); } catch (_) {} batch = []; batchBytes = 0; }   // 개수·크기(48MB)로 끊어 메모리 바운드(큰 그림 32장이면 수백 MB)
           }
           if (batch.length) { try { await blobsPutRaw(batch); } catch (_) {} }
         }
@@ -1619,10 +1631,13 @@ async function runRecovery() {
   const qs = new URLSearchParams(location.search);
   const gone = qs.get('gone') || '', goneCode = qs.get('code') || '';
   const GONE_KO: Record<string, string> = { oom: '메모리 부족', crashed: '화면 프로세스 충돌', 'launch-failed': '화면 시작 실패' };
+  const busy = takeBusy();   // 직전에 하던 무거운 작업(백업 등) — 그 도중에 죽었으면 남아 있다
+  const BUSY_KO: Record<string, string> = { backup: '전체 백업을 만드는', restore: '백업을 복원하는', export: '서재 내보내기 파일을 만드는' };
   const why = document.createElement('div'); why.style.cssText = 'margin:10px 0 4px;padding:10px 12px;border-radius:8px;font-size:13.5px;line-height:1.6;background:rgba(169,136,119,.12);';
   why.textContent = gone
     ? `앱 화면이 비정상 종료돼 자동으로 열렸어요 — 사유: ${GONE_KO[gone] || gone}${goneCode ? ` (코드 ${goneCode})` : ''}. 같은 증상이 반복되면 이 사유와 그때 하던 작업, 그리고 진단 파일(사용자 데이터 폴더 log-maker-pro2 안의 crash-log.jsonl과 Crashpad 폴더)을 보내 주세요.`
     : '메뉴에서 직접 열어 들어온 복구 화면이에요.';
+  if (gone && busy && BUSY_KO[busy.op]) why.textContent = `${BUSY_KO[busy.op]} 중에 앱 화면이 종료됐어요 — 사유: ${GONE_KO[gone] || gone}${goneCode ? ` (코드 ${goneCode})` : ''}. 작품에는 문제가 없으니 아무것도 지우지 말고 서재로 돌아가세요. 앱을 최신 버전으로 업데이트한 뒤 다시 시도해 주세요.`;
   const status = document.createElement('div'); status.style.cssText = 'color:#a98;margin:8px 0;'; status.textContent = '작품 용량 확인 중…';
   const list = document.createElement('div'); list.style.cssText = 'margin-top:8px;';
   const goBtn = document.createElement('button'); goBtn.textContent = '서재로 가기'; goBtn.style.cssText = 'margin-top:18px;padding:8px 16px;cursor:pointer;';
